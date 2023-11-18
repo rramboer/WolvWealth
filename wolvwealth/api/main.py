@@ -31,9 +31,9 @@ def retrieve_price():
     print("PRICES JSON UPDATE SUCCESSFUL.")
 
 
-with wolvwealth.app.app_context():
-    # """App Context. Runs before accepting requests."""
-    retrieve_price()
+# with wolvwealth.app.app_context():
+#     # """App Context. Runs before accepting requests."""
+#     retrieve_price()
 
 
 @wolvwealth.app.route("/api/")
