@@ -6,7 +6,7 @@ import flask
 import wolvwealth
 
 
-@wolvwealth.route("/api/")
+@wolvwealth.app.route("/api/")
 def api_default():
+    """WolvWealth API Usage Endpoint."""
     return flask.jsonify({"/api/": "API Info"})
-
