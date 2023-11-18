@@ -1,16 +1,18 @@
 """WolvWealth Main API."""
 
 import json
+import csv
 import flask
-# import pathlib
-# import pypfopt
-import yfinance
+import pathlib
+import pypfopt
+import yfinance as yf
 import wolvwealth
+import pandas as pd
 
 
-def retrieve_price():
-    """Return current stock price of ticker"""
-    sp100_tickers = [
+def fetch_historical_prices():
+    """Return current stock price of tickers in S&P 100"""
+    tickers = [
         "AAPL", "ABBV", "ABT", "ACN", "ADBE", "AIG", "ALL", "AMGN", "AMT", "AMZN",
         "AXP", "BA", "BAC", "BIIB", "BK", "BKNG", "BLK", "BMY", "C", "CAT",
         "CHTR", "CL", "CMCSA", "COF", "COP", "COST", "CRM", "CSCO", "CVS", "CVX",
@@ -20,23 +22,30 @@ def retrieve_price():
         "MDT", "MET", "MMM", "MO", "MRK", "MS", "MSFT", "NEE", "NFLX", "NKE", "NVDA",
         "ORCL", "OXY", "PEP", "PFE", "PG", "PM", "PYPL", "QCOM", "RTX", "SBUX", "SLB",
         "SO", "SPG", "T", "TGT", "TMO", "TMUS", "TSLA", "TXN", "UNH", "UNP", "UPS",
-        "USB", "V", "VZ", "WBA", "WFC", "WM", "WMT", "XOM",
+        "USB", "V", "VZ", "WBA", "WFC", "WM", "WMT", "XOM"
     ]
-    price_dict = {}
-    for ticker in sp100_tickers:
-        price_dict[ticker] = round(yfinance.Ticker(ticker).history(period="1d")["Close"].iloc[-1], 2)
-        print(ticker + " price loaded.")
-    with open("prices.json", "w", encoding="utf-8") as json_file:
-        json.dump(price_dict, json_file, indent=4)
-    print("PRICES JSON UPDATE SUCCESSFUL.")
+
+    start_date = "2008-01-01"
+    end_date = "2023-11-17"
+
+    historical_data = yf.download(tickers, start=start_date, end=end_date)["Adj Close"].round(2)
+    historical_data.to_csv("historical_prices.csv", index=True)
 
 
 with wolvwealth.app.app_context():
     # """App Context. Runs before accepting requests."""
-    retrieve_price()
+    fetch_historical_prices()
 
 
 @wolvwealth.app.route("/api/")
 def api_default():
     """WolvWealth API Usage Endpoint."""
     return flask.jsonify({"/api/": "API Info"})
+
+@wolvwealth.app.route("/api/price/")
+def fetch_ticker_price():
+    tickers = ["AAPL", "META", "GOOGL", "AMZN", "MSFT"]
+    price_dict = {}
+    for ticker in tickers:
+        price_dict[ticker] = round(yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1], 2)
+    return flask.jsonify(price_dict)
