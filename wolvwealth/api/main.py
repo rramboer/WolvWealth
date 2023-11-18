@@ -9,8 +9,10 @@ import yfinance as yf
 import wolvwealth
 import pandas as pd
 
-
 def fetch_historical_prices():
+    return pd.read_csv("historical_prices.csv", parse_dates=True, index_col="Date")
+
+def save_historical_prices():
     """Return current stock price of tickers in S&P 100"""
     tickers = [
         "AAPL", "ABBV", "ABT", "ACN", "ADBE", "AIG", "ALL", "AMGN", "AMT", "AMZN",
@@ -31,19 +33,22 @@ def fetch_historical_prices():
     historical_data = yf.download(tickers, start=start_date, end=end_date)["Adj Close"].round(2)
     historical_data.to_csv("historical_prices.csv", index=True)
 
-with wolvwealth.app.app_context():
-    # """App Context. Runs before accepting requests."""
-    fetch_historical_prices()
+# with wolvwealth.app.app_context():
+#     # """App Context. Runs before accepting requests."""
+#     fetch_historical_prices()
+
+# GLOBAL VARIABLES
+HISTORICAL_PRICES = fetch_historical_prices()
 
 @wolvwealth.app.route("/api/")
 def api_default():
     """WolvWealth API Usage Endpoint."""
     return flask.jsonify({"/api/": "API Info"})
 
-@wolvwealth.app.route("/api/price/")
+@wolvwealth.app.route("/api/price/", methods=["POST"])
 def fetch_ticker_price():
-    tickers = ["AAPL", "META", "GOOGL", "AMZN", "MSFT"]
+    data = flask.request.get_json()
     price_dict = {}
-    for ticker in tickers:
+    for ticker in data["tickers"]:
         price_dict[ticker] = round(yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1], 2)
     return flask.jsonify(price_dict)
