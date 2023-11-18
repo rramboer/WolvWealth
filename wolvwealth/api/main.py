@@ -36,7 +36,6 @@ with wolvwealth.app.app_context():
     # """App Context. Runs before accepting requests."""
     fetch_historical_prices()
 
-
 @wolvwealth.app.route("/api/")
 def api_default():
     """WolvWealth API Usage Endpoint."""
