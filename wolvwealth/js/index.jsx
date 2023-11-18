@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 
 function Index() {
     return (
-        <>
-        Your dashboard
-        </>
+        <div>
+            Your WolvWealth
+        </div>
     )
 }
 
