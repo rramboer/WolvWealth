@@ -1,19 +1,13 @@
 """WolvWealth Main API."""
 
+import json
 import flask
 # import pathlib
-import pypfopt
-import wolvwealth
+# import pypfopt
 import yfinance
-import json
+import wolvwealth
 
 
-@wolvwealth.app.route("/api/")
-def api_default():
-    """WolvWealth API Usage Endpoint."""
-    return flask.jsonify({"/api/": "API Info"})
-
-@wolvwealth.app.route("/price/")
 def retrieve_price():
     """Return current stock price of ticker"""
     sp100_tickers = [
@@ -32,7 +26,17 @@ def retrieve_price():
     for ticker in sp100_tickers:
         price_dict[ticker] = round(yfinance.Ticker(ticker).history(period="1d")["Close"].iloc[-1], 2)
         print(ticker + " price loaded.")
-    with open("prices.json", "w") as json_file:
+    with open("prices.json", "w", encoding="utf-8") as json_file:
         json.dump(price_dict, json_file, indent=4)
     print("PRICES JSON UPDATE SUCCESSFUL.")
-    
+
+
+with wolvwealth.app.app_context():
+    # """App Context. Runs before accepting requests."""
+    retrieve_price()
+
+
+@wolvwealth.app.route("/api/")
+def api_default():
+    """WolvWealth API Usage Endpoint."""
+    return flask.jsonify({"/api/": "API Info"})
