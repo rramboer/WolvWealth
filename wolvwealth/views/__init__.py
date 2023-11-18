@@ -1,0 +1,1 @@
+"""Initializer for views module."""
