@@ -1,0 +1,14 @@
+{
+  "name": "wolvwealth",
+  "version": "1.0.0",
+  "description": "Frontend (dashboard) for WolvWealth",
+  "main": "wolvwealth/js/main.jsx",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "WolvWealth Team",
+  "license": "ISC",
+  "dependencies": {
+    "react": "^18.2.0"
+  }
+}
