@@ -1,1 +1,3 @@
-"""Initializer for api module."""
+"""WolvWealth API Init."""
+
+from wolvwealth.api.main import api_default
