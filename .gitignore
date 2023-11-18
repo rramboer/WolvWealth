@@ -81,3 +81,5 @@ Icon
 .psd
 .jpg
 .jpeg
+wolvwealth/static/img/*.jpeg
+wolvwealth/static/img/*.psd
