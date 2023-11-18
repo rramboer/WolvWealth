@@ -1,7 +1,7 @@
 """Routes for the profile page."""
 
-import wolvwealth
 from flask import render_template
+import wolvwealth
 
 @wolvwealth.app.route('/profile/', methods=['GET'])
 def show_profile():

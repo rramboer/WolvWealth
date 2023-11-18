@@ -2,8 +2,8 @@
 
 GET /dashboard/"""
 
-import wolvwealth
 from flask import render_template
+import wolvwealth
 
 @wolvwealth.app.route('/dashboard/', methods=['GET'])
 def show_dashboard():
