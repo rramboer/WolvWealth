@@ -12,6 +12,7 @@ module.exports = {
     },
     fontFamily: {
       sans: ['Roboto', 'sans-serif'],
+      mono: ['"Fira Code"', 'monospace'],
     },
     extend: {
       borderRadius: {
