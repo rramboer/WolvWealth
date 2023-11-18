@@ -31,7 +31,6 @@ def fetch_historical_prices():
     historical_data = yf.download(tickers, start=start_date, end=end_date)["Adj Close"].round(2)
     historical_data.to_csv("historical_prices.csv", index=True)
 
-
 with wolvwealth.app.app_context():
     # """App Context. Runs before accepting requests."""
     fetch_historical_prices()
