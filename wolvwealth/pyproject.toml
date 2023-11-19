@@ -19,7 +19,7 @@ dependencies = [
 requires-python = ">=3.10"
 
 [tool.setuptools]
-packages = ["insta485"]
+packages = ["wolvwealth"]
 
 [tool.pylint."messages control"]
 disable = ["cyclic-import"]
