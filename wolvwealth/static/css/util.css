@@ -22,3 +22,10 @@ tspan {
 text {
     fill: white !important;
 }
+button:hover {
+    background:#2F52E0;
+    color:white;
+}
+svg {
+    overflow: visible;
+}
