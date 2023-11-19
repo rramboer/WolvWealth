@@ -1,4 +1,5 @@
 /** @type {import('tailwindcss').Config} */
+
 module.exports = {
   content: ["./wolvwealth/**/*.{html,js,jsx}"],
   theme: {
@@ -7,12 +8,14 @@ module.exports = {
       'gray': '#333333',
       'white': '#ffffff',
       'yellow': '#ffff6b',
-      'blue': '#3a4cb4',
-      'green': '#3afd1d',
-      'red': '#ff0000',
+      'blue': '#2F52E0',
+      'cyan': '#67e8f9',
+      'green': '#42d36e',
+      'red': '#ff715b',
     },
     fontFamily: {
       sans: ['Roboto', 'sans-serif'],
+      mono: ['"Fira Code"', 'monospace'],
     },
     extend: {
       borderRadius: {

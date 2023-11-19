@@ -76,3 +76,10 @@ files_for_autograder_io/
 # Google Drive and Dropbox
 Icon
 .dropbox*
+
+# Static files
+.psd
+.jpg
+.jpeg
+wolvwealth/static/img/*.jpeg
+wolvwealth/static/img/*.psd
