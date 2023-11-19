@@ -79,7 +79,4 @@ Icon
 
 # Static files
 .psd
-.jpg
-.jpeg
-wolvwealth/static/img/*.jpeg
 wolvwealth/static/img/*.psd

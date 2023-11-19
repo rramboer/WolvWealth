@@ -14,7 +14,7 @@ module.exports = {
       'red': '#ff715b',
     },
     fontFamily: {
-      sans: ['Roboto', 'sans-serif'],
+      sans: ['-apple-system', 'BlinkMacSystemFont', 'Helvetica Neue', 'sans-serif'],
       mono: ['"Fira Code"', 'monospace'],
     },
     extend: {
