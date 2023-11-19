@@ -7,7 +7,7 @@ function Index() {
     const [currentPage, setCurrentPage] = useState(0); // 0 = dashboard, 1 = contact, 2 = help
     const [isOpaque, setIsOpaque] = useState(false);
 
-    let name = "Geoff";
+    // let name = "Geoff";
 
     const handleSidebarClick = (e) => {
         setCurrentPage(e.target.value);
