@@ -1,4 +1,4 @@
-"""WolvWealth REST API Backend."""
+"""Initializer for wolvwealth module."""
 import flask
 
 app = flask.Flask(__name__)  # pylint: disable=invalid-name

@@ -1,10 +1,13 @@
-"""WolvWealth Views."""
+"""Route and code for landing (index) page.
 
-import flask
+GET /
+"""
+
+from flask import render_template
 import wolvwealth
 
-@wolvwealth.app.route("/")
-def show_index():
-    """Display '/' route."""
+@wolvwealth.app.route('/', methods=['GET'])
+def show_landing():
+    """Display / route."""
     context = {}
-    return flask.render_template("index.html", **context)
+    return render_template("index.html", **context)

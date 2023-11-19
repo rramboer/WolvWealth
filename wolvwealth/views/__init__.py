@@ -1,2 +1,6 @@
 """Initializer for views module."""
-from wolvwealth.views.index import show_index
+
+import wolvwealth.views.dashboard
+import wolvwealth.views.index
+import wolvwealth.views.login
+import wolvwealth.views.profile
