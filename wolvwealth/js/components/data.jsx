@@ -1,7 +1,16 @@
 import React, { useState } from "react";
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBoltLightning, faTrashCan } from "@fortawesome/free-solid-svg-icons";
-import { PieChart } from '@mui/x-charts/PieChart';
+import { PieChart } from 'react-minimal-pie-chart';
+
+function getRandomHexColor() {
+    let letters = '0123456789ABCDEF';
+    let color = '#';
+    for (let i = 0; i < 6; i++) {
+        color += letters[Math.floor(Math.random() * 16)];
+    }
+    return color;
+}
 
 function Data({ name }) {
     const algorithms = [
@@ -31,15 +40,24 @@ function Data({ name }) {
     const [algoArgs, setAlgoArgs] = useState(""); // i.e. "{'risk_aversion': 1.0}"
     const [hasOptimized, setHasOptimized] = useState(false);
     const [portfolioJSON, setPortfolioJSON] = useState({}); 
-    const [tickerSelection, setTickerSelection] = useState([{symbol:"AAPL",count:5}]); // a list of user selected tickers 
+    // same as data
+    const initialTickerSelection = [
+        {symbol:"AAPL", count:10},
+        {symbol:"AMZN", count:20},
+        {symbol:"NFLX", count:30},
+        {symbol:"GOOGL", count:40},
+        {symbol:"TSLA", count:50},
+    ];
+    const [tickerSelection, setTickerSelection] = useState(initialTickerSelection); // a list of user selected tickers 
     const [newTickerNameInput, setNewTickerNameInput] = useState("");
     const [newTickerCountInput, setNewTickerCountInput] = useState(0);
     const data = [
-        { id: 0, label: 'META', value: 10 },
-        { id: 1, label: 'AAPL', value: 20 },
-        { id: 2, label: 'AMZN', value: 30 },
-        { id: 3, label: 'NFLX', value: 40 },
-        { id: 4, label: 'GOOGL', value: 50 },
+        // set color to random hex value
+        { title: 'META', value: 10, color:getRandomHexColor() },
+        { title: 'AAPL', value: 20, color:getRandomHexColor() },
+        { title: 'AMZN', value: 30, color:getRandomHexColor() },
+        { title: 'NFLX', value: 40, color:getRandomHexColor() },
+        { title: 'GOOGL', value: 50, color:getRandomHexColor() },
     ];
     const [chartData, setChartData] = useState(data);
 
@@ -75,14 +93,15 @@ function Data({ name }) {
     const handleNewTickerCountInput = (e) => {
         setNewTickerCountInput(e.target.value);
     }
-    const handleUpdateData = () => {
+    const handleUpdateData = (newTickerSelection) => {
         console.log("Updating data");
         let newChartData = [];
-        for (let i = 0; i < tickerSelection.length; i++) {
-            console.log("Adding " + tickerSelection[i].symbol + " to chart data")
-            newChartData.push({id:i, label:tickerSelection[i].symbol, value:tickerSelection[i].count});
+        for (let i = 0; i < newTickerSelection.length; i++) {
+            console.log("Adding " + newTickerSelection[i].symbol + " to chart data")
+            newChartData.push({title:newTickerSelection[i].symbol, value:newTickerSelection[i].count, color:getRandomHexColor()});
         }
-        console.log(chartData);
+        console.log("BEFORE=",chartData);
+        console.log("AFTER=",newChartData);
         setChartData(newChartData);
         console.log(chartData);
     }
@@ -157,11 +176,22 @@ function Data({ name }) {
                 newTickerSelection.push({symbol:keys[i], count:data[keys[i]]["shares"]});
             }
             setTickerSelection(newTickerSelection);
+            handleUpdateData(newTickerSelection);
         })
         // .except((err) => {
         //     console.log(err);
         // })
     }
+
+    const defaultLabelStyle = {
+        fontSize: '5px',
+        fontFamily: 'sans-serif',
+      };
+
+    // const defaultLabelStyle = {
+    //     fontSize: '5px',
+    //     fontFamily: 'sans-serif',
+    //   };
 
     const options = {
         title: "My Daily Activities",
@@ -276,23 +306,11 @@ function Data({ name }) {
                             <div className="text-white w-[50%] bg-gray mx-auto">
 
                                 <PieChart
-                                    series={[
-                                        {
-                                        data: chartData,
-                                        highlightScope: { faded: 'global', highlighted: 'item' },
-                                        faded: { innerRadius: 30, additionalRadius: -30, color: 'gray' },
-                                        innerRadius: 60,
-                                        outerRadius: 120,
-                                        paddingAngle: 1,
-                                        cornerRadius: 3,
-                                        startAngle: -180,
-                                        endAngle: 180,
-                                        cx: 150,
-                                        cy: 150,
-                                        }
-                                    ]}
-                                    width={400}
-                                    height={400}
+                                    data={chartData}
+                                    label={({ dataEntry }) => dataEntry.title}
+                                    labelPosition={110}
+                                      labelStyle={{...defaultLabelStyle,}}
+                                    className="h-[100%] w-[100%] mx-auto"
                                 />
                             </div>
                         </div>
