@@ -5,20 +5,23 @@ import { PieChart } from 'react-minimal-pie-chart';
 
 function Data({ name }) {
     const algorithms = [
-        "mean_variance", "black-litterman", "HRP", "critical_line"
+        "Mean Variance",
+        "Black-Litterman",
+        "Hierarchical Risk Parity",
+        "Critical Line"
     ]
     const riskModels = [
-        "sample_cov",
-        "semicovariance",
-        "exp_cov",
-        "ledoit_wolf",
-        "ledoit_wolf_constant_variance",
-        "ledoit_wolf_single_factor",
-        "ledoit_wolf_constant_correlation",
-        "oracle_approximating"
+        "Sample Covariance",
+        "Semicovariance",
+        "Exp Covariance",
+        "Ledoit Wolf",
+        "Ledoit Wolf Constant Variance",
+        "Ledoit Wolf Single Factor",
+        "Ledoit Wolf Constant Correlation",
+        "Oracle Approximating"
     ];
     const outputTypes = [
-        "weights", "shares"
+        "Shares", "Weights"
     ]
 
     const [moneyInAccount, setMoneyInAccount] = useState(0.00);
@@ -104,7 +107,7 @@ function Data({ name }) {
             <div className="flex flex-col">
                 <div id="contentHeader" className="flex flex-row mb-8">
                     <h1 className="text-4xl font-bold mr-auto">
-                        Good Morning, {name}!
+                        Your dashboard
                     </h1>
                 </div>
                 <div className="flex flex-grow flex-col">
