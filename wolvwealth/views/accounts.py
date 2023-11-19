@@ -43,6 +43,12 @@ def login():
     flask.session["username"] = user
     return flask.redirect(target)
 
+@wolvwealth.app.route("/accounts/logout/", methods=["GET", "POST"])
+def logout():
+    """Logout a user."""
+    flask.session.pop('username')
+    return flask.redirect(flask.url_for("show_login"))
+
 @wolvwealth.app.route("/accounts/delete/", methods=["GET", "POST"])
 def accounts_delete():
     """Delete a user account."""

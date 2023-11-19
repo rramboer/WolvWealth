@@ -2,101 +2,125 @@
 <!--[if lt IE 7]>      <html class="no-js lt-ie9 lt-ie8 lt-ie7"> <![endif]-->
 <!--[if IE 7]>         <html class="no-js lt-ie9 lt-ie8"> <![endif]-->
 <!--[if IE 8]>         <html class="no-js lt-ie9"> <![endif]-->
-<!--[if gt IE 8]>      <html class="no-js"> <!--<![endif]-->
+<!--[if gt IE 8]>      <html class="no-js"> <!<![endif]-->
 <html>
-    <head>
-        <meta charset="utf-8">
-        <meta http-equiv="X-UA-Compatible" content="IE=edge">
-        <title>WolvWealth</title>
-        <meta name="description" content="">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <link rel="stylesheet" href="/static/css/output.css">
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&display=swap" rel="stylesheet">
-    </head>
-    <body class="bg-gray-dark">
-        <!--[if lt IE 7]>
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>WolvWealth</title>
+    <meta name="description" content="">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/css/output.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="/static/img/logo.png" type="image/png">
+</head>
+
+<body class="bg-gray-dark">
+    <!--[if lt IE 7]>
             <p class="browsehappy">You are using an <strong>outdated</strong> browser. Please <a href="#">upgrade your browser</a> to improve your experience.</p>
         <![endif]-->
-        <header class="fixed w-screen">
-            <nav>
-                <div class="max-w-screen-xl flex flex-wrap items-center justify-between mx-auto p-4 ">
-                    <a href="/" class="flex items-center space-x-3 rtl:space-x-reverse">
-                        <img src="/static/img/logo.png" class="h-8" alt="WolvWealth Logo" />
-                        <span class="self-center text-2xl font-semibold whitespace-nowrap dark:text-white">WolvWealth</span>
-                    </a>
-                    <button data-collapse-toggle="navbar-default" type="button" class="inline-flex items-center p-2 w-10 h-10 justify-center text-sm text-gray-500 rounded-lg md:hidden hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600" aria-controls="navbar-default" aria-expanded="false">
-                        <span class="sr-only">Open main menu</span>
-                        <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 17 14">
-                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M1 1h15M1 7h15M1 13h15"/>
-                        </svg>
-                    </button>
-                    <div class="hidden w-full md:block md:w-auto" id="navbar-default">
-                        <ul class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-gray-100 rounded-lg bg-gray-50 md:flex-row md:space-x-8 rtl:space-x-reverse md:mt-0 md:border-0">
+    <header class="fixed w-screen">
+        <nav class="px-5">
+            <div class="max-w-screen-xl flex flex-wrap items-center justify-between mx-auto p-4">
+                <a href="/" class="flex items-center space-x-3 rtl:space-x-reverse">
+                    <img src="/static/img/logo.png" class="h-8" alt="WolvWealth Logo" />
+                    <span class="self-center text-2xl font-semibold whitespace-nowrap dark:text-white">WolvWealth</span>
+                </a>
+                <button data-collapse-toggle="navbar-default" type="button"
+                    class="inline-flex items-center p-2 w-10 h-10 justify-center text-sm text-gray-500 rounded-lg md:hidden hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600"
+                    aria-controls="navbar-default" aria-expanded="false">
+                    <span class="sr-only">Open main menu</span>
+                    <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none"
+                        viewBox="0 0 17 14">
+                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M1 1h15M1 7h15M1 13h15" />
+                    </svg>
+                </button>
+                <div class="hidden w-full md:block md:w-auto" id="navbar-default">
+                    <ul
+                        class="font-medium flex flex-col p-4 md:p-0 mt-4 border border-gray-100 rounded-lg bg-gray-50 md:flex-row md:space-x-8 rtl:space-x-reverse md:mt-0 md:border-0">
                         {% if user.is_authenticated %}
                         <li>
-                            <a href=" {{ url_for('show_dashboard') }} " class="block py-2 px-3 text-white rounded hover:bg-gray-100 md:hover:bg-transparent md:border-0 md:hover:text-blue-700 md:p-0 dark:text-white md:dark:hover:text-blue-500 dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent">Dashboard</a>
+                            <a href=" {{ url_for('show_dashboard') }} "
+                                class="block py-2 px-3 text-white rounded hover:bg-gray-100 md:hover:bg-transparent md:border-0 md:hover:text-blue-700 md:p-0 dark:text-white md:dark:hover:text-blue-500 dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent">Dashboard</a>
+                        </li>
+                        <li>
+                            <a href=" {{ url_for('logout') }}"
+                                class="block py-2 px-3 text-white rounded hover:bg-gray-100 md:hover:bg-transparent md:border-0 md:hover:text-blue-700 md:p-0 dark:text-white md:dark:hover:text-blue-500 dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent">Logout</a>
+                        </li>
+                        {% else %}
+                        <li>
+                            <a href="{{ url_for('show_login') }}"
+                                class="block py-2 px-3 text-white rounded hover:bg-gray-100 md:hover:bg-transparent md:border-0 md:hover:text-blue-700 md:p-0 dark:text-white md:dark:hover:text-blue-500 dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent">Login</a>
                         </li>
                         {% endif %}
-                        <li>
-                            <a href="{{ url_for("show_login") }}" class="block py-2 px-3 text-white rounded hover:bg-gray-100 md:hover:bg-transparent md:border-0 md:hover:text-blue-700 md:p-0 dark:text-white md:dark:hover:text-blue-500 dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent">Login</a>
-                        </li>
-                        </ul>
-                    </div>
-                </div>
-            </nav>
-        </header>
-        <section class="bg-[url('/static/img/hero.png')] w-full h-screen bg-center bg-cover flex flex-wrap items-center justify-between mx-auto p-4">
-            <div class="flex items-center justify-center w-full h-full bg-gray-900 bg-opacity-50 py-12">
-                <div class="text-center">
-                    <h1 class="mb-4 mx-auto text-4xl font-extrabold leading-none tracking-tight text-white md:text-5xl lg:text-6xl">Invest with precision and efficiency.</h1>
-                    <p class="mb-6 text-lg font-normal text-[#9ca3af] lg:text-xl sm:px-16 xl:px-48">Empower your investment decisions with our cutting-edge modern portfolio optimizer, utilizing advanced algorithms to help you build diversified portfolios tailored to your risk preferences and financial goals.</p>
+                    </ul>
                 </div>
             </div>
-        </section>
-        <section>
-            <div class="max-w-screen-xl h-[90vh] mx-auto px-4 py-12 mt-12">
-                <h2 class="text-white text-3xl font-semibold text-center mb-8">Key Features</h2>
-                <hr class="h-px my-8 bg-white border-0">
-                <div class="grid grid-cols-1 md:grid-cols-2 grid-rows-3 md:grid-rows-3 gap-8">
-                    <div class="bg-gray rounded-4xl shadow-lg p-6">
-                        <h3 class="text-white text-xl font-semibold mb-4">Advanced Portfolio Optimization</h3>
-                        <p class="text-white">Utilize our advanced algorithms to optimize your investment portfolio for maximum returns and minimum risk.</p>
-                    </div>
-                    <div>
-                        <img src="/static/img/feature1.png" class="w-full h-full rounded-4xl shadow-lg" alt="Feature 1" />
-                    </div>
-                    <div>
-                        <img src="/static/img/feature2.png" class="w-full h-full rounded-4xl shadow-lg" alt="Feature 1" />
-                    </div>
-                    <div class="bg-gray rounded-4xl shadow-lg p-6">
-                        <h3 class="text-white text-xl font-semibold mb-4">Risk Assessment</h3>
-                        <p class="text-white">Assess the risk associated with your investment portfolio and make informed decisions based on your risk tolerance.</p>
-                    </div>
-                    <div class="bg-gray rounded-4xl shadow-lg p-6">
-                        <h3 class="text-white text-xl font-semibold mb-4">Diversification Strategies</h3>
-                        <p class="text-white">Implement diversification strategies to reduce risk and increase the stability of your investment portfolio.</p>
-                    </div>
-                    <div>
-                        <img src="/static/img/feature2.png" class="w-full h-full rounded-4xl shadow-lg" alt="Feature 1" />
-                    </div>
+        </nav>
+    </header>
+    <section
+        class="bg-[url('/static/img/hero.png')] w-full h-screen bg-center bg-cover flex flex-wrap items-center justify-between mx-auto p-4">
+        <div class="flex items-center justify-center w-full h-full bg-gray-900 bg-opacity-50 py-12">
+            <div class="text-center">
+                <h1
+                    class="mb-4 mx-auto text-4xl font-extrabold leading-none tracking-tight text-white md:text-5xl lg:text-6xl">
+                    Invest with precision and confidence.</h1>
+                <p class="mb-6 text-lg font-normal text-[#cad0da] lg:text-xl sm:px-16 xl:px-48">Empower your investment
+                    decisions with our cutting-edge modern portfolio optimizer</p>
+            </div>
+        </div>
+    </section>
+    <section>
+        <div class="max-w-screen-xl h-[90vh] mx-auto px-4 py-12 mt-12">
+            <h2 class="text-white text-3xl font-semibold text-center mb-8">Key Features</h2>
+            <hr class="h-px my-8 bg-white border-0">
+            <div class="grid grid-cols-1 md:grid-cols-2 grid-rows-3 md:grid-rows-3 gap-8">
+                <div class="bg-gray rounded-4xl shadow-lg p-6">
+                    <h3 class="text-white text-xl font-semibold mb-4">Mean-Variance Optimization</h3>
+                    <p class="text-white">Leverage our advanced algorithms fueled by ML estimators to optimize your
+                        investment portfolio for maximum returns and minimum risk.</p>
+                </div>
+                <div>
+                    <img src="/static/img/price_chart.jpg" class="w-full h-full rounded-4xl shadow-lg"
+                        alt="Feature 1" />
+                </div>
+                <div>
+                    <img src="/static/img/phone_stocks.jpeg" class="w-full h-full rounded-4xl shadow-lg"
+                        alt="Feature 1" />
+                </div>
+                <div class="bg-gray rounded-4xl shadow-lg p-6">
+                    <h3 class="text-white text-xl font-semibold mb-4">Risk Assessment</h3>
+                    <p class="text-white">Calculate risk and exposure associated with your portfolio and make informed
+                        trades based on your risk tolerance.</p>
+                </div>
+                <div class="bg-gray rounded-4xl shadow-lg p-6">
+                    <h3 class="text-white text-xl font-semibold mb-4">Diversification Strategies</h3>
+                    <p class="text-white">Implement diversification strategies to reduce risk and increase the stability
+                        of your investment portfolio.</p>
+                </div>
+                <div>
+                    <img src="/static/img/diverse.png" class="w-full h-full rounded-4xl shadow-lg" alt="Feature 1" />
                 </div>
             </div>
-        </section>
-            
-        </section>
-        <script>
-            window.onscroll = (e) => {
-                posY = this.scrollY;
-                if (posY > 0) {
-                    document.querySelector('header').classList.add('bg-gray-dark/50');
-                    document.querySelector('header').classList.add('backdrop-blur');
-                } else {
-                    document.querySelector('header').classList.remove('bg-gray-dark/50');
-                    document.querySelector('header').classList.remove('backdrop-blur');
-                }
+        </div>
+    </section>
+
+    <script>
+        window.onscroll = (e) => {
+            posY = this.scrollY;
+            if (posY > 0) {
+                document.querySelector('header').classList.add('bg-gray-dark/50');
+                document.querySelector('header').classList.add('backdrop-blur');
+            } else {
+                document.querySelector('header').classList.remove('bg-gray-dark/50');
+                document.querySelector('header').classList.remove('backdrop-blur');
             }
-        </script>
-    </body>
+        }
+    </script>
+</body>
+
 </html>
