@@ -8,14 +8,18 @@ from wolvwealth.api.main import TICKER_UNIVERSE, HISTORICAL_PRICES, TICKER_UNIVE
 @wolvwealth.app.route('/api/optimize/', methods=["POST"])
 def optimize():
     """Optimization Endpoint."""
-
+    print("hit optimize")
     # Parse JSON
     input_json = flask.request.json
-
+    print("INPUT_JSON=", input_json)
     # Initial Cash
     initial_cash = 0
     if "initial_cash" in input_json:
-        initial_cash = input_json["initial_cash"]
+        # convert to int or float (check if decimal in string)
+        if "." in input_json["initial_cash"]:
+            initial_cash = float(input_json["initial_cash"])
+        else:
+            initial_cash = int(input_json["initial_cash"])
         if type(initial_cash) not in [int, float] or initial_cash < 0.00:
             flask.abort(400, description="Error: Initial cash must be non-negative.")
 
@@ -39,6 +43,7 @@ def optimize():
 
     # Initial Holdings
     initial_holdings = {}
+    print(input_json["initial_holdings"])
     if "initial_holdings" in input_json:
         unclean_initial_holdings = input_json["initial_holdings"]
         if type(unclean_initial_holdings) not in [dict]:
@@ -60,7 +65,7 @@ def optimize():
     ef = EfficientFrontier(mu, cov_matrix)
     raw_weights = ef.max_sharpe()
     cleaned_weights = ef.clean_weights()
-    nonzero_dict = {key: value for key, value in cleaned_weights.items() if (key in initial_holdings or round(value, 3) > 0.000)}
+    nonzero_dict = {key: value for key, value in cleaned_weights.items() if (round(value, 3) > 0.000)}
     ef.portfolio_performance(verbose=True)
 
     # Build Output
