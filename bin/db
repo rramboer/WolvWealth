@@ -44,7 +44,7 @@ case $1 in
     ;;
 
   "dump")
-    echo "Finish implementing."
+    echo "Dumping."
     sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM users'
     ;;
   "random")
