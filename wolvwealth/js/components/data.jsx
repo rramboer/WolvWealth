@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBoltLightning } from "@fortawesome/free-solid-svg-icons";
-import { Chart } from "react-google-charts";
+import { PieChart } from '@mui/x-charts/PieChart';
 
 function Data({ name }) {
     const algorithms = [
@@ -72,18 +72,20 @@ function Data({ name }) {
                 "money_in_account": moneyInAccount,
                 "portfolio_json": portfolioJSON
             })
-        }).then((res) => {
-            console.log(res);
+        }).then((list) => {
+            console.log(list);
+        })
+        .except((err) => {
+            console.log(err);
         })
     }
 
     const data = [
-        ["Task", "Hours per Day"],
-        ["Work", 11],
-        ["Eat", 2],
-        ["Commute", 2],
-        ["Watch TV", 2],
-        ["Sleep", 7], // CSS-style declaration
+        { id: 0, label: 'META', value: 10 },
+        { id: 1, label: 'AAPL', value: 20 },
+        { id: 2, label: 'AMZN', value: 30 },
+        { id: 3, label: 'NFLX', value: 40 },
+        { id: 4, label: 'GOOGL', value: 50 },
     ];
 
     const options = {
@@ -99,9 +101,6 @@ function Data({ name }) {
                     <h1 className="text-4xl font-bold mr-auto">
                         Good Morning, {name}!
                     </h1>
-                    <div>
-                        <button className="mr-4"><img src="/static/img/logo.png" className="h-[30px]"></img></button>
-                    </div>
                 </div>
                 <div className="flex flex-grow flex-col">
                     <div id="inputRow" className="flex">
@@ -142,7 +141,7 @@ function Data({ name }) {
                                 </select>
                             </div>
                             <div className="flex flex-col flex-grow mr-4 fira text-xl">
-                                <label htmlFor="outputTypeSelection" className="text-xl">Risk Model</label>
+                                <label htmlFor="outputTypeSelection" className="text-xl">Output Type</label>
                                 <select id="outputTypeSelection" className="rounded-lg bg-gray-dark p-5 w-[auto]" 
                                 defaultValue={outputTypes[0]} onChange={handleOutputTypeChange}>
                                     {outputTypes.map((outputType) => 
@@ -177,23 +176,42 @@ function Data({ name }) {
                         </div>
                     </div>
                     <hr className="bg-gray-dark text-gray-dark font-bold"></hr>
-                    <div className="flex flex-grow flex-row p-5">
-                        <div id="before" className="flex flex-grow flex-col text-center">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 grid-rows-1 gap-8">
+                        <div id="before" className="">
                             <span>Ticker</span>
-                            <div className="w-[100%] h-[100%] bg-yellow">
+                            <div className="w-[100%] h-[100%] bg-blue">
                                 
                             </div>
                         </div>
-                        <div id="after" className="flex flex-grow flex-col text-center">
+                        <div id="after" className="">
                             <span>Insights</span>
-                            <div className="w-[100%] h-[100%] bg-green">
-                            <Chart
-                                chartType="PieChart"
-                                width="100%"
-                                height="400px"
-                                data={data}
-                                options={options}
-                            />
+                            <div className="text-white w-[50%] bg-gray mx-auto">
+
+                                <PieChart
+                                    series={[
+                                        {
+                                        data: [
+                                            { id: 0, label: 'META', value: 10 },
+                                            { id: 1, label: 'AAPL', value: 20 },
+                                            { id: 2, label: 'AMZN', value: 30 },
+                                            { id: 3, label: 'NFLX', value: 40 },
+                                            { id: 4, label: 'GOOGL', value: 50 },
+                                        ],
+                                        highlightScope: { faded: 'global', highlighted: 'item' },
+                                        faded: { innerRadius: 30, additionalRadius: -30, color: 'gray' },
+                                        innerRadius: 60,
+                                        outerRadius: 120,
+                                        paddingAngle: 1,
+                                        cornerRadius: 3,
+                                        startAngle: -180,
+                                        endAngle: 180,
+                                        cx: 150,
+                                        cy: 150,
+                                        }
+                                    ]}
+                                    width={400}
+                                    height={400}
+                                />
                             </div>
                         </div>
                     </div>
