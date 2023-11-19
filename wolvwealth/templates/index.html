@@ -74,41 +74,42 @@
             </div>
         </div>
     </section>
-    <section>
-        <div class="max-w-screen-xl h-[90vh] mx-auto px-4 py-12 mt-12">
-            <h2 class="text-white text-3xl font-semibold text-center mb-8">Key Features</h2>
-            <hr class="h-px my-8 bg-white border-0">
-            <div class="grid grid-cols-1 md:grid-cols-2 grid-rows-3 md:grid-rows-3 gap-8">
-                <div class="bg-gray rounded-4xl shadow-lg p-6">
-                    <h3 class="text-white text-xl font-semibold mb-4">Mean-Variance Optimization</h3>
-                    <p class="text-white">Leverage our advanced algorithms fueled by ML estimators to optimize your
-                        investment portfolio for maximum returns and minimum risk.</p>
-                </div>
-                <div>
-                    <img src="/static/img/price_chart.jpg" class="w-full h-full rounded-4xl shadow-lg"
-                        alt="Feature 1" />
-                </div>
-                <div>
-                    <img src="/static/img/phone_stocks.jpeg" class="w-full h-full rounded-4xl shadow-lg"
-                        alt="Feature 1" />
-                </div>
-                <div class="bg-gray rounded-4xl shadow-lg p-6">
-                    <h3 class="text-white text-xl font-semibold mb-4">Risk Assessment</h3>
-                    <p class="text-white">Calculate risk and exposure associated with your portfolio and make informed
-                        trades based on your risk tolerance.</p>
-                </div>
-                <div class="bg-gray rounded-4xl shadow-lg p-6">
-                    <h3 class="text-white text-xl font-semibold mb-4">Diversification Strategies</h3>
-                    <p class="text-white">Implement diversification strategies to reduce risk and increase the stability
-                        of your investment portfolio.</p>
-                </div>
-                <div>
-                    <img src="/static/img/diverse.png" class="w-full h-full rounded-4xl shadow-lg" alt="Feature 1" />
-                </div>
+    <section class="bg-[url('/static/img/price_chart.jpg')] w-[100%] h-screen bg-center bg-cover flex flex-wrap items-center justify-between mx-auto p-4">
+        <div class="flex items-center justify-center w-full h-full bg-gray-900 bg-opacity-50 py-12">
+            <div class="text-center">
+                <h3 class="mb-4 mx-auto text-4xl font-extrabold leading-none tracking-tight text-white md:text-5xl lg:text-6xl">
+                    Mean-Variance Optimization</h3>
+                <p class="mb-6 text-lg font-normal text-[#cad0da] lg:text-xl sm:px-16 xl:px-48">Leverage our advanced algorithms fueled by ML estimators to optimize your
+                    investment portfolio for maximum returns and minimum risk.</p>
             </div>
         </div>
     </section>
-
+    <section class="bg-[url('/static/img/feature2.png')] w-[100%] h-screen bg-center bg-cover flex flex-wrap items-center justify-between mx-auto p-4">
+        <div class="flex items-center justify-center w-full h-full bg-gray-900 bg-opacity-50 py-12">
+            <div class="text-center">
+                <h3 class="mb-4 mx-auto text-4xl font-extrabold leading-none tracking-tight text-white md:text-5xl lg:text-6xl">
+                    Risk Assessment</h3>
+                <p class="mb-6 text-lg font-normal text-[#cad0da] lg:text-xl sm:px-16 xl:px-48">Calculate risk and exposure associated with your portfolio and make informed
+                    trades based on your risk tolerance.</p>
+            </div>
+        </div>
+    </section>
+    <section class="bg-[url('/static/img/feature3.png')] w-[100%] h-screen bg-center bg-cover flex flex-wrap items-center justify-between mx-auto p-4">
+        <div class="flex items-center justify-center w-full h-full bg-gray-900 bg-opacity-50 py-12">
+            <div class="text-center">
+                <h3 class="mb-4 mx-auto text-4xl font-extrabold leading-none tracking-tight text-white md:text-5xl lg:text-6xl">
+                    Diversification Strategies</h3>
+                <p class="mb-6 text-lg font-normal text-[#cad0da] lg:text-xl sm:px-16 xl:px-48">Implement diversification strategies to reduce risk and increase the stability
+                    of your investment portfolio.</p>
+            </div>
+        </div>
+    </section>
+    <footer class="w-[90%] h-12 mx-auto my-12 py-12 border-t-2 border-white">
+        <div class="text-center">
+            <p class="text-white">Made with ❤️ at <a class="text-[#c9c2f2]" href="https://devpost.com/software/wolvwealth">MHacks 16</a>.</p>
+            <p class="text-white">Hosted via Google Cloud.</p>
+        </div>
+    </footer>
     <script>
         window.onscroll = (e) => {
             posY = this.scrollY;
