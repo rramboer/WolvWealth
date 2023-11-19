@@ -6,7 +6,8 @@ source env/bin/activate
 
 pip install httpie
 pip install -r requirements.txt
-pip install pypfopt
+pip install PyPortfolioOpt
+pip install yfinance
 
 pip install -e .
 
