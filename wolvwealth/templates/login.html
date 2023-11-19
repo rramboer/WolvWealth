@@ -12,6 +12,7 @@
     <meta name="description" content="">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/static/css/output.css">
+    <link rel="icon" href="/static/img/logo.png" type="image/png">
 </head>
 
 <body class="bg-gray-dark">
@@ -30,7 +31,7 @@
                     <h1 class="text-lg font-bold leading-tight tracking-tight text-white">
                         Sign In
                     </h1>
-                    <form class="space-y-4 md:space-y-6" action="{{ url_for('login', target=" /dashboard") }}"
+                    <form class="space-y-4 md:space-y-6" action="{{ url_for('login', target='/dashboard') }}"
                         method="post" enctype="multipart/form-data">
                         <div>
                             <label for="username" class="block mb-2 text-sm font-medium text-white">Username</label>
