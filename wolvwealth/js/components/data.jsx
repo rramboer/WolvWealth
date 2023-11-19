@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBoltLightning } from "@fortawesome/free-solid-svg-icons";
-import { PieChart } from '@mui/x-charts/PieChart';
+import { PieChart } from 'react-minimal-pie-chart';
 
 function Data({ name }) {
     const algorithms = [
@@ -87,6 +87,11 @@ function Data({ name }) {
         { id: 3, label: 'NFLX', value: 40 },
         { id: 4, label: 'GOOGL', value: 50 },
     ];
+
+    const defaultLabelStyle = {
+        fontSize: '5px',
+        fontFamily: 'sans-serif',
+      };
 
     const options = {
         title: "My Daily Activities",
@@ -188,29 +193,14 @@ function Data({ name }) {
                             <div className="text-white w-[50%] bg-gray mx-auto">
 
                                 <PieChart
-                                    series={[
-                                        {
-                                        data: [
-                                            { id: 0, label: 'META', value: 10 },
-                                            { id: 1, label: 'AAPL', value: 20 },
-                                            { id: 2, label: 'AMZN', value: 30 },
-                                            { id: 3, label: 'NFLX', value: 40 },
-                                            { id: 4, label: 'GOOGL', value: 50 },
-                                        ],
-                                        highlightScope: { faded: 'global', highlighted: 'item' },
-                                        faded: { innerRadius: 30, additionalRadius: -30, color: 'gray' },
-                                        innerRadius: 60,
-                                        outerRadius: 120,
-                                        paddingAngle: 1,
-                                        cornerRadius: 3,
-                                        startAngle: -180,
-                                        endAngle: 180,
-                                        cx: 150,
-                                        cy: 150,
-                                        }
-                                    ]}
-                                    width={400}
-                                    height={400}
+                                    data={[
+                                        { title: 'AAPL', value: 10, color: '#E38627' },
+                                        { title: 'AMZN', value: 15, color: '#C13C37' },
+                                        { title: 'NFLX', value: 20, color: '#6A2135' },
+                                      ]}
+                                    label={({ dataEntry }) => dataEntry.title}
+                                      labelStyle={{...defaultLabelStyle,}}
+                                    className="h-[100%] w-[100%] mx-auto"
                                 />
                             </div>
                         </div>
