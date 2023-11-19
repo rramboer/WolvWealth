@@ -1,6 +1,7 @@
 """API Portfolio Optimization."""
 import flask
 from pypfopt import expected_returns, risk_models
+from pypfopt import HRPOpt
 from pypfopt.efficient_frontier import EfficientFrontier
 import wolvwealth
 from wolvwealth.api.main import TICKER_UNIVERSE, HISTORICAL_PRICES, TICKER_UNIVERSE_PRICES
@@ -56,9 +57,10 @@ def optimize():
     else:
         filtered_data = HISTORICAL_PRICES
     mu = expected_returns.mean_historical_return(filtered_data)
-    cov_matrix = risk_models.sample_cov(filtered_data)
-    ef = EfficientFrontier(mu, cov_matrix)
-    raw_weights = ef.max_sharpe()
+    returns = returns_from_prices(filtered_data)
+    hrp = HRPOpt(returns=returns)
+    weights = hrp.optimize(mu)
+    ef = EfficientFrontier(mu, hrp.cov_matrix)
     cleaned_weights = ef.clean_weights()
     nonzero_dict = {key: value for key, value in cleaned_weights.items() if (key in initial_holdings or round(value, 3) > 0.000)}
     ef.portfolio_performance(verbose=True)
