@@ -12,9 +12,10 @@ CREATE TABLE users (
 
 CREATE TABLE optimizations (
   optimize_id INT NOT NULL AUTO_INCREMENT
-  username VARCHAR(20) NOT NULL,
   portfolio_id INT NOT NULL,
   portfolio_name VARCHAR(20) NOT NULL,
+  results VARCHAR(2048) NOT NULL,
+  username VARCHAR(20) NOT NULL,
   created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(owner) REFERENCES users(username) ON DELETE CASCADE,
   FOREIGN KEY(portfolio) REFERENCES portfolio(portfolio_id) ON DELETE CASCADE,
