@@ -1,0 +1,14 @@
+@tailwind base; 
+@tailwind components; 
+@tailwind utilities; 
+
+* {
+    color:white;
+    transition:0.1s ease;
+}
+p {
+    margin-bottom:15px!important;
+}
+.fira {
+    font-family: 'Fira Code', monospace;
+}
