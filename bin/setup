@@ -1,0 +1,28 @@
+#!/bin/bash
+# This script sets up a virtual environment and installs necessary dependencies.
+
+# Create a virtual environment
+python3 -m venv env
+
+# Exit immediately if a command exits with a non-zero status
+set -Eeuo pipefail
+
+# Print commands and their arguments as they are executed
+set -x
+
+# Activate the virtual environment
+source env/bin/activate
+
+# Install dependencies
+pip install docopt==0.6.2
+pip install idna==3.4
+pip install pipreqs==0.4.13
+pip install requests
+pip install urllib3
+pip install httpie
+pip install PyPortfolioOpt
+pip install yfinance
+pip install flask
+
+# Install the current directory as an editable package
+pip install -e .

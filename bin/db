@@ -2,21 +2,23 @@
 # wolvwealth_db
 
 # Stop on errors
-# See https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail/
 set -Eeuo pipefail
-# set -x
+
+# Print every command executed
+set -x
 
 # Sanity check command line options
 usage() {
   echo "Usage: $0 (create|destroy|reset|dump|random)"
 }
 
+# Check number of arguments
 if [ $# -ne 1 ]; then
   usage
   exit 1
 fi
 
-# Parse argument.  $1 is the first argument
+# Parse argument. $1 is the first argument
 case $1 in
   "create")
     if [ -e var/wolvwealth.sqlite3 ]; then
@@ -46,22 +48,6 @@ case $1 in
   "dump")
     echo "Dumping."
     sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM users'
-    ;;
-  "random")
-    DB_FILENAME=var/wolvwealth.sqlite3
-
-    for i in `seq 1 100`; do
-      FILENAME="$(uuidgen).png"
-      NUMS=()
-      for j in `seq 1 6`; do
-          NUMS+=($(($RANDOM % 255)))
-      done
-      convert -size 360x360 \
-              radial-gradient:"rgb(${NUMS[0]},${NUMS[1]},${NUMS[2]})-rgb(${NUMS[3]},${NUMS[4]},${NUMS[5]})" \
-              -pointsize 64 -fill black -gravity center -annotate 0 "image $i" "var/uploads/$FILENAME"
-      OWNER="awdeorio"
-      sqlite3 -echo -batch ${DB_FILENAME} "INSERT INTO posts(filename, owner) VALUES('${FILENAME}','${OWNER}');"
-    done
     ;;
   *)
     usage
