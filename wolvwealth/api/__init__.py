@@ -1,10 +1,9 @@
 """WolvWealth API Init."""
 
-from wolvwealth.api.main import (
-    api_default,
-    save_historical_prices,
-    fetch_ticker_prices,
-    fetch_historical_prices,
-    HISTORICAL_PRICES,
-)
-from wolvwealth.api.optimize import optimize
+import wolvwealth
+from wolvwealth.api.state import ApplicationState  # noqa: F401
+import wolvwealth.api.optimize  # noqa: F401
+import wolvwealth.api.main  # noqa: F401
+import wolvwealth.api.api_exceptions  # noqa: F401
+
+state = ApplicationState()

@@ -1,7 +1,7 @@
 """Initializer for wolvwealth module."""
-import flask
+from flask import Flask  # type: ignore
 
-app = flask.Flask(__name__)  # pylint: disable=invalid-name
+app = Flask(__name__)  # pylint: disable=invalid-name
 
 import wolvwealth.api  # noqa: E402  pylint: disable=wrong-import-position
 import wolvwealth.views  # noqa: E402  pylint: disable=wrong-import-position

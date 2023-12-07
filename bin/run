@@ -1,4 +1,4 @@
 #!/bin/bash
 # This script runs the web server.
 
-flask --app wolvwealth --debug run --host 0.0.0.0 --port 8000
+flask run --app wolvwealth --debug --host 0.0.0.0 --port 8000
