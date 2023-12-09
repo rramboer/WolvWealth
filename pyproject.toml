@@ -24,3 +24,8 @@ packages = ["wolvwealth"]
 
 [tool.pylint."messages control"]
 disable = ["cyclic-import"]
+
+[tool.black]
+line-length = 120
+target-version = ["py38", "py39", "py310"]
+

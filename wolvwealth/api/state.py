@@ -1,7 +1,7 @@
-import pandas as pd
 import csv
+from datetime import datetime, timedelta
+import pandas as pd
 import yfinance as yf
-from datetime import datetime
 
 
 class ApplicationState:
@@ -40,25 +40,45 @@ class ApplicationState:
 
     def load_historical_prices(self) -> None:
         """Load historical prices of tickers in universe into DataFrame."""
-        self.HISTORICAL_PRICES = pd.read_csv(
-            "historical_prices.csv", parse_dates=True, index_col="Date"
-        )
+        self.HISTORICAL_PRICES = pd.read_csv("historical_prices.csv", parse_dates=True, index_col="Date")
 
     def save_historical_prices(self) -> None:
         """Saves historical stock prices of tickers in universe to CSV."""
         start_date = "2010-01-01"
         end_date = datetime.now().strftime("%Y-%m-%d")
-        historical_data = yf.download(
-            self.TICKER_UNIVERSE, start=start_date, end=end_date
-        )["Adj Close"].round(2)
+        historical_data = yf.download(self.TICKER_UNIVERSE, start=start_date, end=end_date)["Adj Close"].round(2)
         historical_data.to_csv("historical_prices.csv", index=True)
 
-    def add_ticker_to_universe(self, ticker: str) -> None:
-        """Add ticker to universe and update historical prices."""
-        self.TICKER_UNIVERSE.append(ticker)
-        with open("ticker_universe.csv", "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([ticker])
+    def add_ticker_to_universe(self, ticker: str) -> int:
+        """Add ticker to universe and update historical prices. Returns index of inserted ticker."""
+        if ticker in self.TICKER_UNIVERSE:
+            return
+        # Binary search through ticker universe, list is sorted by market cap descending
+        low = 0
+        high = len(self.TICKER_UNIVERSE) - 1
+        mid = 0
+        while low < high:
+            mid = (low + high) // 2
+            market_cap = self.get_market_cap(ticker)
+            market_cap_mid = self.get_market_cap(self.TICKER_UNIVERSE[mid])
+            if market_cap < market_cap_mid:
+                low = mid + 1
+            elif market_cap > market_cap_mid:
+                high = mid - 1
+            else:
+                break
+        self.TICKER_UNIVERSE.insert(mid, ticker)
+        self.save_ticker_universe()
+        self.save_historical_prices()
+        self.load_historical_prices()
+        return mid
+
+    def remove_ticker_from_universe(self, ticker: str) -> None:
+        """Remove ticker from universe and update historical prices."""
+        if ticker not in self.TICKER_UNIVERSE:
+            return
+        self.TICKER_UNIVERSE.remove(ticker)
+        self.save_ticker_universe()
         self.save_historical_prices()
         self.load_historical_prices()
 
@@ -69,12 +89,28 @@ class ApplicationState:
     def update_historical_prices(self) -> None:
         """Update historical stock prices of tickers in universe."""
         start_date = (
-            datetime.strptime(self.HISTORICAL_PRICES.index[-1], "%Y-%m-%d")
-            + datetime.timedelta(days=1)
+            datetime.strptime(str(self.HISTORICAL_PRICES.index[-1]), "%Y-%m-%d %H:%M:%S") + timedelta(days=1)
         ).strftime("%Y-%m-%d")
         end_date = datetime.now().strftime("%Y-%m-%d")
-        historical_data = yf.download(
-            self.TICKER_UNIVERSE, start=start_date, end=end_date
-        )["Adj Close"].round(2)
-        self.HISTORICAL_PRICES.append(historical_data, inplace=True)
+        historical_data = yf.download(self.TICKER_UNIVERSE, start=start_date, end=end_date)["Adj Close"].round(2)
+        self.HISTORICAL_PRICES = pd.concat([self.HISTORICAL_PRICES, historical_data])
         self.HISTORICAL_PRICES.to_csv("historical_prices.csv", index=True)
+
+    def get_market_cap(self, ticker: str) -> float:
+        """Return market cap of ticker."""
+        try:
+            return yf.Ticker(ticker).info["marketCap"]  # Key for stocks
+        except KeyError:
+            return yf.Ticker(ticker).info["totalAssets"]  # Key for ETFs
+
+    def sort_ticker_universe(self) -> None:
+        """Sort ticker universe by market cap. Descending."""
+        self.TICKER_UNIVERSE = [
+            x[0]
+            for x in sorted(
+                [(ticker, self.get_market_cap(ticker)) for ticker in self.TICKER_UNIVERSE],
+                key=lambda x: x[1],
+                reverse=True,
+            )
+        ]
+        self.save_ticker_universe()

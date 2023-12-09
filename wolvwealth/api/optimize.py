@@ -2,7 +2,7 @@
 import flask
 import wolvwealth
 
-from pypfopt import expected_returns, risk_models
+from pypfopt import expected_returns, risk_models, objective_functions
 from pypfopt.efficient_frontier import EfficientFrontier
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.api.api_exceptions import InvalidUsage
@@ -11,8 +11,18 @@ from wolvwealth.api.api_exceptions import InvalidUsage
 class Optimization:
     def __init__(self) -> None:
         self.state = ApplicationState()
+        self.set_defaults()
         self.parse_input()
         self.execute_optimization()
+
+    def set_defaults(self) -> None:
+        self.initial_cash = 0  # $0.00
+        self.universe = self.state.TICKER_UNIVERSE[:500]  # Top 500 stocks by market cap
+        self.exclude_metrics = False  # Include metrics in output
+        self.max_positions = -1  # Maximum number of stocks in portfolio. May override max_weight
+        self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set
+        self.min_universal_weight = 0.00  # Every stock must have at least this weight
+        self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%
 
     def parse_input(self) -> None:
         """Parse request as JSON."""
@@ -24,31 +34,65 @@ class Optimization:
         self.parse_universe()
         self.parse_initial_holdings()
         self.parse_exclude_metrics()
+        self.parse_constraints()
+
+    def parse_constraints(self) -> None:
+        if "constraints" not in self.input_json:
+            return
+        if not isinstance(self.input_json["constraints"], dict):
+            raise InvalidUsage("Invalid constraints. constraints must be a dictionary.")
+        if "max_weight" in self.input_json["constraints"]:
+            if not isinstance(self.input_json["constraints"]["max_weight"], (int, float)):
+                raise InvalidUsage("Invalid max_weight. max_weight must be a number.")
+            if (
+                self.input_json["constraints"]["max_weight"] < 0.00
+                or self.input_json["constraints"]["max_weight"] > 1.00
+            ):
+                raise InvalidUsage("Invalid max_weight. max_weight must be greater than 0 and less than 1.")
+            self.max_weight = round(self.input_json["constraints"]["max_weight"], 2)
+        if "max_positions" in self.input_json["constraints"]:
+            if not isinstance(self.input_json["constraints"]["max_positions"], int):
+                raise InvalidUsage("Invalid max_positions. max_positions must be a number.")
+            if self.input_json["constraints"]["max_positions"] < 0.00:
+                raise InvalidUsage("Invalid max_positions. max_positions must be greater than 0.")
+            if self.input_json["constraints"]["max_positions"] > len(self.universe):
+                raise InvalidUsage(f"Invalid max_positions. max_positions must be less than or equal to universe size.")
+            self.max_positions = round(self.input_json["constraints"]["max_positions"], 2)
+            if self.max_positions * self.max_weight < 1:
+                raise InvalidUsage(
+                    f"Invalid constraints. max_positions * max_weight must be greater than or equal to 1 for full allocation."
+                )
+        if "min_universal_weight" in self.input_json["constraints"]:
+            if not isinstance(self.input_json["constraints"]["min_universal_weight"], (int, float)):
+                raise InvalidUsage("Invalid min_universal_weight. min_universal_weight must be a number.")
+            if (
+                self.input_json["constraints"]["min_universal_weight"] < 0.00
+                or self.input_json["constraints"]["min_universal_weight"] > 1.00
+            ):
+                raise InvalidUsage(
+                    "Invalid min_universal_weight. min_universal_weight must be greater than 0 and less than 1."
+                )
+            self.min_universal_weight = round(self.input_json["constraints"]["min_universal_weight"], 2)
+        if self.min_universal_weight > self.max_weight:
+            raise InvalidUsage("Invalid constraints. min_weight must be less than max_weight.")
 
     def parse_exclude_metrics(self) -> None:
-        self.exclude_metrics = False
         if "exclude_metrics" not in self.input_json:
             return
         if not isinstance(self.input_json["exclude_metrics"], bool):
-            raise InvalidUsage(
-                "Invalid exclude_metrics. exclude_metrics must be a boolean."
-            )
+            raise InvalidUsage("Invalid exclude_metrics. exclude_metrics must be a boolean.")
         self.exclude_metrics = self.input_json["exclude_metrics"]
 
     def parse_initial_cash(self) -> None:
-        self.initial_cash = 0.0
         if "initial_cash" not in self.input_json:
             return
         if not isinstance(self.input_json["initial_cash"], (int, float)):
             raise InvalidUsage("Invalid initial_cash. initial_cash must be a number.")
         if self.input_json["initial_cash"] < 0.00:
-            raise InvalidUsage(
-                "Invalid initial_cash. initial_cash must be greater than 0."
-            )
-        self.initial_cash = self.input_json["initial_cash"]
+            raise InvalidUsage("Invalid initial_cash. initial_cash must be greater than 0.")
+        self.initial_cash = round(self.input_json["initial_cash"], 2)
 
     def parse_universe(self) -> None:
-        self.universe = self.state.TICKER_UNIVERSE[:500]  # Default to "top500"
         if "universe" not in self.input_json:
             return
         if not isinstance(self.input_json["universe"], list):
@@ -58,9 +102,7 @@ class Optimization:
             return
         for ticker in unclean_universe:
             if not isinstance(ticker, str):
-                raise InvalidUsage(
-                    "Invalid universe. universe must be list of strings."
-                )
+                raise InvalidUsage("Invalid universe. universe must be list of strings.")
             if ticker.upper() not in self.state.TICKER_UNIVERSE:
                 if ticker == "top20":
                     unclean_universe.remove(ticker)
@@ -87,15 +129,11 @@ class Optimization:
         if "initial_holdings" not in self.input_json:
             return
         if not isinstance(self.input_json["initial_holdings"], dict):
-            raise InvalidUsage(
-                "Invalid initial_holdings. initial_holdings must be a dictionary."
-            )
+            raise InvalidUsage("Invalid initial_holdings. initial_holdings must be a dictionary.")
         unclean_initial_holdings = self.input_json["initial_holdings"]
         for ticker, shares in unclean_initial_holdings.items():
             if not isinstance(ticker, str):
-                raise InvalidUsage(
-                    "Invalid initial_holdings. initial_holdings must be list of strings."
-                )
+                raise InvalidUsage("Invalid initial_holdings. initial_holdings must be list of strings.")
             if ticker.upper() not in self.state.TICKER_UNIVERSE:
                 raise InvalidUsage(f"Invalid symbol in initial_holdings: {ticker}.")
             if not isinstance(shares, (int, float)):
@@ -104,9 +142,7 @@ class Optimization:
                 )
             if shares < 0.00:
                 raise InvalidUsage("Invalid initial_holdings. Shares must be positive.")
-        self.initial_holdings = {
-            s.upper(): unclean_initial_holdings[s] for s in unclean_initial_holdings
-        }
+        self.initial_holdings = {s.upper(): unclean_initial_holdings[s] for s in unclean_initial_holdings}
 
     def execute_optimization(self) -> None:
         """Run optimization."""
@@ -116,34 +152,44 @@ class Optimization:
         if total_investment == 0:
             raise InvalidUsage("Invalid input. Total investment value cannot be 0.")
         filtered_data = self.state.HISTORICAL_PRICES[self.universe]
-        mu = expected_returns.mean_historical_return(filtered_data)
-        cov_matrix = risk_models.exp_cov(filtered_data)
-        ef = EfficientFrontier(mu, cov_matrix, verbose=False)
-        raw_weights = ef.max_sharpe()
-        cleaned_weights = ef.clean_weights()
-        non_zero_weights = {
-            key: value
-            for key, value in cleaned_weights.items()
-            if (round(value, 3) > 0.000)
-        }
+        try:
+            mu = expected_returns.mean_historical_return(filtered_data)
+            cov_matrix = risk_models.exp_cov(filtered_data)
+            ef = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(self.min_universal_weight, 1))
+            ef.add_constraint(lambda weights: weights <= self.max_weight)
+            ef.max_sharpe()
+            cleaned_weights = ef.clean_weights(cutoff=self.weight_threshold)
+            if self.max_positions != -1:
+                sorted_weights = sorted(cleaned_weights.items(), key=lambda x: x[1], reverse=True)
+                cleaned_weights = {}
+                for i in range(self.max_positions):
+                    cleaned_weights[sorted_weights[i][0]] = sorted_weights[i][1]
+                total_weight = sum(cleaned_weights.values())
+                for k, v in cleaned_weights.items():
+                    cleaned_weights[k] = v / total_weight
+                for k, v in cleaned_weights.copy().items():
+                    if v == 0:
+                        del cleaned_weights[k]
+
+        except Exception as e:
+            raise InvalidUsage(f"Optimization Error. Check your inputs and constraints. Infeasible.")
 
         # Construct output
         output = {}
         output["optimized_portfolio"] = {}
-        for asset, weight in non_zero_weights.items():
+        for asset, weight in cleaned_weights.items():
             output["optimized_portfolio"][asset] = {
-                "shares": round(
-                    weight * total_investment / self.state.fetch_ticker_price(asset), 3
-                ),
-                "total_value": round(weight * total_investment, 2),
+                "shares": round(weight * total_investment / self.state.fetch_ticker_price(asset), 4),
+                "value": round(weight * total_investment, 2),
                 "percent_weight": round(weight * 100, 2),
             }
         if self.exclude_metrics == False:
+            metrics = ef.portfolio_performance()
             output["metrics"] = {
-                "total_investment": round(total_investment, 2),
-                "expected_annual_return": round(ef.portfolio_performance()[0], 3),
-                "annual_volatility": round(ef.portfolio_performance()[1], 3),
-                "sharpe_ratio": round(ef.portfolio_performance()[2], 2),
+                "portfolio_value": round(total_investment, 2),
+                "expected_annual_return": round(metrics[0], 3),
+                "annual_volatility": round(metrics[1], 3),
+                "sharpe_ratio": round(metrics[2], 2),
             }
         self.output = flask.jsonify(output)
 
