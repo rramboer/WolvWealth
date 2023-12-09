@@ -1,5 +1,5 @@
 """WolvWealth Main API."""
-import flask  # type: ignore
+import flask
 import wolvwealth
 
 

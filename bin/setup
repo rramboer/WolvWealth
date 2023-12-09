@@ -19,7 +19,6 @@ set -Eeuo pipefail
 # set -x
 
 # Activate the virtual environment
-echo "Activating virtual environment..."
 source env/bin/activate
 
 # Install dependencies
@@ -33,6 +32,7 @@ pip install httpie
 pip install PyPortfolioOpt
 pip install yfinance
 pip install flask
+pip install scikit-learn
 
 # Install the current directory as an editable package
 pip install -e .

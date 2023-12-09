@@ -1,27 +1,33 @@
 """API Exceptions File."""
 
-import flask  # type: ignore
+import flask
 import wolvwealth
 
 
 class InvalidUsage(Exception):
     """Exception subclass for better error handling."""
 
-    status_code = 400
+    status_code: int = 400
 
-    def __init__(self, message, status_code=None, payload=None):
+    def __init__(
+        self, message: str, status_code: int = None, payload: dict = None
+    ) -> None:
         """Invalid usage init and payload creation."""
         Exception.__init__(self)
-        self.message = message
+        self.message = str(message)
         if status_code is not None:
             self.status_code = status_code
-        self.payload = payload
+        if payload is not None:
+            self.payload = payload
+        else:
+            self.payload = {}
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """Create dictionary for exception json response."""
-        rvv = dict(self.payload or ())
-        rvv["message"] = self.message
-        rvv["status_code"] = self.status_code
+        rvv = {}
+        rvv["error"] = {"message": self.message, "status_code": self.status_code}
+        if self.payload != {}:
+            rvv["error"]["payload"] = self.payload
         return rvv
 
 

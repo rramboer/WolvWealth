@@ -1,6 +1,6 @@
 """Initializer for views module."""
 import wolvwealth  # pylint: disable=wrong-import-position
-from flask import send_file  # type: ignore
+from flask import send_file
 
 """Route and code for landing (index) page.
 
