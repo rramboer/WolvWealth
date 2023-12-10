@@ -12,3 +12,17 @@ def api_default():
             "/api/optimize/": "Optimize Portfolio",
         }
     )
+
+
+@wolvwealth.app.route("/api/db/")
+def db_test():
+    """Test db in route."""
+    conn = wolvwealth.model.get_db()
+    cur = conn.execute(
+        "SELECT username, email FROM users WHERE username = ?;",
+        ('awdeorio',)
+    )
+    stuff = cur.fetchall()
+    return flask.jsonify({
+        "users": stuff
+    })
