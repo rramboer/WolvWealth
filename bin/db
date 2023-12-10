@@ -24,7 +24,6 @@ case $1 in
       mkdir -p var/uploads
       sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
       sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
-      cp sql/uploads/* var/uploads/
     fi
     ;;
 
@@ -35,7 +34,7 @@ case $1 in
 
   "reset")
     echo "Add error checking"
-    rm -rf var/wolvwealth.sqlite3 var/uploads
+    rm -rf var/wolvwealth.sqlite3
     mkdir -p var/uploads
     sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
     sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
