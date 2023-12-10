@@ -14,15 +14,16 @@ def api_default():
     )
 
 
-@wolvwealth.app.route("/api/db/")
+@wolvwealth.app.route("/api/db/status/")
 def db_test():
     """Test db in route."""
     conn = wolvwealth.model.get_db()
-    cur = conn.execute(
-        "SELECT username, email FROM users WHERE username = ?;",
-        ('awdeorio',)
-    )
-    stuff = cur.fetchall()
+    status = None
+    try:
+        conn.cursor()
+        status = True
+    except Exception as ex:
+        status = False
     return flask.jsonify({
-        "users": stuff
+        "status": ("available" if status else "unavailable")
     })
