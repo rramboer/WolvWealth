@@ -19,31 +19,29 @@ fi
 case $1 in
   "create")
     if [ -e var/wolvwealth.sqlite3 ]; then
-      echo "Error: database already exists"
+      echo "Database already exists"
     else
       mkdir -p var/uploads
       sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
       sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
-      cp sql/uploads/* var/uploads/
     fi
     ;;
 
   "destroy")
-    echo "DB Destroyed"
     rm -rf var/wolvwealth.sqlite3 var/uploads
+    echo "DB Destroyed"
     ;;
 
   "reset")
-    echo "Add error checking"
-    rm -rf var/wolvwealth.sqlite3 var/uploads
+    rm -rf var/wolvwealth.sqlite3
     mkdir -p var/uploads
     sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
     sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
-    cp sql/uploads/* var/uploads/
+    echo "Database destroyed and recreated. All data erased."
     ;;
 
   "dump")
-    echo "Add error checking"
+    echo "Printing Database."
     sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM users'
     sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM tokens'
     ;;
