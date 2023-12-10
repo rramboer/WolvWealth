@@ -2,14 +2,17 @@
 import flask
 import wolvwealth
 
-from pypfopt import expected_returns, risk_models, objective_functions
+from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.api.api_exceptions import InvalidUsage
+from wolvwealth.api.auth import check_api_key
 
 
 class Optimization:
     def __init__(self) -> None:
+        """Initialize optimization."""
+        check_api_key()
         self.state = ApplicationState()
         self.set_defaults()
         self.parse_input()
@@ -17,12 +20,12 @@ class Optimization:
 
     def set_defaults(self) -> None:
         self.initial_cash = 0  # $0.00
-        self.universe = self.state.TICKER_UNIVERSE[:500]  # Top 500 stocks by market cap
-        self.exclude_metrics = False  # Include metrics in output
-        self.max_positions = -1  # Maximum number of stocks in portfolio. May override max_weight
-        self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set
-        self.min_universal_weight = 0.00  # Every stock must have at least this weight
-        self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%
+        self.universe = self.state.TICKER_UNIVERSE[:500]  # Top 500 stocks by market cap.
+        self.exclude_metrics = False  # Include metrics in output.
+        self.max_positions = -1  # Maximum number of stocks in portfolio. May override max_weight.
+        self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set.
+        self.min_universal_weight = 0.00  # Every stock must have at least this weight.
+        self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%.
 
     def parse_input(self) -> None:
         """Parse request as JSON."""

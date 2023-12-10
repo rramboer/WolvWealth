@@ -9,3 +9,4 @@ import wolvwealth.api.auth
 import wolvwealth.model
 
 state = ApplicationState()  # Preload global resources on startup
+state.update_historical_prices()

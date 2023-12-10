@@ -1,60 +1,138 @@
-import uuid
-import hashlib
+"""Authentication functions for the API."""
 import flask
 import wolvwealth
 import secrets
+import bcrypt  # type: ignore
 from wolvwealth.api.api_exceptions import InvalidUsage
+import wolvwealth.model
 
 
-def generate_api_key():
-    """Generate a new API key."""
+@wolvwealth.app.route("/api/check", methods=["POST"])
+def check_credentials():
+    """Return credentials information."""
+    api_key = flask.request.headers.get("Authorization")
+    input_json = {}
+    username = ""
+    try:
+        input_json = flask.request.json
+    except Exception:
+        raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
+    if "username" not in input_json:
+        raise InvalidUsage("Parse Error. Missing username.")
+    if not isinstance(input_json["username"], str):
+        raise InvalidUsage("Parse Error. Username must be a string.")
+    username = input_json["username"]
+
+    connection = wolvwealth.model.get_db()
+    cur = connection.execute("SELECT * FROM users WHERE username = ?", (username,))
+    result_users = cur.fetchone()
+
+    # Check if username exists
+    if result_users is None:
+        raise InvalidUsage("Authorization Error. Invalid username.", status_code=401)
+    cur = connection.execute("SELECT * FROM tokens WHERE owner = ?", (username,))
+    result_tokens = cur.fetchone()
+
+    # Check if API key exists
+    if api_key is None:
+        raise InvalidUsage("Authorization Error. Missing API key.", status_code=403)
+
+    # Check if API key belongs to username
+    if result_tokens["token"] != api_key:
+        raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
+
+    # Fetch expiration time and number of uses
+    expiration_time = result_tokens["expires"]
+    uses = result_tokens["uses"]
+
+    output_json = {
+        "username": username,
+        "account_creation_date": result_users["created"],
+        "api_key_expiration": expiration_time,
+        "api_key_uses": uses,
+    }
+
+    return flask.jsonify(output_json)
+
+
+def generate_api_key(owner: str, tier: str) -> bool:
+    """Generate a new API key and add it to the database."""
     api_key = secrets.token_urlsafe(32)
-    # Add api key to database
-    return api_key
+    connection = wolvwealth.model.get_db()
+    expiration_time = ""
+    num_uses = 0
+    if tier == "free":
+        num_uses = 15
+        expiration_time = "+7 days"
+    elif tier == "plus":
+        num_uses = 100
+        expiration_time = "+90 days"
+    elif tier == "premium":
+        num_uses = 400
+        expiration_time = "+365 days"
+    elif tier == "developer" or tier == "lifetime":
+        num_uses = 1000000000
+        expiration_time = "+100 years"
+    else:
+        return False
+    connection.execute(
+        "INSERT INTO tokens (owner, token, expires, uses) VALUES (?, ?, (datetime('now', ?)), ?)",
+        (owner, api_key, expiration_time, num_uses),
+    )
+    return True
 
 
-def check_api_key():
-    """Check if API key is valid."""
+def check_api_key() -> bool:
+    """Check if API key is valid. Returns True if valid, False otherwise."""
     api_key = flask.request.headers.get("Authorization")
     if api_key is None:
         raise InvalidUsage("No API key provided.", status_code=401)
-    # Check if api key is in database, if not, reject
-    if False:
-        raise InvalidUsage("Invalid API key.", status_code=401)
-    # If uses == 0, delete api key from database, reject
-    if False:
-        raise InvalidUsage("API key has no uses remaining.", status_code=401)
-    # Otherwise, decrement uses by 1
+    connection = wolvwealth.model.get_db()
+
+    # Check if API key exists
+    cur = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,))
+    result = cur.fetchone()
+    if result is None:
+        raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
+
+    # Check if API key has expired
+    expiration_time = result["expires"]
+    cur = connection.execute("SELECT datetime('now') AS now")
+    current_time = cur.fetchone()["now"]
+    if current_time > expiration_time:
+        connection.execute("DELETE FROM tokens WHERE token = ?", (api_key,))
+        raise InvalidUsage("Authorization Error. API key has expired.", status_code=403)
+
+    # Check if API key has been used too many times
+    uses = result["uses"]
+    if uses == 0:
+        connection.execute("DELETE FROM tokens WHERE token = ?", (api_key,))
+        raise InvalidUsage("Authorization Error. API key has run out of uses.", status_code=403)
+
+    # Decrement uses by 1
+    connection.execute(
+        "UPDATE tokens SET uses = ? WHERE token = ?",
+        (
+            uses - 1,
+            api_key,
+        ),
+    )
     return True
 
 
-def hashpass():
+def hash_password(_password) -> str:
     """Hash a users password."""
-    password = flask.request.form.get("password")
-    algorithm = "sha512"
-    salt = uuid.uuid4().hex
-    hash_obj = hashlib.new(algorithm)
-    password_salted = salt + password
-    hash_obj.update(password_salted.encode("utf-8"))
-    password_hash = hash_obj.hexdigest()
-    return "$".join([algorithm, salt, password_hash])
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(_password.encode("utf-8"), salt)
+    return hashed_password
 
 
-def check_user_password(username, password):
-    """Check if password matches password in databse."""
+def check_user_password(username, password) -> bool:
+    """Check if password matches password in database."""
     connection = wolvwealth.model.get_db()
     cur = connection.execute("SELECT password " "FROM users " "WHERE username = ?", (username,))
-    # converts password into salt + hash form
-    correct_hashed_password = cur.fetchall()[0]["password"]
-    hashed_password_components = correct_hashed_password.split("$")
-    algorithm = hashed_password_components[0]
-    hash_obj = hashlib.new(algorithm)
-    salt = hashed_password_components[1]
-    password_salted = salt + password
-    hash_obj.update(password_salted.encode("utf-8"))
-    password_hash = hash_obj.hexdigest()
-    password_db_string = "$".join([algorithm, salt, password_hash])
-    # checks if salt+hash of input pw == salt+hash of stored pw
-    if password_db_string != correct_hashed_password:
+    result = cur.fetchone()
+    if result is None:
         return False
-    return True
+    hashed_password = result["password"]
+    return bcrypt.checkpw(password.encode("utf-8"), hashed_password)

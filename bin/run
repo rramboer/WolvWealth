@@ -3,4 +3,4 @@
 
 ./bin/db create
 
-flask --app wolvwealth --debug run --host 0.0.0.0 --port 8080
+flask --app wolvwealth --debug run --host 0.0.0.0 --port 8000

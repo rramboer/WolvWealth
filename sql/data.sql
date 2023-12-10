@@ -1,9 +1,13 @@
 PRAGMA foreign_keys = ON;
 
 INSERT INTO users(username, password) VALUES 
-('awdeorio', 'sha512$a45ffdcc71884853a2cba9e6bc55e812$c739cef1aec45c6e345c8463136dc1ae2fe19963106cf748baf87c7102937aa96928aa1db7fe1d8da6bd343428ff3167f4500c8a61095fb771957b4367868fb8'),
-('cvano', 'sha512$a45ffdcc71884853a2cba9e6bc55e812$c739cef1aec45c6e345c8463136dc1ae2fe19963106cf748baf87c7102937aa96928aa1db7fe1d8da6bd343428ff3167f4500c8a61095fb771957b4367868fb8');
+('rramboer', '$2b$12$wiiEvz7U.ovEUCY88vLzyeYnBVQkh6rSz0fc5DR5Hxk2VtJ/ub1EC'),
+('cvano', '$2b$12$Gkob/WzSEZJMeb5an3ZN5uT9P90np/88vnQwJDM.Lc8mx.2N6jiGm'),
+('nvano', '$2b$12$sEodwM/WSt3oLojlcSYM..pVvAb0.wTtlubmzcNDF6eQCcsJLP8De'),
+('amshand', '$2b$12$s6QBOGdTBSLonqkqj.I6juFKT8IQK06w3E1rLQi829A/5/2k8bUP2');
 
 INSERT INTO tokens(owner, token, expires, uses) VALUES
-('awdeorio', 'awdeorio_token', datetime('now', '-1 day'), 0),
-('cvano', 'cvano_super_special_secret_token!', datetime('now', '+100 years'), 1000000000);
+('rramboer', 'qD7jUXoAwEUJzMwRIGJBLdfZ5b_0-2-K-MPPBQfAW8w', datetime('now', '+100 years'), 1000000000),
+('cvano', '0lj8CCK4NaGqqantoIaaXi7Qsh9C_lR2Ckc7YrVT4ns', datetime('now', '+100 years'), 1000000000),
+('nvano', 'al4yxPX6cjckJAtGvK1zNlaF9ToVszXpizrhRjghWOM', datetime('now', '+100 years'), 1000000000),
+('amshand', 'oLg6DDoF3SiaK1LIn8kmsP5RTWffhEC9RNk4zBHrMPY', datetime('now', '+100 years'), 1000000000);

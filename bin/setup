@@ -33,6 +33,8 @@ pip install PyPortfolioOpt
 pip install yfinance
 pip install flask
 pip install scikit-learn
+pip install pandas
+pip install bcrypt
 
 # Install the current directory as an editable package
 pip install -e .

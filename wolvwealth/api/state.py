@@ -1,3 +1,4 @@
+"""Global state of application."""
 import csv
 from datetime import datetime, timedelta
 import pandas as pd
@@ -92,6 +93,8 @@ class ApplicationState:
             datetime.strptime(str(self.HISTORICAL_PRICES.index[-1]), "%Y-%m-%d %H:%M:%S") + timedelta(days=1)
         ).strftime("%Y-%m-%d")
         end_date = datetime.now().strftime("%Y-%m-%d")
+        if start_date > end_date or start_date == end_date:
+            return
         historical_data = yf.download(self.TICKER_UNIVERSE, start=start_date, end=end_date)["Adj Close"].round(2)
         self.HISTORICAL_PRICES = pd.concat([self.HISTORICAL_PRICES, historical_data])
         self.HISTORICAL_PRICES.to_csv("historical_prices.csv", index=True)
