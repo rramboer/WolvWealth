@@ -1,5 +1,5 @@
 #!/bin/bash
-# This script runs the web server.
+# This script runs the web server and creates the database if it doesn't exist.
 
 ./bin/db create
 
