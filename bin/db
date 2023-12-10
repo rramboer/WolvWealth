@@ -39,7 +39,6 @@ case $1 in
     mkdir -p var/uploads
     sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
     sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
-    cp sql/uploads/* var/uploads/
     ;;
 
   "dump")
