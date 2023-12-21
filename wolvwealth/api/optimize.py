@@ -55,15 +55,15 @@ class Optimization:
             self.max_weight = round(self.input_json["constraints"]["max_weight"], 2)
         if "max_positions" in self.input_json["constraints"]:
             if not isinstance(self.input_json["constraints"]["max_positions"], int):
-                raise InvalidUsage("Invalid max_positions. max_positions must be a number.")
+                raise InvalidUsage("Invalid max_positions. max_positions must be an integer.")
             if self.input_json["constraints"]["max_positions"] < 0.00:
                 raise InvalidUsage("Invalid max_positions. max_positions must be greater than 0.")
+            self.max_positions = self.input_json["constraints"]["max_positions"]
             if self.input_json["constraints"]["max_positions"] > len(self.universe):
-                raise InvalidUsage(f"Invalid max_positions. max_positions must be less than or equal to universe size.")
-            self.max_positions = round(self.input_json["constraints"]["max_positions"], 2)
+                self.max_positions = len(self.universe)
             if self.max_positions * self.max_weight < 1:
                 raise InvalidUsage(
-                    f"Invalid constraints. max_positions * max_weight must be greater than or equal to 1 for full allocation."
+                    f"Infeasible. max_positions * max_weight must be greater than or equal to 1 for full allocation."
                 )
         if "min_universal_weight" in self.input_json["constraints"]:
             if not isinstance(self.input_json["constraints"]["min_universal_weight"], (int, float)):

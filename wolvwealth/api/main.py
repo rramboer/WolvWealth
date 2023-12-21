@@ -10,6 +10,9 @@ def api_default():
         {
             "/api/": "API Info",
             "/api/optimize/": "Optimize Portfolio",
+            "/api/check/": "View Account Details",
+            "/api/delete-account/": "Delete Account",
+            "/api/beta-trial/": "Register Account (BETA)",
         }
     )
 
@@ -24,6 +27,4 @@ def db_test():
         status = True
     except Exception as ex:
         status = False
-    return flask.jsonify({
-        "status": ("available" if status else "unavailable")
-    })
+    return flask.jsonify({"status": ("available" if status else "unavailable")})

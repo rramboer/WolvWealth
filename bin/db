@@ -39,8 +39,10 @@ case $1 in
     ;;
 
   "dump")
-    echo "Printing Database."
+    echo "Printing Users:"
     sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM users'
+    echo ""
+    echo "Printing Tokens:"
     sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM tokens'
     ;;
   *)
