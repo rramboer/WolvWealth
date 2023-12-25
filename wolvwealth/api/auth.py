@@ -7,7 +7,7 @@ from wolvwealth.api.api_exceptions import InvalidUsage
 import wolvwealth.model
 
 
-@wolvwealth.app.route("/api/check", methods=["POST"])
+@wolvwealth.app.route("/api/status", methods=["POST"])
 def check_credentials():
     """Return credentials information."""
     api_key = flask.request.headers.get("Authorization")
