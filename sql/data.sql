@@ -11,3 +11,9 @@ INSERT INTO tokens(owner, token, expires, uses) VALUES
 ('cvano', '0lj8CCK4NaGqqantoIaaXi7Qsh9C_lR2Ckc7YrVT4ns', datetime('now', '+100 years'), 1000000000),
 ('nvano', 'al4yxPX6cjckJAtGvK1zNlaF9ToVszXpizrhRjghWOM', datetime('now', '+100 years'), 1000000000),
 ('amshand', 'oLg6DDoF3SiaK1LIn8kmsP5RTWffhEC9RNk4zBHrMPY', datetime('now', '+100 years'), 1000000000);
+
+INSERT INTO admins(username) VALUES
+('rramboer'),
+('cvano'),
+('nvano'),
+('amshand');

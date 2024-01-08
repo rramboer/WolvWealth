@@ -45,7 +45,7 @@ class ApplicationState:
 
     def save_historical_prices(self) -> None:
         """Saves historical stock prices of tickers in universe to CSV."""
-        start_date = "2010-01-01"
+        start_date = "2006-01-01"
         end_date = datetime.now().strftime("%Y-%m-%d")
         historical_data = yf.download(self.TICKER_UNIVERSE, start=start_date, end=end_date)["Adj Close"].round(2)
         historical_data.to_csv("historical_prices.csv", index=True)

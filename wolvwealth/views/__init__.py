@@ -1,14 +1,11 @@
 """Initializer for views module."""
-import wolvwealth  # pylint: disable=wrong-import-position
-from flask import send_file
+import wolvwealth
 
-"""Route and code for landing (index) page.
+"""Initializer for views module."""
 
-GET /
-"""
-
-
-@wolvwealth.app.route("/", methods=["GET"])
-def show_landing():
-    """Display / route."""
-    return send_file("static/html/index.html", mimetype="text/html")
+import wolvwealth.views.dashboard
+import wolvwealth.views.index
+import wolvwealth.views.login
+import wolvwealth.views.profile
+import wolvwealth.views.register
+import wolvwealth.views.accounts

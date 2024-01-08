@@ -15,3 +15,9 @@ CREATE TABLE tokens(
     PRIMARY KEY(token),
     FOREIGN KEY(owner) REFERENCES users(username) ON DELETE CASCADE
 );
+
+CREATE TABLE admins(
+    username VARCHAR(20) NOT NULL,
+    PRIMARY KEY(username),
+    FOREIGN KEY(username) REFERENCES users(username) ON DELETE CASCADE
+);

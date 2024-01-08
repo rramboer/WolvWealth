@@ -7,8 +7,8 @@ from wolvwealth.api.api_exceptions import InvalidUsage
 import wolvwealth.model
 
 
-@wolvwealth.app.route("/api/status", methods=["POST"])
-def check_credentials():
+@wolvwealth.app.route("/api/account", methods=["POST"])
+def api_account_info():
     """Return credentials information."""
     api_key = flask.request.headers.get("Authorization")
     input_json = {}
@@ -62,17 +62,17 @@ def generate_api_key(owner: str, tier: str) -> str:
     expiration_time = ""
     num_uses = 0
     if tier == "free":
-        num_uses = 25
-        expiration_time = "+7 days"
+        num_uses = 20
+        expiration_time = "+14 days"
     elif tier == "plus":
-        num_uses = 100
+        num_uses = 150
         expiration_time = "+90 days"
     elif tier == "premium":
-        num_uses = 500
+        num_uses = 800
         expiration_time = "+365 days"
     elif tier == "beta":
         num_uses = 1000000000
-        expiration_time = "+7 days"
+        expiration_time = "+14 days"
     elif tier == "developer" or tier == "lifetime":
         num_uses = 1000000000
         expiration_time = "+100 years"
@@ -86,7 +86,7 @@ def generate_api_key(owner: str, tier: str) -> str:
 
 
 def check_api_key() -> bool:
-    """Check if API key is valid. Returns True if valid, False otherwise."""
+    """Check if API key is valid. Decrements API key and returns true if valid. Otherwise errors."""
     api_key = flask.request.headers.get("Authorization")
     if api_key is None:
         raise InvalidUsage("No API key provided.", status_code=401)
@@ -103,14 +103,12 @@ def check_api_key() -> bool:
     cur = connection.execute("SELECT datetime('now') AS now")
     current_time = cur.fetchone()["now"]
     if current_time > expiration_time:
-        connection.execute("DELETE FROM tokens WHERE token = ?", (api_key,))
         raise InvalidUsage("Authorization Error. API key has expired.", status_code=403)
 
     # Check if API key has been used too many times
     uses = result["uses"]
     if uses == 0:
-        connection.execute("DELETE FROM tokens WHERE token = ?", (api_key,))
-        raise InvalidUsage("Authorization Error. API key has run out of uses.", status_code=403)
+        raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
 
     # Decrement uses by 1
     connection.execute(
@@ -131,7 +129,7 @@ def hash_password(_password) -> str:
 
 
 def check_user_password(username, password) -> bool:
-    """Check if password matches password in database."""
+    """Check if plaintext password matches password in database."""
     connection = wolvwealth.model.get_db()
     cur = connection.execute("SELECT password " "FROM users " "WHERE username = ?", (username,))
     result = cur.fetchone()
@@ -141,67 +139,25 @@ def check_user_password(username, password) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hashed_password)
 
 
-@wolvwealth.app.route("/api/beta-trial", methods=["POST"])
-def beta_trial():
-    """Register a new user."""
-    input_json = {}
-    try:
-        input_json = flask.request.json
-    except Exception:
-        raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
-    if "username" not in input_json:
-        raise InvalidUsage("Parse Error. Missing username.")
-    if not isinstance(input_json["username"], str):
-        raise InvalidUsage("Parse Error. Username must be a string.")
-    if "password" not in input_json:
-        raise InvalidUsage("Parse Error. Missing password.")
-    if not isinstance(input_json["password"], str):
-        raise InvalidUsage("Parse Error. Password must be a string.")
-    username = input_json["username"]
-    password = input_json["password"]
-    if len(username) < 3:
-        raise InvalidUsage("Parse Error. Username must be at least 3 characters long.")
-    if len(password) < 3:
-        raise InvalidUsage("Parse Error. Password must be at least 3 characters long.")
-    connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT * FROM users WHERE username = ?", (username,))
-    result = cur.fetchone()
-    if result is not None:
-        raise InvalidUsage("Authorization Error. Username already exists.", status_code=401)
-    hashed_password = hash_password(password)
-    connection.execute(
-        "INSERT INTO users (username, password, created) VALUES (?, ?, datetime('now'))",
-        (username, hashed_password),
-    )
-    apikey = generate_api_key(username, "beta")
-    return flask.jsonify({"username": username, "api_key": apikey})
-
-
-@wolvwealth.app.route("/api/delete-account", methods=["POST"])
-def delete_account():
-    """Delete a user's account."""
-    input_json = {}
-    try:
-        input_json = flask.request.json
-    except Exception:
-        raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
-    if "username" not in input_json:
-        raise InvalidUsage("Parse Error. Missing username.")
-    if not isinstance(input_json["username"], str):
-        raise InvalidUsage("Parse Error. Username must be a string.")
-    if "password" not in input_json:
-        raise InvalidUsage("Parse Error. Missing password.")
-    if not isinstance(input_json["password"], str):
-        raise InvalidUsage("Parse Error. Password must be a string.")
-    username = input_json["username"]
-    password = input_json["password"]
+def check_user_exists(username: str) -> bool:
+    """Return true if username exists."""
     connection = wolvwealth.model.get_db()
     cur = connection.execute("SELECT * FROM users WHERE username = ?", (username,))
     result = cur.fetchone()
     if result is None:
-        raise InvalidUsage("Authorization Error. Username does not exist.", status_code=401)
-    if not check_user_password(username, password):
-        raise InvalidUsage("Authorization Error. Incorrect password.", status_code=401)
-    connection.execute("DELETE FROM users WHERE username = ?", (username,))
-    connection.execute("DELETE FROM tokens WHERE owner = ?", (username,))
-    return flask.jsonify({"success": f"Deleted user: {username}."})
+        return False
+    return True
+
+
+def check_admin_priv(api_key: str) -> bool:
+    """Return true if user is an admin."""
+    if api_key is None:
+        return False
+    connection = wolvwealth.model.get_db()
+    username = connection.execute("SELECT owner FROM tokens WHERE token = ?", (api_key,)).fetchone()
+    if username is None:
+        return False
+    is_admin = connection.execute("SELECT * FROM admins WHERE username = ?", (username)).fetchone()
+    if is_admin is None:
+        return False
+    return True

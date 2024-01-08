@@ -23,18 +23,7 @@ source env/bin/activate
 
 # Install dependencies
 echo "Installing dependencies..."
-pip install docopt==0.6.2
-pip install idna==3.4
-pip install pipreqs==0.4.13
-pip install requests
-pip install urllib3
-pip install httpie
-pip install PyPortfolioOpt
-pip install yfinance
-pip install flask
-pip install scikit-learn
-pip install pandas
-pip install bcrypt
+pip install -r requirements.txt
 
 # Install the current directory as an editable package
 pip install -e .

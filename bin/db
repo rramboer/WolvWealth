@@ -23,6 +23,7 @@ case $1 in
     else
       sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
       sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
+      echo "Database created."
     fi
     ;;
 
@@ -32,7 +33,7 @@ case $1 in
     ;;
 
   "reset")
-    rm -rf var/wolvwealth.sqlite3
+    rm -rf var/wolvwealth.sqlite3 var/uploads
     sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
     sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
     echo "Database destroyed and recreated. All data erased."
