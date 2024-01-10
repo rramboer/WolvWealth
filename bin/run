@@ -18,11 +18,15 @@ fi
 case $1 in
   "dev")
     ./bin/db create
+    npx tailwindcss -o wolvwealth/static/css/output.css --watch &
+    npx webpack --config webpack.config.js --watch &
     flask --app wolvwealth --debug run --host 0.0.0.0 --port 8000
     ;;
 
   "prod")
     ./bin/db create
+    npx tailwindcss -o wolvwealth/static/css/output.css
+    npx webpack --config webpack.config.js
     sudo flask --app wolvwealth --debug run --host 0.0.0.0 --port 80
     ;;
   *)

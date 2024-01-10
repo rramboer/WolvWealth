@@ -6,10 +6,11 @@ import flask
 import wolvwealth
 from wolvwealth.views.accounts import is_logged_in
 
-@wolvwealth.app.route('/dashboard/', methods=['GET'])
+
+@wolvwealth.app.route("/dashboard/", methods=["GET"])
 def show_dashboard():
     """Display /dashboard route."""
     if is_logged_in() is False:
-        flask.redirect(flask.redirect("show_login"))
+        return flask.redirect(flask.redirect("show_login"))
     context = {}
     return flask.render_template("dashboard.html", **context)

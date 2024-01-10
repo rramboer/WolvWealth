@@ -28,4 +28,7 @@ pip install -r requirements.txt
 # Install the current directory as an editable package
 pip install -e .
 
-echo "Python development environment setup successful."
+# Clean up Python caches
+find . -type d -name "__pycache__" -not -path '*/env/*' -not -path '*/node_modules/*' -exec rm -r {} +
+
+echo "Python development environment setup successful and clean."

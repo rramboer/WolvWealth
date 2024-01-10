@@ -6,6 +6,6 @@ import wolvwealth
 import wolvwealth.views.dashboard
 import wolvwealth.views.index
 import wolvwealth.views.login
-import wolvwealth.views.profile
+import wolvwealth.views.account
 import wolvwealth.views.register
 import wolvwealth.views.accounts

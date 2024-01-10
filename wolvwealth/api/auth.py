@@ -2,7 +2,7 @@
 import flask
 import wolvwealth
 import secrets
-import bcrypt  # type: ignore
+import bcrypt
 from wolvwealth.api.api_exceptions import InvalidUsage
 import wolvwealth.model
 
@@ -121,21 +121,21 @@ def check_api_key() -> bool:
     return True
 
 
-def hash_password(_password) -> str:
+def hash_password(_password: str) -> str:
     """Hash a users password."""
     salt = bcrypt.gensalt()
     hashed_password = bcrypt.hashpw(_password.encode("utf-8"), salt)
     return hashed_password
 
 
-def check_user_password(username, password) -> bool:
+def check_user_password(username: str, password: str) -> bool:
     """Check if plaintext password matches password in database."""
     connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT password " "FROM users " "WHERE username = ?", (username,))
+    cur = connection.execute("SELECT password FROM users WHERE username = ?", (username,))
     result = cur.fetchone()
     if result is None:
         return False
-    hashed_password = result["password"]
+    hashed_password = result["password"].encode("utf-8")
     return bcrypt.checkpw(password.encode("utf-8"), hashed_password)
 
 
@@ -154,10 +154,11 @@ def check_admin_priv(api_key: str) -> bool:
     if api_key is None:
         return False
     connection = wolvwealth.model.get_db()
-    username = connection.execute("SELECT owner FROM tokens WHERE token = ?", (api_key,)).fetchone()
-    if username is None:
+    username_result = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,)).fetchone()
+    if username_result is None:
         return False
-    is_admin = connection.execute("SELECT * FROM admins WHERE username = ?", (username)).fetchone()
+    username = username_result["owner"]
+    is_admin = connection.execute("SELECT username FROM admins WHERE username = ?", (username,)).fetchone()
     if is_admin is None:
         return False
     return True
