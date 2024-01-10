@@ -22,7 +22,7 @@ class Optimization:
         self.initial_cash = 0  # $0.00
         self.universe = self.state.TICKER_UNIVERSE[:500]  # Top 500 stocks by market cap.
         self.exclude_metrics = False  # Include metrics in output.
-        self.max_positions = -1  # Maximum number of stocks in portfolio. May override max_weight.
+        self.max_positions = -1  # Maximum number of stocks in portfolio. May overpwoer max_weight.
         self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set.
         self.min_universal_weight = 0.00  # Every stock must have at least this weight.
         self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%.
@@ -119,6 +119,12 @@ class Optimization:
                 elif ticker == "top200":
                     unclean_universe.remove(ticker)
                     unclean_universe.extend(self.state.TICKER_UNIVERSE[:200])
+                elif ticker == "top300":
+                    unclean_universe.remove(ticker)
+                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:300])
+                elif ticker == "top400":
+                    unclean_universe.remove(ticker)
+                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:400])
                 elif ticker == "top500":
                     unclean_universe.remove(ticker)
                     unclean_universe.extend(self.state.TICKER_UNIVERSE[:500])
@@ -159,7 +165,8 @@ class Optimization:
             mu = expected_returns.mean_historical_return(filtered_data)
             cov_matrix = risk_models.exp_cov(filtered_data)
             ef = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(self.min_universal_weight, 1))
-            ef.add_constraint(lambda weights: weights <= self.max_weight)
+            if self.max_weight != 1:
+                ef.add_constraint(lambda weights: weights <= self.max_weight)
             ef.max_sharpe()
             cleaned_weights = ef.clean_weights(cutoff=self.weight_threshold)
             if self.max_positions != -1:
@@ -170,9 +177,9 @@ class Optimization:
                 total_weight = sum(cleaned_weights.values())
                 for k, v in cleaned_weights.items():
                     cleaned_weights[k] = v / total_weight
-                for k, v in cleaned_weights.copy().items():
-                    if v == 0:
-                        del cleaned_weights[k]
+            for k, v in cleaned_weights.copy().items():
+                if v == 0:
+                    del cleaned_weights[k]
 
         except Exception as e:
             raise InvalidUsage(f"Optimization Error. Check your inputs and constraints. Infeasible.")

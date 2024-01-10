@@ -74,11 +74,12 @@ class ApplicationState:
         self.load_historical_prices()
         return mid
 
-    def remove_ticker_from_universe(self, ticker: str) -> None:
-        """Remove ticker from universe and update historical prices."""
-        if ticker not in self.TICKER_UNIVERSE:
-            return
-        self.TICKER_UNIVERSE.remove(ticker)
+    def remove_tickers_from_universe(self, tickers: list) -> None:
+        """Remove tickers from universe and update historical prices."""
+        for ticker in tickers:
+            if ticker not in self.TICKER_UNIVERSE:
+                continue
+            self.TICKER_UNIVERSE.remove(ticker)
         self.save_ticker_universe()
         self.save_historical_prices()
         self.load_historical_prices()
