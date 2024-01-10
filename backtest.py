@@ -4,7 +4,6 @@ import pandas as pd
 import datetime
 import sys
 import requests
-import yfinance as yf
 
 
 URL = "http://localhost:8000/api/optimize"
@@ -44,8 +43,20 @@ def ticker_price(ticker: str, date: str) -> float:
     return PRICES[ticker][date]
 
 
-def optimize(value: float):
+def optimize(value: float, date: str):
     """Send POST request to API to optimize portfolio."""
+    # Cut off bottom of csv file at date
+    with open("historical_prices_backup.csv", "r") as f:
+        reader = csv.reader(f)
+        data = list(reader)
+    for i in range(len(data)):
+        if data[i][0] == date:
+            data = data[:i]
+            break
+    with open("historical_prices.csv", "w") as f:
+        writer = csv.writer(f)
+        writer.writerows(data)
+
     input_json = {
         "initial_cash": value,
         "universe": UNIVERSE,
@@ -66,7 +77,7 @@ def backtest():
     curr_portfolio = {}
     new_portfolio = {}
     total_value = CASH
-    total_value_history = []
+    total_value_history = {}
     while cur_date <= END_DATE:
         if cur_date.weekday() == 5 or cur_date.weekday() == 6 or cur_date.strftime("%Y-%m-%d") not in PRICES.index:
             cur_date += datetime.timedelta(days=1)
@@ -84,7 +95,7 @@ def backtest():
         # Update portfolio
         curr_portfolio = new_portfolio
         # Update total value history
-        total_value_history.append(total_value)
+        total_value_history[cur_date.strftime("%Y-%m-%d")] = total_value
         # Increment date
         cur_date += FREQ
     # Print results
