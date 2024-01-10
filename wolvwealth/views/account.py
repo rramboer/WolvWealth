@@ -1,4 +1,4 @@
-"""Routes for the profile page."""
+"""Routes for the account page."""
 
 import flask
 from flask import render_template
