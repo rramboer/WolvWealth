@@ -1,4 +1,4 @@
-"""Route and code for dashboard page.
+"""Route and code for optimizer page.
 
 GET /optimizer/"""
 

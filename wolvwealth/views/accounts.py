@@ -13,9 +13,9 @@ def accounts_create():
     email = flask.request.form.get("email")
     password = flask.request.form.get("password")
     if username is None or password is None or email is None:
-        flask.redirect(flask.redirect("show_register"))  # TODO: Prompt user saying that required field is missing
+        return flask.redirect(flask.url_for("show_register"))  # TODO: required field is missing
     if check_user_exists(username):
-        flask.redirect(flask.redirect("show_register"))  # TODO: Prompt user that username already exists
+        return flask.redirect(flask.url_for("show_login"))  # TODO: username already exists
     connection.execute(
         "INSERT INTO users (username, email, password, created) VALUES (?, ?, ?, datetime(now))",
         (username, email, hash_password(password)),
@@ -34,9 +34,9 @@ def login():
     user = flask.request.form.get("username")
     pwd = flask.request.form.get("password")
     if user is None or pwd is None:
-        flask.redirect(flask.redirect("show_login"))  # TODO: Prompt user to re-enter username and password
+        return flask.redirect(flask.url_for("show_login"))  # TODO: Prompt user to re-enter username and password
     if not check_user_exists(user) or not check_user_password(user, pwd):
-        flask.redirect(flask.redirect("show_login"))  # TODO: Prompt user saying that username or password is incorrect
+        return flask.redirect(flask.url_for("show_login"))  # TODO: username or password is incorrect
     flask.session["username"] = user
     return flask.redirect(target)
 
