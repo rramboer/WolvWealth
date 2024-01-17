@@ -50,29 +50,29 @@ class ApplicationState:
         historical_data = yf.download(self.TICKER_UNIVERSE, start=start_date, end=end_date)["Adj Close"].round(2)
         historical_data.to_csv("historical_prices.csv", index=True)
 
-    def add_ticker_to_universe(self, ticker: str) -> int:
-        """Add ticker to universe and update historical prices. Returns index of inserted ticker."""
-        if ticker in self.TICKER_UNIVERSE:
-            return
-        # Binary search through ticker universe, list is sorted by market cap descending
-        low = 0
-        high = len(self.TICKER_UNIVERSE) - 1
-        mid = 0
-        while low < high:
-            mid = (low + high) // 2
-            market_cap = self.get_market_cap(ticker)
-            market_cap_mid = self.get_market_cap(self.TICKER_UNIVERSE[mid])
-            if market_cap < market_cap_mid:
-                low = mid + 1
-            elif market_cap > market_cap_mid:
-                high = mid - 1
-            else:
-                break
-        self.TICKER_UNIVERSE.insert(mid, ticker)
+    def add_tickers_to_universe(self, tickers: list):
+        """Add tickers to universe and update historical prices."""
+        for ticker in tickers:
+            if ticker in self.TICKER_UNIVERSE:
+                continue
+            # Binary search through ticker universe, list is sorted by market cap descending
+            low = 0
+            high = len(self.TICKER_UNIVERSE) - 1
+            mid = 0
+            while low < high:
+                mid = (low + high) // 2
+                market_cap = self.get_market_cap(ticker)
+                market_cap_mid = self.get_market_cap(self.TICKER_UNIVERSE[mid])
+                if market_cap < market_cap_mid:
+                    low = mid + 1
+                elif market_cap > market_cap_mid:
+                    high = mid - 1
+                else:
+                    break
+            self.TICKER_UNIVERSE.insert(mid, ticker)
         self.save_ticker_universe()
         self.save_historical_prices()
         self.load_historical_prices()
-        return mid
 
     def remove_tickers_from_universe(self, tickers: list) -> None:
         """Remove tickers from universe and update historical prices."""

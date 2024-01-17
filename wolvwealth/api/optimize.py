@@ -200,6 +200,7 @@ class Optimization:
                 "expected_annual_return": round(metrics[0], 3),
                 "annual_volatility": round(metrics[1], 3),
                 "sharpe_ratio": round(metrics[2], 2),
+                "num_assets": len(cleaned_weights),
             }
         self.output = flask.jsonify(output)
 
