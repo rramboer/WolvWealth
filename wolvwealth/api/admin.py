@@ -1,3 +1,4 @@
+"""Admin API endpoints."""
 import flask
 import wolvwealth
 import datetime
