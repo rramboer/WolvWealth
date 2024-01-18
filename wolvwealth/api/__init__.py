@@ -2,11 +2,11 @@
 
 import flask
 import wolvwealth
-from wolvwealth.api.state import ApplicationState
-import wolvwealth.api.optimize
+import wolvwealth.api.admin
 import wolvwealth.api.api_exceptions
 import wolvwealth.api.auth
-import wolvwealth.model
+import wolvwealth.api.optimize
+from wolvwealth.api.state import ApplicationState
 
 state = ApplicationState()  # Preload global resources on startup
 
@@ -15,7 +15,7 @@ state = ApplicationState()  # Preload global resources on startup
 def api_default():
     """WolvWealth API Usage Endpoint."""
     api_key = flask.request.headers.get("Authorization")
-    if wolvwealth.api.auth.check_admin_priv(api_key):
+    if wolvwealth.api.admin.check_admin_priv(api_key):
         return flask.jsonify(
             {
                 "/api/": "API Usage Info",
@@ -23,6 +23,11 @@ def api_default():
                 "/api/account/": "View Account Details",
                 "/api/db/status/": "Test Database Connection",
                 "/api/db/dump/": "Dump Database",
+                "/api/admin/add/": "Add Admin",
+                "/api/admin/remove/": "Remove Admin",
+                "/api/admin/user-info/": "Fetch User Info",
+                "/api/admin/update-user/": "Update User Info",
+                "/api/admin/delete-user/": "Delete User",
             }
         )
     return flask.jsonify(
@@ -32,37 +37,3 @@ def api_default():
             "/api/account/": "View Account Details",
         }
     )
-
-
-@wolvwealth.app.route("/api/db/status/", methods=["GET", "POST"])
-def db_test():
-    """Test database in route. Requires admin privileges."""
-    api_key = flask.request.headers.get("Authorization")
-    wolvwealth.api.auth.check_admin_priv(api_key)
-    conn = wolvwealth.model.get_db()
-    status = None
-    try:
-        conn.cursor()
-        status = True
-    except Exception as ex:
-        status = False
-    return flask.jsonify({"status": ("available" if status else "unavailable")})
-
-
-@wolvwealth.app.route("/api/db/dump/", methods=["GET", "POST"])
-def db_dump():
-    """Dump database in route. Requires admin privileges."""
-    api_key = flask.request.headers.get("Authorization")
-    wolvwealth.api.auth.check_admin_priv(api_key)
-    conn = wolvwealth.model.get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users")
-    users = cur.fetchall()
-    cur.execute("SELECT * FROM tokens")
-    tokens = cur.fetchall()
-    cur.execute("SELECT * FROM admins")
-    admins = cur.fetchall()
-    output_json = {"users": users, "tokens": tokens, "admins": []}
-    for user in admins:
-        output_json["admins"].append(user["username"])
-    return flask.jsonify(output_json)

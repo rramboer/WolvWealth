@@ -3,8 +3,47 @@ import flask
 import wolvwealth
 import secrets
 import bcrypt
+import datetime
 from wolvwealth.api.api_exceptions import InvalidUsage
-import wolvwealth.model
+
+
+class Tier:
+    """Tier class."""
+
+    class Free:
+        """Free trial."""
+
+        price = 0
+        uses = 10
+        expiration = "+7 days"
+
+    class Plus:
+        """Plus tier."""
+
+        price = 5
+        uses = 150
+        expiration = "+90 days"
+
+    class Premium:
+        """Premium tier."""
+
+        price = 15
+        uses = 800
+        expiration = "+365 days"
+
+    class Lifetime:
+        """Lifetime tier."""
+
+        price = 100
+        uses = 1000000000
+        expiration = "+100 years"
+
+    class Developer:
+        """Developer tier."""
+
+        price = 0
+        uses = 1000000000
+        expiration = "+100 years"
 
 
 @wolvwealth.app.route("/api/account", methods=["POST"])
@@ -18,7 +57,7 @@ def api_account_info():
     except Exception:
         raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
     if "username" not in input_json:
-        raise InvalidUsage("Parse Error. Missing username.")
+        raise InvalidUsage("Parse Error. Username required.")
     if not isinstance(input_json["username"], str):
         raise InvalidUsage("Parse Error. Username must be a string.")
     username = input_json["username"]
@@ -42,45 +81,35 @@ def api_account_info():
         raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
 
     # Fetch expiration time and number of uses
-    expiration_time = result_tokens["expires"]
     uses = result_tokens["uses"]
 
+    created_et = (
+        datetime.datetime.strptime(result_users["created"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
+    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
+
+    expiration_et = (
+        datetime.datetime.strptime(result_tokens["expires"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
+    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
+
     output_json = {
-        "username": username,
-        "account_creation_date": result_users["created"],
-        "api_key_expiration": expiration_time,
-        "api_key_uses": uses,
+        "username": result_users["username"],
+        "email": result_users["email"],
+        "account_created": created_et,
+        "access_expires": expiration_et,
+        "optimizations_remaining": uses,
+        "api_key": api_key,
     }
 
     return flask.jsonify(output_json)
 
 
-def generate_api_key(owner: str, tier: str) -> str:
+def generate_api_key(owner: str, tier: Tier) -> str:
     """Generate a new API key and add it to the database."""
-    api_key = secrets.token_urlsafe(32)
+    api_key = secrets.token_urlsafe(16)
     connection = wolvwealth.model.get_db()
-    expiration_time = ""
-    num_uses = 0
-    if tier == "free":
-        num_uses = 20
-        expiration_time = "+14 days"
-    elif tier == "plus":
-        num_uses = 150
-        expiration_time = "+90 days"
-    elif tier == "premium":
-        num_uses = 800
-        expiration_time = "+365 days"
-    elif tier == "beta":
-        num_uses = 1000000000
-        expiration_time = "+14 days"
-    elif tier == "developer" or tier == "lifetime":
-        num_uses = 1000000000
-        expiration_time = "+100 years"
-    else:
-        return None
     connection.execute(
         "INSERT INTO tokens (owner, token, expires, uses) VALUES (?, ?, (datetime('now', ?)), ?)",
-        (owner, api_key, expiration_time, num_uses),
+        (owner, api_key, tier.expiration, tier.uses),
     )
     return api_key
 
@@ -125,7 +154,7 @@ def hash_password(_password: str) -> str:
     """Hash a users password."""
     salt = bcrypt.gensalt()
     hashed_password = bcrypt.hashpw(_password.encode("utf-8"), salt)
-    return hashed_password
+    return hashed_password.decode("utf-8")
 
 
 def check_user_password(username: str, password: str) -> bool:
@@ -149,16 +178,11 @@ def check_user_exists(username: str) -> bool:
     return True
 
 
-def check_admin_priv(api_key: str) -> bool:
-    """Return true if user is an admin."""
-    if api_key is None:
-        return False
+def check_email_exists(email: str) -> bool:
+    """Return true if email exists."""
     connection = wolvwealth.model.get_db()
-    username_result = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,)).fetchone()
-    if username_result is None:
-        return False
-    username = username_result["owner"]
-    is_admin = connection.execute("SELECT username FROM admins WHERE username = ?", (username,)).fetchone()
-    if is_admin is None:
+    cur = connection.execute("SELECT * FROM users WHERE email = ?", (email,))
+    result = cur.fetchone()
+    if result is None:
         return False
     return True

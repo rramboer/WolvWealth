@@ -1,6 +1,6 @@
 """Routes for the account page."""
 
-import arrow
+import datetime
 import flask
 from flask import render_template
 import wolvwealth
@@ -20,18 +20,24 @@ def show_account():
     )
     account = cur.fetchone()
 
-    cur = connection.execute(
-        'SELECT uses, expires FROM tokens WHERE owner = ?', (
-            flask.session["username"],)
-    )
+    cur = connection.execute("SELECT * FROM tokens WHERE owner = ?", (flask.session["username"],))
     tokens = cur.fetchone()
+
+    created_et = (
+        datetime.datetime.strptime(account["created"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
+    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
+
+    expiration_et = (
+        datetime.datetime.strptime(tokens["expires"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
+    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
 
     context = {
         "username": account["username"],
         "email": account["email"],
-        "created": arrow.get(account["created"]).humanize(),
-        "expiration_date": arrow.get(tokens["expires"]).humanize(),
+        "created": created_et,
+        "expiration_date": expiration_et,
         "uses": tokens["uses"],
+        "api_key": tokens["token"],
     }
 
     return render_template("account.html", **context)

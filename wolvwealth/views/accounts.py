@@ -2,7 +2,14 @@
 
 import flask
 import wolvwealth
-from wolvwealth.api.auth import check_user_exists, check_user_password, generate_api_key, hash_password
+from wolvwealth.api.auth import (
+    check_user_exists,
+    check_email_exists,
+    check_user_password,
+    generate_api_key,
+    hash_password,
+    Tier,
+)
 
 
 @wolvwealth.app.route("/accounts/register/", methods=["POST"])
@@ -15,37 +22,38 @@ def accounts_create():
     if username is None or password is None or email is None:
         return flask.redirect(flask.url_for("show_register"))  # TODO: required field is missing
     if check_user_exists(username):
-        return flask.redirect(flask.url_for("show_login"))  # TODO: username already exists
+        return flask.redirect(flask.url_for("show_register"))  # TODO: username already exists
+    if check_email_exists(email):
+        return flask.redirect(flask.url_for("show_register"))  # TODO: email already exists
     connection.execute(
-        "INSERT INTO users (username, email, password, created) VALUES (?, ?, ?, datetime(now))",
+        "INSERT INTO users (username, email, password, created) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
         (username, email, hash_password(password)),
     )
-    generate_api_key(username, "free")
+    generate_api_key(username, Tier.Free)
     flask.session["username"] = username
-    return flask.redirect(flask.request.args["target"])
+    return flask.redirect(flask.url_for("show_landing"))
 
 
 @wolvwealth.app.route("/accounts/login/", methods=["POST"])
 def login():
     """Login a user."""
-    target = flask.request.args["target"]
     if is_logged_in() is True:
-        return flask.redirect(target)
+        return flask.redirect(flask.url_for("show_landing"))
     user = flask.request.form.get("username")
     pwd = flask.request.form.get("password")
     if user is None or pwd is None:
-        return flask.redirect(flask.url_for("show_login"))  # TODO: Prompt user to re-enter username and password
+        return flask.redirect(flask.url_for("show_login"))  # TODO: required field is missing
     if not check_user_exists(user) or not check_user_password(user, pwd):
         return flask.redirect(flask.url_for("show_login"))  # TODO: username or password is incorrect
     flask.session["username"] = user
-    return flask.redirect(target)
+    return flask.redirect(flask.url_for("show_landing"))
 
 
 @wolvwealth.app.route("/accounts/logout/", methods=["GET", "POST"])
 def logout():
     """Logout a user."""
     flask.session.pop("username")
-    return flask.redirect(flask.url_for("show_login"))
+    return flask.redirect(flask.url_for("show_landing"))
 
 
 @wolvwealth.app.route("/accounts/delete/", methods=["GET", "POST"])

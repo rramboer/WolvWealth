@@ -31,8 +31,8 @@
                     <h1 class="text-lg font-bold leading-tight tracking-tight text-white">
                         Sign In
                     </h1>
-                    <form class="space-y-4 md:space-y-6" action="{{ url_for('login', target='/optimizer') }}"
-                        method="post" enctype="multipart/form-data">
+                    <form class="space-y-4 md:space-y-6" action="{{ url_for('login') }}" method="post"
+                        enctype="multipart/form-data">
                         <div>
                             <label for="username" class="block mb-2 text-sm font-medium text-white">Username</label>
                             <input type="username" name="username" id="username"
