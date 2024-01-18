@@ -16,3 +16,8 @@ bundle.js
 .vscode
 .vscode/
 *.DS_Store
+wolvwealth/static/img/logo.psd
+wolvwealth/static/img/icon.png
+wolvwealth/static/img/hero.psd
+wolvwealth/static/img/feature1.psd
+wolvwealth/static/css/output.css
