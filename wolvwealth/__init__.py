@@ -1,7 +1,7 @@
 """Initializer for wolvwealth module."""
 from flask import Flask
 
-app = Flask(__name__)  # pylint: disable=invalid-name
+app = Flask(__name__)
 
 app.config.from_object("wolvwealth.config")
 
