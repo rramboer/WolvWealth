@@ -8,8 +8,6 @@ import wolvwealth.api.auth
 import wolvwealth.api.optimize
 from wolvwealth.api.state import ApplicationState
 
-state = ApplicationState()  # Preload global resources on startup
-
 
 @wolvwealth.app.route("/api/", methods=["GET", "POST"])
 def api_default():

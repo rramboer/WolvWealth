@@ -11,3 +11,5 @@ import wolvwealth.api
 import wolvwealth.model
 import wolvwealth.views
 import wolvwealth.templates
+
+state = wolvwealth.api.ApplicationState()  # Preload global resources on startup
