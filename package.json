@@ -30,6 +30,7 @@
     "react-dom": "^18.2.0",
     "react-google-charts": "^4.0.1",
     "react-minimal-pie-chart": "^8.4.0",
+    "react-router-dom": "^6.21.3",
     "react-scripts": "^5.0.1"
   },
   "devDependencies": {
