@@ -12,5 +12,5 @@ def show_optimizer():
     """Display /optimizer route."""
     if is_logged_in() is False:
         return flask.redirect(flask.url_for("show_login"))
-    context = {}
+    context = {"user": {"is_authenticated": is_logged_in()}}
     return flask.render_template("optimizer.html", **context)
