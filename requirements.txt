@@ -17,6 +17,7 @@ ecos==2.0.12
 exceptiongroup==1.1.3
 Flask==3.0.0
 frozendict==2.3.8
+gunicorn==21.2.0
 html5lib==1.1
 html5validator==0.4.2
 httpie==3.2.2
