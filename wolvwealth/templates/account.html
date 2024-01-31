@@ -146,6 +146,21 @@
             </p>
         </div>
     </footer>
+
+    <script>
+        window.onscroll = (e) => {
+            posY = this.scrollY;
+            const header = document.querySelector('header');
+            header.classList.add('transition', 'duration-300', 'ease-out');
+            if (posY > 0) {
+                header.classList.add('bg-gray-dark/50');
+                header.classList.add('backdrop-blur');
+            } else {
+                header.classList.remove('bg-gray-dark/50');
+                header.classList.remove('backdrop-blur');
+            }
+        }
+    </script>
 </body>
 
 </html>

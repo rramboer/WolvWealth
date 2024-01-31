@@ -73,6 +73,37 @@
         <!-- This div is used by React to render the app -->
     </div>
     <script type="text/javascript" src="{{ url_for('static', filename='js/bundle.js') }}"></script>
+
+
+    <footer class="w-[90%] h-10 mx-auto">
+        <div class="text-center py-12">
+            <p class="text-white mb-2">&copy; 2024 WolvWealth. All rights reserved.</p>
+            <p class="text-xs mx-auto" style="max-width: 1017px; color: gray;">
+                The calculations and information on this site are for educational
+                purposes only and are not investment advice. Calculations are estimates and do not account for all
+                market conditions. Nothing contained on this site constitutes a solicitation, recommendation,
+                or offer to buy or sell any financial instruments. Stock
+                recommendations presented on this site do not represent the opinions of WolvWealth on whether to buy,
+                sell or hold shares of a particular stock. Past stock performance is no
+                guarantee of future price performance.
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        window.onscroll = (e) => {
+            posY = this.scrollY;
+            const header = document.querySelector('header');
+            header.classList.add('transition', 'duration-300', 'ease-out');
+            if (posY > 0) {
+                header.classList.add('bg-gray-dark/50');
+                header.classList.add('backdrop-blur');
+            } else {
+                header.classList.remove('bg-gray-dark/50');
+                header.classList.remove('backdrop-blur');
+            }
+        }
+    </script>
 </body>
 
 </html>
