@@ -11,7 +11,7 @@ from wolvwealth.views.accounts import is_logged_in
 def show_account():
     """Display /account route."""
     if not is_logged_in():
-        flask.redirect(flask.redirect("show_login"))
+        return flask.redirect(flask.url_for("show_login"))
 
     connection = wolvwealth.model.get_db()
     cur = connection.execute(
@@ -38,6 +38,9 @@ def show_account():
         "expiration_date": expiration_et,
         "uses": tokens["uses"],
         "api_key": tokens["token"],
+        "user": {
+            "is_authenticated": is_logged_in(),
+        },
     }
 
     return render_template("account.html", **context)

@@ -52,6 +52,8 @@ def login():
 @wolvwealth.app.route("/accounts/logout/", methods=["GET", "POST"])
 def logout():
     """Logout a user."""
+    if is_logged_in() is False:
+        return flask.redirect(flask.url_for("show_landing"))
     flask.session.pop("username")
     return flask.redirect(flask.url_for("show_landing"))
 
@@ -59,6 +61,8 @@ def logout():
 @wolvwealth.app.route("/accounts/delete/", methods=["GET", "POST"])
 def accounts_delete():
     """Delete a user account."""
+    if is_logged_in() is False:
+        return flask.redirect(flask.url_for("show_landing"))
     username = flask.session["username"]
     connection = wolvwealth.model.get_db()
     connection.execute("DELETE FROM users WHERE username = ?", (username,))

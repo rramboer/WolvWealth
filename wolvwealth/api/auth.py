@@ -14,21 +14,21 @@ class Tier:
         """Free trial."""
 
         price = 0
-        uses = 10
+        uses = 15
         expiration = "+7 days"
 
     class Plus:
         """Plus tier."""
 
         price = 5
-        uses = 150
+        uses = 300
         expiration = "+90 days"
 
     class Premium:
         """Premium tier."""
 
         price = 15
-        uses = 800
+        uses = 1500
         expiration = "+365 days"
 
     class Lifetime:
