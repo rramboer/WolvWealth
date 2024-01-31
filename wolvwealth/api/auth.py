@@ -29,7 +29,7 @@ class Tier:
 
         price = 15
         uses = 1500
-        expiration = "+365 days"
+        expiration = "+1 year"
 
     class Lifetime:
         """Lifetime tier."""
