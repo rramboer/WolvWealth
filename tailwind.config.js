@@ -20,7 +20,10 @@ module.exports = {
     extend: {
       borderRadius: {
         '4xl': '2rem',
-      }
+      },
+      backgroundColor: {
+        'transparent': 'transparent',
+      },
     },
   },
   plugins: [],
