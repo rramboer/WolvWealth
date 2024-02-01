@@ -3,7 +3,9 @@ import React, { useState } from "react";
 function Optimization() {
 
     return (
-        <div>Optimize Page</div>
+        <section className="w-full flex flex-row items-center justify-center">
+            <p className="text-white">Optimization</p>
+        </section>
     )
 }
 

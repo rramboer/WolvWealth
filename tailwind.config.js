@@ -12,10 +12,10 @@ module.exports = {
       'cyan': '#67e8f9',
       'green': '#42d36e',
       'red': '#ff715b',
+      'black': '#000000',
     },
     fontFamily: {
       sans: ['-apple-system', 'BlinkMacSystemFont', 'Helvetica Neue', 'sans-serif'],
-      mono: ['"Fira Code"', 'monospace'],
     },
     extend: {
       borderRadius: {

@@ -1,31 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import url('https://fonts.googleapis.com/css2?family=Ubuntu:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400;1,500;1,700&display=swap');
 
-* {
-    color: white;
-    /* transition:0.1s ease; */
-}
-
-p {
-    margin-bottom: 15px !important;
-}
-
-.fira {
-    font-family: 'Fira Code', monospace;
-}
-
-tspan {
-    color: white !important;
-}
-
-text {
-    fill: white !important;
-}
-button:hover {
-    background:#2F52E0;
-    color:white;
-}
-svg {
-    overflow: visible;
+.ubuntu {
+    font-family: 'Ubuntu', sans-serif;
 }
