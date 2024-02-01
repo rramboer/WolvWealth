@@ -53,7 +53,7 @@
                 </button>
                 <div class="hidden w-full sm:flex sm:w-auto" id="navbar-default">
                     <ul
-                        class="font-medium flex flex-col items-center p-4 sm:p-0 mt-4 sm:mt-0 border border-[#cccccc] rounded-lg sm:flex-row sm:space-x-8 backdrop-blur sm:backdrop-blur-none sm:border-0">
+                        class="font-medium flex flex-col items-center p-4 sm:p-0 mt-4 sm:mt-0 border border-[#cccccc] rounded-lg sm:flex-row sm:space-x-8 sm:border-0 bg-transparent">
                         {% if user.is_authenticated %}
                         <li>
                             <a href="{{ url_for('show_optimizer') }}"
