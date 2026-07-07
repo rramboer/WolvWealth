@@ -1,168 +1,132 @@
+#!/usr/bin/env python3
+"""Backtest the WolvWealth portfolio optimizer over historical data.
+
+Re-optimizes a max-Sharpe portfolio at a fixed frequency (e.g. monthly),
+carrying holdings forward, and reports the portfolio value and percent change
+at each rebalance date. Uses the same optimization core as the /api/optimize/
+endpoint (wolvwealth.optimizer_core).
+
+Usage (from the repository root):
+
+    uv run python backtest.py --start 2019-01-01 --cash 100000 --frequency monthly
+"""
+
+import argparse
 import datetime
-from pypfopt import expected_returns, risk_models
-from pypfopt.efficient_frontier import EfficientFrontier
+
+import pandas as pd
+
 from wolvwealth.api.state import ApplicationState
-import os
+from wolvwealth.optimizer_core import build_portfolio_output, compute_max_sharpe_portfolio
+
+FREQUENCIES: dict[str, datetime.timedelta] = {
+    "yearly": datetime.timedelta(days=365),
+    "semiannually": datetime.timedelta(days=182),
+    "quarterly": datetime.timedelta(days=91),
+    "monthly": datetime.timedelta(days=30),
+    "biweekly": datetime.timedelta(days=14),
+    "weekly": datetime.timedelta(days=7),
+    "daily": datetime.timedelta(days=1),
+}
+
+UNIVERSE_SIZE = 50  # Optimize over the N largest stocks by market cap.
+MAX_POSITIONS = 10  # Keep only the N largest positions each rebalance.
 
 
-class Frequency:
-    """How many days between portfolio reoptimizations."""
+def run_optimization(prices: pd.DataFrame, universe: list[str], holdings: dict[str, float], cash: float) -> dict:
+    """Optimize a portfolio given price history up to the rebalance date."""
 
-    Yearly = datetime.timedelta(days=365)
-    Semiannually = datetime.timedelta(days=182)
-    Quarterly = datetime.timedelta(days=91)
-    Monthly = datetime.timedelta(days=30)
-    Biweekly = datetime.timedelta(days=14)
-    Weekly = datetime.timedelta(days=7)
-    Daily = datetime.timedelta(days=1)
+    def price_of(ticker: str) -> float:
+        return prices[ticker].iloc[-1]
 
-
-class Optimization:
-    def __init__(self, input_: dict, initial_cash_: float = 0.0) -> None:
-        """Initialize optimization."""
-        self.state = ApplicationState()
-        self.set_inputs(input_, initial_cash_)
-        self.execute_optimization()
-
-    def set_inputs(self, input_: dict, initial_cash_: float) -> None:
-        self.initial_cash = initial_cash_  # $0.00
-        self.universe = self.state.TICKER_UNIVERSE[:50]  # Top 500 stocks by market cap.
-        self.exclude_metrics = False  # Include metrics in output.
-        self.max_positions = 10  # Maximum number of stocks in portfolio. May overpwoer max_weight. Default is -1.
-        self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set.
-        self.min_universal_weight = 0.00  # Every stock must have at least this weight.
-        self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%.
-        self.initial_holdings = input_
-
-    def execute_optimization(self) -> None:
-        """Run optimization."""
-        total_investment = self.initial_cash
-        for asset, shares in self.initial_holdings.items():
-            total_investment += shares * self.state.fetch_ticker_price(asset)
-        filtered_data = self.state.HISTORICAL_PRICES[self.universe]
-        try:
-            mu = expected_returns.mean_historical_return(filtered_data)
-            cov_matrix = risk_models.exp_cov(filtered_data)
-            ef = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(self.min_universal_weight, 1))
-            if self.max_weight != 1:
-                ef.add_constraint(lambda weights: weights <= self.max_weight)
-            ef.max_sharpe()
-            cleaned_weights = ef.clean_weights(cutoff=self.weight_threshold)
-            if self.max_positions != -1:
-                sorted_weights = sorted(cleaned_weights.items(), key=lambda x: x[1], reverse=True)
-                cleaned_weights = {}
-                for i in range(self.max_positions):
-                    cleaned_weights[sorted_weights[i][0]] = sorted_weights[i][1]
-                total_weight = sum(cleaned_weights.values())
-                for k, v in cleaned_weights.items():
-                    cleaned_weights[k] = v / total_weight
-            for k, v in cleaned_weights.copy().items():
-                if v == 0:
-                    del cleaned_weights[k]
-        except Exception as e:
-            print(f"Optimization Error. Check your inputs and constraints. Infeasible.")
-            print(e)
-            exit(1)
-
-        # Construct output
-        output = {}
-        output["optimized_portfolio"] = {}
-        for asset, weight in cleaned_weights.items():
-            output["optimized_portfolio"][asset] = {
-                "shares": round(weight * total_investment / self.state.fetch_ticker_price(asset), 4),
-                "value": round(weight * total_investment, 2),
-                "percent_weight": round(weight * 100, 2),
-            }
-        if self.exclude_metrics == False:
-            metrics = ef.portfolio_performance()
-            output["metrics"] = {
-                "portfolio_value": round(total_investment, 2),
-                "expected_annual_return": round(metrics[0], 3),
-                "annual_volatility": round(metrics[1], 3),
-                "sharpe_ratio": round(metrics[2], 2),
-            }
-        self.output = output
+    total_investment = cash + sum(shares * price_of(asset) for asset, shares in holdings.items())
+    weights, performance = compute_max_sharpe_portfolio(prices[universe], max_positions=MAX_POSITIONS)
+    return build_portfolio_output(weights, total_investment, price_of, performance)
 
 
-HIST_PRICES_BACKUP = ApplicationState().HISTORICAL_PRICES
+def holdings_from_output(output: dict) -> dict[str, float]:
+    """Convert an optimization output into the next rebalance's initial holdings."""
+    return {ticker: position["shares"] for ticker, position in output["optimized_portfolio"].items()}
 
 
-def run_optimizer(date: str, opt_previous: dict):
-    # print("Running optimization for: " + date)
-
-    # Reformat optimization results from output of old response to input of new request
-    new_initial_holdings = {}
-    opt_previous = opt_previous["optimized_portfolio"]
-    for ticker in opt_previous:
-        new_initial_holdings[ticker] = opt_previous[ticker]["shares"]
-
-    # Change historical prices to use current prices
-    ApplicationState().HISTORICAL_PRICES = HIST_PRICES_BACKUP[:date]
-
-    # Run optimization
-    opt = Optimization(new_initial_holdings).output
-    return opt
+def next_trading_date(index: pd.DatetimeIndex, date: str, step: datetime.timedelta) -> str:
+    """Advance `date` by `step`, then forward to the next date present in the index."""
+    moment = datetime.datetime.strptime(date, "%Y-%m-%d") + step
+    while moment <= index[-1]:
+        candidate = moment.strftime("%Y-%m-%d")
+        if candidate in index:
+            return candidate
+        moment += datetime.timedelta(days=1)
+    return (index[-1] + datetime.timedelta(days=1)).strftime("%Y-%m-%d")  # past the end: stops the loop
 
 
-def get_next_date(date: str):
-    next_date = (datetime.datetime.strptime(date, "%Y-%m-%d") + FREQ).strftime("%Y-%m-%d")
-    if next_date not in ApplicationState().HISTORICAL_PRICES.index:
-        next_date = (datetime.timedelta(days=1) + datetime.datetime.strptime(next_date, "%Y-%m-%d")).strftime(
+def percent_change(old: float, new: float) -> float:
+    """Percent change from old to new, rounded to 2 decimal places."""
+    return round((new - old) / old * 100, 2)
+
+
+def run_backtest(start_date: str, end_date: str, initial_cash: float, frequency: datetime.timedelta) -> dict:
+    """Run the backtest and return {date: (portfolio_value, percent_change)}."""
+    state = ApplicationState()
+    prices = state.HISTORICAL_PRICES
+    universe = state.TICKER_UNIVERSE[:UNIVERSE_SIZE]
+
+    # The price data is finite: once the schedule passes the last CSV date,
+    # next_trading_date() keeps returning the same "past the end" sentinel
+    # (last date + 1 day). Clamp end_date to that sentinel so the loop below
+    # terminates even when --end (default: today) is beyond the data.
+    past_data_end = (prices.index[-1] + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    end_date = min(end_date, past_data_end)
+
+    if start_date >= past_data_end:
+        raise SystemExit(f"--start {start_date} is after the last available price date ({prices.index[-1].date()})")
+    while start_date not in prices.index:
+        start_date = (datetime.datetime.strptime(start_date, "%Y-%m-%d") + datetime.timedelta(days=1)).strftime(
             "%Y-%m-%d"
         )
-    return next_date
+
+    output = run_optimization(prices.loc[:start_date], universe, {}, initial_cash)
+    returns = {start_date: (output["metrics"]["portfolio_value"], 0)}
+    prev_total = output["metrics"]["portfolio_value"]
+
+    curr_date = next_trading_date(prices.index, start_date, frequency)
+    while curr_date < end_date:
+        output = run_optimization(prices.loc[:curr_date], universe, holdings_from_output(output), 0.0)
+        total = output["metrics"]["portfolio_value"]
+        returns[curr_date] = (total, percent_change(prev_total, total))
+        prev_total = total
+        curr_date = next_trading_date(prices.index, curr_date, frequency)
+    return returns
 
 
-def percent_change(old, new):
-    return ((new - old) / old * 100).round(2)
+def print_results(returns: dict) -> None:
+    """Print per-rebalance portfolio values and the total return."""
+    values = list(returns.values())
+    for date, (value, change) in returns.items():
+        print(f"{date}: {value} ({change}%)")
+    print(f"=====  TOTAL RETURN: {percent_change(values[0][0], values[-1][0])}% =====")
 
 
-def output_results(returns: dict):
-    # print("=====  BACKTEST RESULTS  =====")
-    start_value = returns[START_DATE][0]
-    for date in returns:
-        print(date + ": " + str(returns[date][0]) + " (" + str(returns[date][1]) + "%)")
-        end_value = returns[date][0]
-    print(f"=====  TOTAL RETURN: {percent_change(start_value, end_value)}% =====")
+def main() -> None:
+    """Parse CLI arguments and run backtests."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--start", default="2019-01-01", help="backtest start date (YYYY-MM-DD)")
+    parser.add_argument("--end", default=datetime.date.today().strftime("%Y-%m-%d"), help="backtest end date")
+    parser.add_argument("--cash", type=float, default=100000, help="initial cash")
+    parser.add_argument(
+        "--frequency",
+        choices=sorted(FREQUENCIES),
+        action="append",
+        help="rebalance frequency; repeatable (default: all but daily)",
+    )
+    args = parser.parse_args()
 
-
-def main():
-    # print("Running optimization for: " + START_DATE)
-    ApplicationState().HISTORICAL_PRICES = HIST_PRICES_BACKUP[:START_DATE]
-    opt = Optimization({}, INITIAL_CASH).output
-    curr_date = get_next_date(START_DATE)
-    total_returns = {
-        START_DATE: [opt["metrics"]["portfolio_value"], 0],
-    }
-    prev_total = opt["metrics"]["portfolio_value"]
-    while curr_date < END_DATE:
-        opt = run_optimizer(curr_date, opt)
-        total_returns[curr_date] = [
-            opt["metrics"]["portfolio_value"],
-            percent_change(prev_total, opt["metrics"]["portfolio_value"]),
-        ]
-        prev_total = opt["metrics"]["portfolio_value"]
-        curr_date = get_next_date(curr_date)
-    output_results(total_returns)
+    frequencies = args.frequency or ["yearly", "semiannually", "quarterly", "monthly", "weekly"]
+    for name in frequencies:
+        print(f"=====  FREQUENCY: {name.upper()}  =====")
+        print_results(run_backtest(args.start, args.end, args.cash, FREQUENCIES[name]))
+        print()
 
 
 if __name__ == "__main__":
-    START_DATE = "2019-01-01"
-    while START_DATE not in ApplicationState().HISTORICAL_PRICES.index:
-        START_DATE = (datetime.timedelta(days=1) + datetime.datetime.strptime(START_DATE, "%Y-%m-%d")).strftime(
-            "%Y-%m-%d"
-        )
-    END_DATE = datetime.date.today().strftime("%Y-%m-%d")
-    INITIAL_CASH = 100000
-    FREQ_ARRAY = [
-        Frequency.Yearly,
-        Frequency.Semiannually,
-        Frequency.Quarterly,
-        Frequency.Monthly,
-        Frequency.Weekly,
-        Frequency.Daily,
-    ]
-    for FREQ in FREQ_ARRAY[:-1]:
-        print("=====  FREQUENCY: " + str(FREQ) + "  =====")
-        main()
-        print()
+    main()

@@ -1,6 +1,9 @@
 """WolvWealth model (database) API."""
+
 import sqlite3
+
 import flask
+
 import wolvwealth
 
 
@@ -17,10 +20,10 @@ def get_db():
     """Open a new database connection.
 
     Flask docs:
-    https://flask.palletsprojects.com/en/1.0.x/appcontext/#storing-data
+    https://flask.palletsprojects.com/en/stable/appcontext/#storing-data
     """
-    if 'sqlite_db' not in flask.g:
-        db_filename = wolvwealth.app.config['DATABASE_FILENAME']
+    if "sqlite_db" not in flask.g:
+        db_filename = wolvwealth.app.config["DATABASE_FILENAME"]
         flask.g.sqlite_db = sqlite3.connect(str(db_filename))
         flask.g.sqlite_db.row_factory = dict_factory
 
@@ -35,11 +38,13 @@ def get_db():
 def close_db(error):
     """Close the database at the end of a request.
 
-    Flask docs:
-    https://flask.palletsprojects.com/en/1.0.x/appcontext/#storing-data
+    Commits only if the request finished without an exception; otherwise the
+    transaction is rolled back so failed handlers don't persist partial writes.
     """
-    assert error or not error  # Needed to avoid superfluous style error
-    sqlite_db = flask.g.pop('sqlite_db', None)
+    sqlite_db = flask.g.pop("sqlite_db", None)
     if sqlite_db is not None:
-        sqlite_db.commit()
+        if error is None:
+            sqlite_db.commit()
+        else:
+            sqlite_db.rollback()
         sqlite_db.close()

@@ -1,61 +1,44 @@
 """Authentication functions for the API."""
-import flask
-import wolvwealth
+
+import dataclasses
+import hmac
 import secrets
+
 import bcrypt
-import datetime
+import flask
+
+import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
+from wolvwealth.timeutil import utc_to_eastern_display
+
+
+@dataclasses.dataclass(frozen=True)
+class TierSpec:
+    """Access tier: price in dollars, number of optimizations, sqlite expiration offset."""
+
+    price: int
+    uses: int
+    expiration: str  # sqlite datetime() modifier, e.g. "+7 days"
 
 
 class Tier:
-    """Tier class."""
+    """Available access tiers."""
 
-    class Free:
-        """Free trial."""
-
-        price = 0
-        uses = 15
-        expiration = "+7 days"
-
-    class Plus:
-        """Plus tier."""
-
-        price = 5
-        uses = 300
-        expiration = "+90 days"
-
-    class Premium:
-        """Premium tier."""
-
-        price = 15
-        uses = 1500
-        expiration = "+1 year"
-
-    class Lifetime:
-        """Lifetime tier."""
-
-        price = 100
-        uses = 1000000000
-        expiration = "+100 years"
-
-    class Developer:
-        """Developer tier."""
-
-        price = 0
-        uses = 1000000000
-        expiration = "+100 years"
+    Free = TierSpec(price=0, uses=15, expiration="+7 days")
+    Plus = TierSpec(price=5, uses=300, expiration="+90 days")
+    Premium = TierSpec(price=15, uses=1500, expiration="+1 year")
+    Lifetime = TierSpec(price=100, uses=1_000_000_000, expiration="+100 years")
+    Developer = TierSpec(price=0, uses=1_000_000_000, expiration="+100 years")
 
 
-@wolvwealth.app.route("/api/account", methods=["POST"])
+@wolvwealth.app.route("/api/account/", methods=["POST"])
 def api_account_info():
     """Return credentials information."""
     api_key = flask.request.headers.get("Authorization")
-    input_json = {}
-    username = ""
     try:
         input_json = flask.request.json
-    except Exception:
-        raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
+    except Exception as err:
+        raise InvalidUsage("Parse Error. Unable to parse request as JSON.") from err
     if "username" not in input_json:
         raise InvalidUsage("Parse Error. Username required.")
     if not isinstance(input_json["username"], str):
@@ -76,34 +59,24 @@ def api_account_info():
     if api_key is None:
         raise InvalidUsage("Authorization Error. Missing API key.", status_code=403)
 
-    # Check if API key belongs to username
-    if result_tokens["token"] != api_key:
+    # Check if API key belongs to username. Compare bytes: compare_digest()
+    # raises TypeError on non-ASCII str, which would turn a bad key into a 500.
+    if result_tokens is None or not hmac.compare_digest(result_tokens["token"].encode(), api_key.encode()):
         raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
-
-    # Fetch expiration time and number of uses
-    uses = result_tokens["uses"]
-
-    created_et = (
-        datetime.datetime.strptime(result_users["created"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
-    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
-
-    expiration_et = (
-        datetime.datetime.strptime(result_tokens["expires"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
-    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
 
     output_json = {
         "username": result_users["username"],
         "email": result_users["email"],
-        "account_created": created_et,
-        "access_expires": expiration_et,
-        "optimizations_remaining": uses,
+        "account_created": utc_to_eastern_display(result_users["created"]),
+        "access_expires": utc_to_eastern_display(result_tokens["expires"]),
+        "optimizations_remaining": result_tokens["uses"],
         "api_key": api_key,
     }
 
     return flask.jsonify(output_json)
 
 
-def generate_api_key(owner: str, tier: Tier) -> str:
+def generate_api_key(owner: str, tier: TierSpec) -> str:
     """Generate a new API key and add it to the database."""
     api_key = secrets.token_urlsafe(16)
     connection = wolvwealth.model.get_db()
@@ -135,18 +108,16 @@ def check_api_key() -> bool:
         raise InvalidUsage("Authorization Error. API key has expired.", status_code=403)
 
     # Check if API key has been used too many times
-    uses = result["uses"]
-    if uses == 0:
+    if result["uses"] == 0:
         raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
 
-    # Decrement uses by 1
-    connection.execute(
-        "UPDATE tokens SET uses = ? WHERE token = ?",
-        (
-            uses - 1,
-            api_key,
-        ),
+    # Consume one use atomically so concurrent requests cannot double-spend the last use.
+    cur = connection.execute(
+        "UPDATE tokens SET uses = uses - 1 WHERE token = ? AND uses > 0 AND expires > datetime('now')",
+        (api_key,),
     )
+    if cur.rowcount == 0:
+        raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
     return True
 
 
@@ -171,18 +142,12 @@ def check_user_password(username: str, password: str) -> bool:
 def check_user_exists(username: str) -> bool:
     """Return true if username exists."""
     connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT * FROM users WHERE username = ?", (username,))
-    result = cur.fetchone()
-    if result is None:
-        return False
-    return True
+    cur = connection.execute("SELECT username FROM users WHERE username = ?", (username,))
+    return cur.fetchone() is not None
 
 
 def check_email_exists(email: str) -> bool:
     """Return true if email exists."""
     connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT * FROM users WHERE email = ?", (email,))
-    result = cur.fetchone()
-    if result is None:
-        return False
-    return True
+    cur = connection.execute("SELECT username FROM users WHERE email = ?", (email,))
+    return cur.fetchone() is not None

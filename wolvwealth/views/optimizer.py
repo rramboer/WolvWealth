@@ -3,6 +3,7 @@
 GET /optimizer/"""
 
 import flask
+
 import wolvwealth
 from wolvwealth.views.accounts import is_logged_in
 
