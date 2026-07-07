@@ -1,0 +1,21 @@
+# Install with: uv run pre-commit install  (or pipx install pre-commit)
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+        exclude: ^historical_prices\.csv$
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+
+  # Keep this rev in sync with the ruff version locked in uv.lock, so the
+  # hook and `uv run ruff` (used by CI) agree.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format

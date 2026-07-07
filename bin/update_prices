@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Refresh historical_prices.csv from Yahoo Finance.
+
+Downloads adjusted-close prices (since 2006) for every ticker in
+ticker_universe.csv and overwrites historical_prices.csv. Requires network
+access. Run from the repository root:
+
+    ./bin/update_prices        # or: uv run bin/update_prices
+"""
+
+import datetime
+import os
+import pathlib
+import sys
+
+DATA_DIR = pathlib.Path(__file__).resolve().parents[1]
+START_DATE = "2006-01-01"
+
+# Re-exec into the project virtualenv (created by ./bin/setup) so that plain
+# ./bin/update_prices works even when the system interpreter lacks the
+# project's dependencies, mirroring bin/db's preference for .venv/bin/python.
+_VENV_DIR = DATA_DIR / ".venv"
+_VENV_PYTHON = _VENV_DIR / "bin" / "python"
+if (
+    os.environ.get("_WOLVWEALTH_REEXEC") != "1"  # never re-exec more than once
+    and _VENV_PYTHON.is_file()
+    and pathlib.Path(sys.prefix).resolve() != _VENV_DIR.resolve()
+):
+    os.environ["_WOLVWEALTH_REEXEC"] = "1"
+    os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), str(pathlib.Path(__file__).resolve()), *sys.argv[1:]])
+
+import pandas as pd  # noqa: E402
+import yfinance as yf  # noqa: E402
+
+
+def load_ticker_universe() -> list[str]:
+    """Read the ticker universe CSV (one ticker per row, sorted by market cap)."""
+    path = DATA_DIR / "ticker_universe.csv"
+    return [line.split(",")[0].strip() for line in path.read_text().splitlines() if line.strip()]
+
+
+def main() -> int:
+    """Download prices and overwrite historical_prices.csv."""
+    tickers = load_ticker_universe()
+    end_date = datetime.date.today().strftime("%Y-%m-%d")
+    print(f"Downloading adjusted close prices for {len(tickers)} tickers ({START_DATE} to {end_date})...")
+    # auto_adjust=False keeps the historical "Adj Close" column this dataset is built on.
+    data = yf.download(tickers, start=START_DATE, end=end_date, auto_adjust=False)["Adj Close"]
+    if isinstance(data, pd.Series):  # single-ticker downloads return a Series
+        data = data.to_frame(name=tickers[0])
+    data = data.round(2)
+    out_path = DATA_DIR / "historical_prices.csv"
+    data.to_csv(out_path, index=True)
+    print(f"Wrote {len(data)} rows through {data.index[-1].date()} to {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
