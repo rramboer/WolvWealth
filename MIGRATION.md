@@ -28,12 +28,12 @@ A **locally runnable app** where:
 Priority call: finish the app for **humans running it manually** first; tailoring it for agents comes after that.
 
 1. **Bulk holdings import** (CSV upload or paste box) so a 30-position portfolio isn't 30 form submissions. This is also the step where an agent could load a brokerage export into a workspace.
-3. **Hygiene.**
+2. **Hygiene.**
    - Unify `backtest.py` with `Optimization` (it duplicates the maths and can drift).
    - Delete or build out the empty React `/optimizer/` page; drop the unused frontend deps (MUI, Chart.js, Google Charts, react-scripts) if deleting.
    - A Jinja base template instead of per-page header/footer copies.
-4. **One-command setup** on any machine (installer script or container) so a non-developer household member can get it running. Note the tension with the global-install requirement: if we containerize, the API port is still what agents talk to, but "packages work anywhere on the device" argues for a plain installer first.
-5. **Agent-readiness of the API** (deliberately last — on the back burner until the app is done for manual human use).
+3. **One-command setup** on any machine (installer script or container) so a non-developer household member can get it running. Note the tension with the global-install requirement: if we containerize, the API port is still what agents talk to, but "packages work anywhere on the device" argues for a plain installer first.
+4. **Agent-readiness of the API** (deliberately last — on the back burner until the app is done for manual human use).
    - Consider a `trades` block in the optimize response (buy/sell share deltas vs. `initial_holdings`) so an agent can feed the broker MCP directly instead of diffing allocations itself.
    - Document the API contract well enough that it can be dropped into an agent's context (or exposed via a thin MCP wrapper of our own) without reading the code.
 
