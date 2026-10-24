@@ -2,13 +2,13 @@
 
 This is a small project maintained by a few friends. The point of this file is to make sure each of us can clone the repo, get it running on our own machine in a few minutes, and make changes without stepping on each other.
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code in a while. It describes how the pieces fit together and lists the known gaps. In particular: **the old login/accounts/API-key system is gone** — the app now uses passwordless local workspaces, and the JSON API needs no auth header.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code in a while. It describes how the pieces fit together and lists the known gaps. In particular: **the old login/accounts/API-key system is gone** — the app now uses passwordless local workspaces, and the JSON API needs no auth header. If you are picking up migration work (the move to the fully local, agent-friendly setup), the ordered task list is in [MIGRATION.md](MIGRATION.md).
 
 ## Prerequisites
 
 | Tool | Version we have tested | Notes |
 |---|---|---|
-| Python | 3.12 (3.10+ required) | We are using the **global interpreter** for now. No venv, no containers yet. That will change later. |
+| Python | 3.12 (3.10+ required) | We use the **global interpreter on purpose** — no venv. The optimizer and API must work from anywhere on the device, including for AI agents spawned in arbitrary directories (see README "Why local-first"). |
 | pip | any recent | |
 | Node.js + npm | Node 24 / npm 11 | Only needed for the website CSS and the React bundle. The JSON API works without Node. |
 | git | any | |

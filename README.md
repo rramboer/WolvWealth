@@ -6,6 +6,17 @@
 
 WolvWealth started as a hackathon-style proof of concept: a hosted Flask web app with user accounts and tiered API keys. We are turning it into something **each of us runs on our own machine against our own portfolios**. No hosted service, no logins, no paid tiers.
 
+## Why local-first
+
+Two reasons we abandoned the cloud model:
+
+1. **Hosting user accounts, auth, and other people's financial data was not viable** for a project this size. Keeping everything on your own machine removes that whole problem class: your holdings live in a local SQLite file that never leaves your disk.
+2. **AI agents work best against local tools.** With broker MCP servers now available (e.g. the Robinhood MCP, which lets an agent place real trades), the intended workflow is: your agent calls the local WolvWealth API (`POST http://localhost:8000/api/optimize/` — plain JSON, no auth), reads back the target allocation, diffs it against your current holdings, and places the resulting trades through the broker MCP. That only works cleanly if the optimizer runs on the same machine as the agent, with no accounts or API keys in the way.
+
+This is also why the Python packages are installed into the **global interpreter** (no venv): the optimizer and its API must be runnable from anywhere on the device — by you at a shell, or by an agent spawned from any working directory — without activating an environment first.
+
+The remaining work to fully get there is tracked in **[MIGRATION.md](MIGRATION.md)**.
+
 ## How it works now: workspaces
 
 The accounts system is gone. In its place are **local workspaces** — one per person using the machine, no passwords. Each workspace holds any number of named portfolios, and each portfolio is a cash balance plus your share counts per ticker.
@@ -105,17 +116,9 @@ The full request schema is in [ARCHITECTURE.md §7](ARCHITECTURE.md#7-workflow-o
 
 There is deliberately no authentication. This is a localhost tool for a machine whose users trust each other — workspaces keep people's portfolios tidy and separate, nothing more. Do not bind it to an interface strangers can reach.
 
-## Roadmap to "runs on my machine with my portfolio"
+## Roadmap
 
-Roughly in order.
-
-1. ~~Remove the broken/unprotected online auth and admin system~~ — done, replaced by workspaces.
-2. ~~Store portfolios per person locally~~ — done (workspaces + portfolios in local SQLite).
-3. **Data refresh command.** A one-line way to pull prices up to today, and move the 40 MB CSV out of git (download on first run, cache locally).
-4. **Bulk holdings import** (CSV upload or paste) so a 30-position portfolio isn't 30 form submissions.
-5. **Fix optimizer rough edges**: metrics computed after `max_positions` truncation; surface real solver errors instead of a generic "Infeasible".
-6. **Tests** for the optimizer core, workspace flows, and the API contract.
-7. **Containerize** so setup is one command on any machine.
+The end state: a locally runnable app where multiple people on one device each keep their own portfolios in a workspace, optimize them on that machine, and optionally have an AI agent run the optimizer and place the resulting trades through a broker MCP (e.g. Robinhood). The full plan, with what's done and what's left in order, lives in **[MIGRATION.md](MIGRATION.md)**.
 
 ## Disclaimer
 

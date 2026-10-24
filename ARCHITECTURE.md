@@ -1,6 +1,6 @@
 # WolvWealth Architecture
 
-This document is an eagle-eye view of the codebase **as it exists today**. It describes what the app actually does, not what we want it to do. See the README for the goal and roadmap, and CONTRIBUTING.md for how to work on it.
+This document is an eagle-eye view of the codebase **as it exists today**. It describes what the app actually does, not what we want it to do. See the README for the goal, MIGRATION.md for the plan to get there, and CONTRIBUTING.md for how to work on it.
 
 Facts in here were verified by reading the code and by running the app with the Flask test client. Where something is broken or surprising, it is called out rather than smoothed over.
 
@@ -109,7 +109,7 @@ Everything is file-local to the repository root. The app must be started with th
 ├── requirements.txt           Pinned Python deps (authoritative)
 ├── package.json               Node deps for Tailwind + webpack/Babel/React
 ├── tailwind.config.js, webpack.config.js
-└── README.md, CONTRIBUTING.md, ARCHITECTURE.md
+└── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
 ```
 
 ## 4. Process startup
@@ -427,7 +427,7 @@ Everything removed with the auth system now 404s: `/accounts/*`, `/api/account`,
 
 ## 13. Known gaps between here and the goal
 
-The goal (README): each of us runs this locally against our own portfolios. Ordered roughly by how much they block that.
+The goal (README): each of us runs this locally against our own portfolios, with the local API usable as a tool surface for AI agents (which then place trades via broker MCPs like Robinhood's). The ordered plan is in MIGRATION.md; the underlying issues, roughly by how much they block the goal:
 
 **Correctness**
 
@@ -438,7 +438,7 @@ The goal (README): each of us runs this locally against our own portfolios. Orde
 **Operability for a local, single-user setup**
 
 4. Market data is a committed 40 MB CSV ending 2024-01-30 with no refresh command. Needs a `refresh-data` entry point and probably a move out of git (download on first run, cache under `var/`).
-5. CSV paths are relative to the working directory, so the app only works when launched from the repo root.
+5. CSV paths are relative to the working directory, so the app only works when launched from the repo root. This also blocks the agent use case: an agent spawned in an arbitrary directory can't start or script the app.
 6. No import path for holdings: entering a 30-position portfolio one form row at a time is tedious. A CSV upload or paste box would fix it.
 
 **Hygiene**
