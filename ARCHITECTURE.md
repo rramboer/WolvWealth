@@ -18,7 +18,7 @@ Three things live in the same process:
 |---|---|---|
 | Server-rendered website (landing, workspace picker, workspace page with portfolio CRUD, optimizer results) | `wolvwealth/views/`, `wolvwealth/templates/` | Working end to end |
 | JSON API (optimize, list workspaces) | `wolvwealth/api/` | Working, no auth required |
-| Market data cache (tickers + 18 years of daily adjusted closes) | `ticker_universe.csv`, `historical_prices.csv`, loaded by `wolvwealth/api/state.py` | Loaded into memory at import. Last price row is **2024-01-30** |
+| Market data cache (tickers + ~20 years of daily adjusted closes) | `ticker_universe.csv`, `historical_prices.csv`, loaded by `wolvwealth/api/state.py` | Loaded into memory at import; auto-refreshed on startup when older than 7 days, or on demand via `python -m wolvwealth refresh-data` |
 
 There is also a standalone walk-forward backtest script, `backtest.py`, that reuses the app's data loader but is not reachable from the web app. The old React optimizer page still exists as an empty shell at `/optimizer/`; the working optimizer UI is server-rendered from the workspace page.
 
@@ -68,7 +68,7 @@ flowchart LR
     State -. "save/update methods,<br/>not wired to any route" .-> YF
 ```
 
-Everything is file-local to the repository root. The app must be started with the repo root as the working directory because the CSV paths in `state.py` are relative.
+Everything is file-local to the repository root, but all paths (CSVs, `var/`, `sql/`) are resolved as absolute paths from the package location in `config.py`, so the app, the API, and `python -m wolvwealth` can be started from **any** working directory.
 
 ## 3. Repository layout
 
@@ -104,9 +104,7 @@ Everything is file-local to the repository root. The app must be started with th
 ├── historical_prices.csv      Date + one column per ticker, adjusted close (40 MB)
 ├── backtest.py                Standalone walk-forward backtest
 ├── bin/setup | bin/db | bin/run   Dev scripts (bin/db now uses Python's sqlite3, no CLI needed)
-├── gunicorn_config.py         Used only when deploying with gunicorn (not by bin/run)
-├── pyproject.toml             Package metadata + black/pylint settings (dependency list is stale)
-├── requirements.txt           Pinned Python deps (authoritative)
+├── pyproject.toml             Package metadata, dependencies (the single source of truth), black/pylint settings
 ├── package.json               Node deps for Tailwind + webpack/Babel/React
 ├── tailwind.config.js, webpack.config.js
 └── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
@@ -118,7 +116,7 @@ Importing the `wolvwealth` package has side effects. Routes are registered by de
 
 ```mermaid
 flowchart TD
-    A["flask --app wolvwealth run<br/>or gunicorn wolvwealth:app<br/>or python -c 'import wolvwealth'"] --> B["wolvwealth/__init__.py<br/>app = Flask(__name__)"]
+    A["flask --app wolvwealth run<br/>or python -m wolvwealth refresh-data<br/>or python -c 'import wolvwealth'"] --> B["wolvwealth/__init__.py<br/>app = Flask(__name__)"]
     B --> C["app.config.from_object('wolvwealth.config')<br/>creates var/, loads or generates var/secret_key"]
     C --> D["import wolvwealth.model<br/>then ensure_db():<br/>build var/wolvwealth.sqlite3 from sql/ if missing"]
     D --> E["import wolvwealth.api<br/>registers /api/* routes"]
@@ -126,7 +124,8 @@ flowchart TD
     F --> G["state = ApplicationState()"]
     G --> H["read ticker_universe.csv<br/>-> TICKER_UNIVERSE list"]
     H --> I["pd.read_csv historical_prices.csv<br/>-> HISTORICAL_PRICES DataFrame"]
-    I --> J["Ready to serve<br/>(~1 s, ~70 MB DataFrame)"]
+    I --> R["auto-refresh if prices > 7 days old<br/>(skipped with WOLVWEALTH_NO_AUTO_REFRESH,<br/>failure is non-fatal)"]
+    R --> J["Ready to serve<br/>(~1 s cached, minutes on a refresh;<br/>~70 MB DataFrame)"]
 ```
 
 Two per-install files are generated automatically under `var/` (gitignored): the SQLite database and the session-cookie signing key. A fresh clone therefore works with no setup beyond installing dependencies, and no secrets ship with the repo.
@@ -265,7 +264,7 @@ Total investment must be greater than zero, so you need cash or holdings or both
 ### Semantics that matter for "optimize my own portfolio"
 
 - **Holdings are liquidated, not held.** `initial_holdings` is converted to a dollar figure and the entire amount is reallocated across `universe`. The optimizer does not model trades or taxes. The browser flow at least adds your held tickers to the universe so keeping them is possible; the raw API does not unless you do it yourself. A held ticker absent from the result means "sell it all" — the results page says so.
-- **Prices are stale.** Share counts and holding values use the last row of `historical_prices.csv` (2024-01-30 as of this writing). No live quote is fetched during a request. Both the workspace and results pages display the price date.
+- **Prices are cached, not live.** Share counts and holding values use the last row of `historical_prices.csv`; no quote is fetched during a request. The startup auto-refresh keeps the cache within about a week of today. Both the workspace and results pages display the price date.
 - **Expected returns are naive.** Mean historical return over the full 2006-to-present window and an exponentially weighted covariance. Any asset with a short history will have NaNs in its column, which PyPortfolioOpt handles poorly and usually surfaces as the generic "Infeasible" error.
 
 ### The optimization pipeline in detail
@@ -294,17 +293,20 @@ The `max_positions` step is a post-hoc truncation, not a cardinality constraint 
 
 ## 8. Workflow: market data
 
-Market data is two CSVs committed to git and refreshed by hand. `ApplicationState` has the helper methods, but **no route, CLI, or script calls them**. The git history shows the pattern: someone runs the methods in a Python shell and commits the result ("Update tickers and prices").
+Market data is two CSVs committed to git. Price refresh is scripted and automatic: `python -m wolvwealth refresh-data [--full]` from any directory, plus a startup auto-refresh in `wolvwealth/__init__.py` that runs the incremental path whenever the newest cached row is older than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days. The auto-refresh is skipped when `WOLVWEALTH_NO_AUTO_REFRESH` is set and never fails startup — on error the app keeps serving cached prices. Universe editing (add/remove/sort tickers) is still a manual Python-shell task.
 
 ```mermaid
 flowchart LR
-    subgraph Manual["Manual, from a Python shell at repo root"]
+    subgraph Refresh["python -m wolvwealth refresh-data<br/>or startup auto-refresh (prices > 7 days old)"]
+        direction TB
+        R1["save_historical_prices()  (--full)<br/>full re-download 2006 -> today"]
+        R2["update_historical_prices()  (default)<br/>download from last row + 1 day,<br/>abort if too many live tickers come back empty"]
+    end
+    subgraph Manual["Manual, from a Python shell"]
         direction TB
         U1["add_tickers_to_universe([...])<br/>binary-inserts by market cap<br/>(one yfinance .info call per probe)"]
         U2["remove_tickers_from_universe([...])"]
         U3["sort_ticker_universe()<br/>one .info call per ticker"]
-        R1["save_historical_prices()<br/>full re-download 2006 -> today"]
-        R2["update_historical_prices()<br/>download from last row + 1 day"]
     end
 
     YF["Yahoo Finance via yfinance<br/>Adj Close, rounded to 2 dp"]
@@ -327,10 +329,11 @@ flowchart LR
 
 Things to know:
 
-- `update_historical_prices()` appends to the in-memory DataFrame and rewrites the CSV. It does not re-download existing rows, so it is fast, but it also never corrects past adjusted closes after splits or dividends. `save_historical_prices()` does a full refresh and is the correct one to run before a commit.
+- `update_historical_prices()` (the default and the auto-refresh path) appends to the in-memory DataFrame and rewrites the CSV. It does not re-download existing rows, so it is fast, but it never corrects past adjusted closes after splits or dividends. `save_historical_prices()` (`--full`) does a complete refresh and is the correct one to run before committing data.
+- Yahoo rate-limits bulk downloads: a rate-limited ticker silently comes back as an all-NaN column, which would poison the optimizer. The downloader therefore fetches in chunks of 100 with pauses, retries all-NaN tickers with backoff, and the incremental path **refuses to write the CSV** if more than 15% of previously live tickers return no data.
 - `add_tickers_to_universe` makes live `yf.Ticker(x).info` calls inside a binary search, which is slow and rate-limited. It then triggers a full price re-download.
-- The CSV is 40 MB and grows with every refresh. Each refresh is a 40 MB diff in git history.
-- `yfinance` is pinned to 0.2.32 (late 2023). Yahoo changes its endpoints often, so expect the refresh methods to need a dependency bump before they work again.
+- The CSV is 40 MB and grows with every refresh. Each refresh is a 40 MB diff in git history — moving it out of git is still on the roadmap (MIGRATION.md).
+- `yfinance` is `>=1.7`. Yahoo changes its endpoints often; if downloads start failing wholesale, bump yfinance first.
 
 ## 9. Workflow: backtest (`backtest.py`)
 
@@ -369,7 +372,7 @@ flowchart LR
 ```
 
 - `bin/db` now uses Python's built-in `sqlite3` module, so the `sqlite3` CLI is no longer required. `create`/`destroy`/`reset`/`dump` operate on workspaces, portfolios, and holdings.
-- `bin/run prod` is **not** a production setup. It runs the Flask debug server under `sudo` on port 80. This app is designed for localhost; if you need something server-like on your LAN, think before you do it (no auth!) and use `gunicorn -c gunicorn_config.py wolvwealth:app`.
+- `bin/run` only has a `dev` mode and binds to localhost. The old `prod` mode (debug server under `sudo` on port 80) and the gunicorn config are gone: this app has no auth and is localhost-only by design.
 - The React app (`js/App.jsx`) has one route, `/optimizer/`, whose component renders an empty `<section>`. The working optimizer UI is the server-rendered form on `/workspace/` plus `results.html`. `package.json` still pulls in MUI, Chart.js, Google Charts, a pie chart lib, and `react-scripts`, none of which are used.
 
 ## 11. Data model
@@ -437,14 +440,14 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 **Operability for a local, single-user setup**
 
-4. Market data is a committed 40 MB CSV ending 2024-01-30 with no refresh command. Needs a `refresh-data` entry point and probably a move out of git (download on first run, cache under `var/`).
-5. CSV paths are relative to the working directory, so the app only works when launched from the repo root. This also blocks the agent use case: an agent spawned in an arbitrary directory can't start or script the app.
+4. ~~No refresh command~~ — done (`python -m wolvwealth refresh-data` + startup auto-refresh). The 40 MB CSV is still committed to git, though; it should move out (download/build on first run, cache under `var/`).
+5. ~~CSV paths are relative to the working directory~~ — done; all paths resolve from the package location, so everything runs from any directory.
 6. No import path for holdings: entering a 30-position portfolio one form row at a time is tedious. A CSV upload or paste box would fix it.
 
 **Hygiene**
 
 7. No tests. `pytest` and `pytest-mock` are installed but `tests/` does not exist. The workspace/portfolio flows are now easy to test with the Flask test client and a temp database.
-8. `pyproject.toml` dependencies disagree with `requirements.txt` (missing pandas, yfinance, cvxpy, gunicorn; includes lint tools as runtime deps).
+8. ~~`pyproject.toml` dependencies disagree with `requirements.txt`~~ — done; `requirements.txt` is deleted and `pyproject.toml` is the single source of truth (four runtime deps, dev tools behind a `dev` extra).
 9. Each Jinja template carries its own copy of the header, nav, footer, and scroll script. No base template.
 10. The React optimizer page is an empty shell; either build it against `/api/optimize/` or delete it along with the unused frontend dependencies (MUI, Chart.js, Google Charts, react-scripts) and `bundle.js.map`.
 11. Timezones: `created` timestamps are stored in UTC and now displayed nowhere, so the old hardcoded UTC-5 conversion is gone — but if we surface timestamps again, do it properly.

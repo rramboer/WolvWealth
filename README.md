@@ -33,19 +33,18 @@ The current state of the code, with diagrams of every workflow and an honest lis
 | Portfolios per workspace: cash, holdings, valuations at last cached price | Working |
 | Optimize a saved portfolio from the browser, results page with metrics and target allocation | Working |
 | `POST /api/optimize/`: optimize by stored portfolio name or explicit holdings, no auth header | Working |
-| Market data: 2006-01-03 to **2024-01-30**, adjusted close, 1,982 tickers | Loaded from a committed CSV. Stale. Refresh is a manual Python-shell step |
+| Market data: 2006-01-03 to today, adjusted close, 1,982 tickers | Loaded from a committed CSV. Auto-refreshed on startup when stale; `python -m wolvwealth refresh-data` on demand |
 | Walk-forward backtest (`backtest.py`) | Runs standalone from the command line |
 | React optimizer page (`/optimizer/`) | Empty shell, superseded by the server-rendered flow |
 
 ## Quickstart
 
-Everything runs from the repository root with the global Python interpreter.
+Everything installs into the global Python interpreter and, once installed, works from any directory.
 
 ```bash
 git clone <repo-url> WolvWealth
 cd WolvWealth
-pip install -r requirements.txt
-npm install                 # only needed for the website styling and JS
+./bin/setup                 # pip install -e . into the global interpreter + npm install
 ./bin/run dev               # http://localhost:8000
 ```
 
@@ -55,7 +54,7 @@ If you only want the API and do not have Node installed:
 flask --app wolvwealth --debug run --port 8000
 ```
 
-On first run the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`.
+On first run the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`. On startup it also refreshes the committed price history up to today if it is more than a week old (set `WOLVWEALTH_NO_AUTO_REFRESH=1` to skip, e.g. offline); you can refresh any time with `python -m wolvwealth refresh-data`.
 
 Then in the browser: open `http://localhost:8000/workspaces/`, create your workspace, add a portfolio with your cash and holdings, and hit **Optimize**.
 
@@ -108,7 +107,7 @@ Response shape (abbreviated, numbers illustrative):
 Two things to understand before trusting the numbers:
 
 - **Your holdings are valued and then fully reallocated.** The optimizer does not try to keep what you own. The browser flow adds your held tickers to the universe so keeping them is possible; a held ticker missing from the result means "sell it all".
-- **Prices are from the last row of the CSV**, currently 2024-01-30. Share counts and dollar values are based on those prices, not live quotes. The pages show the price date.
+- **Prices come from the local cache, not live quotes.** Share counts and dollar values use the last row of `historical_prices.csv`. The startup auto-refresh keeps it within about a week of today; the pages show the price date.
 
 The full request schema is in [ARCHITECTURE.md §7](ARCHITECTURE.md#7-workflow-optimize-a-portfolio-the-core-feature).
 

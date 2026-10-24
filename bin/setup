@@ -1,34 +1,22 @@
 #!/bin/bash
-# This script sets up a virtual environment and installs necessary dependencies.
+# Install WolvWealth into the global Python interpreter (per-user site) and
+# fetch the Node deps for the website build. No venv on purpose: the
+# optimizer and API must be importable from any directory on this device,
+# including by AI agents spawned outside the repo.
 
-echo "Setting up Python development environment..."
-
-# Check if the "env" directory already exists
-if [ ! -d "env" ]; then
-    # Create a virtual environment
-    echo "Creating virtual environment..."
-    python3 -m venv env
-else
-    echo "Virtual environment already exists."
-fi
-
-# Exit immediately if a command exits with a non-zero status
 set -Eeuo pipefail
 
-# Print commands and their arguments as they are executed
-# set -x
+echo "Installing Python package (editable, user site)..."
+pip install --user --break-system-packages -e ".[dev]"
 
-# Activate the virtual environment
-source env/bin/activate
-
-# Install dependencies
-echo "Installing dependencies..."
-pip install -r requirements.txt
-
-# Install the current directory as an editable package
-pip install -e .
+if command -v npm >/dev/null; then
+  echo "Installing Node dependencies (website CSS/JS build)..."
+  npm install
+else
+  echo "npm not found; skipping website build deps (the JSON API works without them)."
+fi
 
 # Clean up Python caches
-find . -type d -name "__pycache__" -not -path '*/env/*' -not -path '*/node_modules/*' -exec rm -r {} +
+find . -type d -name "__pycache__" -not -path '*/node_modules/*' -exec rm -r {} +
 
-echo "Python development environment setup successful and clean."
+echo "Setup complete."

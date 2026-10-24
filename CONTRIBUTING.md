@@ -17,21 +17,15 @@ The `sqlite3` CLI is **not** required: `bin/db` uses Python's built-in sqlite3 m
 
 ## First-time setup
 
-Run everything from the repository root. The app reads `ticker_universe.csv` and `historical_prices.csv` by relative path and will fail to start from anywhere else.
-
 ```bash
 git clone <repo-url> WolvWealth
 cd WolvWealth
-
-# Python dependencies into the global interpreter (pinned versions)
-pip install -r requirements.txt
-
-# Optional: makes `import wolvwealth` work from any directory and lets pytest find the package
-pip install -e .
-
-# Node dependencies (Tailwind, webpack, Babel, React). Skip if you only need the API.
-npm install
+./bin/setup
 ```
+
+`bin/setup` runs `pip install --user --break-system-packages -e ".[dev]"` (an editable install into the global interpreter, including the dev tools) and `npm install` (Tailwind, webpack, Babel, React — skipped automatically if npm is missing; the JSON API works without it). Dependencies are declared in `pyproject.toml` and deliberately minimal — just Flask, pandas, pyportfolioopt, and yfinance at runtime — because this gets installed globally on other people's machines. There is no `requirements.txt` anymore.
+
+Because the install is editable and data-file paths are resolved from the install location, `import wolvwealth`, the Flask app, and `python -m wolvwealth` all work from **any directory**.
 
 That's it. On first start the app creates `var/wolvwealth.sqlite3` (from `sql/schema.sql` + `sql/data.sql`, seeded with a deletable `demo` workspace) and `var/secret_key` (a per-install session-cookie key). Both live in gitignored `var/`, so your workspaces and portfolios stay on your machine and never end up in a commit.
 
@@ -72,25 +66,18 @@ print(r.status_code, r.get_json())
 EOF
 ```
 
-Do not use `./bin/run prod`. It runs the Flask debug server as root on port 80, and this app has **no authentication by design** — it is meant for localhost only.
+There is no "prod" mode anymore (the old `bin/run prod` ran the debug server as root on port 80, and gunicorn support has been removed). This app has **no authentication by design** — it binds to localhost only.
 
 ## Things that will bite you
 
-### Market data is a 40 MB CSV ending 2024-01-30
+### Market data is a 40 MB CSV in git
 
-Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `historical_prices.csv`. To refresh (this hits Yahoo Finance through `yfinance`, which is pinned to an old version and may need upgrading first):
+Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `historical_prices.csv`. Refreshing is automatic and scripted:
 
-```bash
-python3 - <<'EOF'
-from wolvwealth.api.state import ApplicationState
-s = ApplicationState()
-s.save_historical_prices()     # full re-download 2006 -> today, rewrites historical_prices.csv
-s.load_historical_prices()
-print(s.HISTORICAL_PRICES.index[-1], s.HISTORICAL_PRICES.shape)
-EOF
-```
+- **Automatic:** on startup, if the newest cached row is more than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days old, the app appends the missing days. Failures are non-fatal (it keeps serving cached prices). Set `WOLVWEALTH_NO_AUTO_REFRESH=1` to disable (offline use, tests, scripts that manage data themselves).
+- **On demand:** `python -m wolvwealth refresh-data` (incremental append) or `python -m wolvwealth refresh-data --full` (complete 2006-to-today re-download).
 
-Prefer `save_historical_prices()` (full refresh) over `update_historical_prices()` (append only) before committing, because the append path never corrects earlier adjusted closes after splits and dividends.
+Prefer `--full` before committing refreshed data, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so the downloader works in chunks with pauses and retries; the incremental path refuses to write the CSV if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes.
 
 Keep data refreshes in their own commit titled `Update tickers and prices`, with no code changes mixed in. The diff is huge and nobody wants to review code next to it.
 
@@ -103,13 +90,9 @@ s.add_tickers_to_universe(["PLTR", "ARM"])   # slow: live market-cap lookups, th
 s.remove_tickers_from_universe(["SAVE"])
 ```
 
-### Everything is relative to the repo root
-
-Run Python, Flask, and the scripts from the repository root. If you see `FileNotFoundError: ticker_universe.csv`, that is why.
-
 ### Importing the package has side effects
 
-`import wolvwealth` creates the Flask app, registers every route, creates the database if missing, and loads ~70 MB of prices into memory. Keep that in mind in tests and scripts. Routes are registered by decorators, so a new view or API module does nothing until it is imported from `wolvwealth/views/__init__.py` or `wolvwealth/api/__init__.py`.
+`import wolvwealth` creates the Flask app, registers every route, creates the database if missing, loads ~70 MB of prices into memory, and **may hit the network** (the startup auto-refresh when prices are stale — set `WOLVWEALTH_NO_AUTO_REFRESH=1` in tests and scripts). Keep that in mind. Routes are registered by decorators, so a new view or API module does nothing until it is imported from `wolvwealth/views/__init__.py` or `wolvwealth/api/__init__.py`.
 
 ### Holdings tickers must be in the universe
 
@@ -126,7 +109,7 @@ A holding can only be added if its ticker has a column in `historical_prices.csv
 
 ### Code style
 
-Settings live in `pyproject.toml`. The tools are already in `requirements.txt`.
+Settings live in `pyproject.toml`. The tools come with the `dev` extra (`pip install -e ".[dev]"`, which `bin/setup` does).
 
 ```bash
 black --line-length 120 wolvwealth backtest.py
@@ -144,7 +127,7 @@ Conventions the existing code follows and new code should too:
 
 ### Tests
 
-There are none yet. `pytest` and `pytest-mock` are installed and `pip install -e .` makes the package importable. When you add the first ones, put them in `tests/` and use the Flask test client:
+There are none yet. `pytest` and `pytest-mock` come with the `dev` extra and the editable install makes the package importable. When you add the first ones, put them in `tests/`, set `WOLVWEALTH_NO_AUTO_REFRESH=1`, and use the Flask test client:
 
 ```python
 import wolvwealth

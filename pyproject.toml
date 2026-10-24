@@ -4,20 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wolvwealth"
-version = "1.2.0"
+version = "1.3.0"
+description = "Self-hosted, local-first portfolio optimizer"
+requires-python = ">=3.10"
+# Keep this list minimal: the app runs on other people's machines with a
+# global pip install, so every entry here lands on their device. Solvers
+# (cvxpy etc.) come in transitively through pyportfolioopt.
 dependencies = [
-    "arrow",
-    "bs4",
-    "Flask",
-    "html5validator",
+    "Flask>=3.0",
+    "pandas>=2.1",
+    "pyportfolioopt>=1.5.5",
+    "yfinance>=1.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
     "pycodestyle",
     "pydocstyle",
     "pylint",
     "pytest",
-    "pyportfolioopt",
-    "requests",
+    "pytest-mock",
 ]
-requires-python = ">=3.10"
 
 [tool.setuptools]
 packages = ["wolvwealth"]
@@ -27,5 +35,4 @@ disable = ["cyclic-import"]
 
 [tool.black]
 line-length = 120
-target-version = ["py38", "py39", "py310"]
-
+target-version = ["py310", "py311", "py312"]

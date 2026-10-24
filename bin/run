@@ -1,38 +1,19 @@
 #!/bin/bash
-# This script runs the web server and creates the database if it doesn't exist.
+# Run the dev server (and create the database if it doesn't exist).
+# Localhost only: this app has no authentication by design.
 
 set -Eeuo pipefail
-# set -x
 
-# Sanity check command line options
 usage() {
-  echo "Usage: $0 (dev|prod)"
+  echo "Usage: $0 dev"
 }
 
-if [ $# -ne 1 ]; then
+if [ $# -ne 1 ] || [ "$1" != "dev" ]; then
   usage
   exit 1
 fi
 
-# Parse argument.  $1 is the first argument
-case $1 in
-  "dev")
-    ./bin/db create
-    npx tailwindcss -o wolvwealth/static/css/output.css --watch &
-    npx webpack --config webpack.config.js --watch &
-    flask --app wolvwealth --debug run --host 0.0.0.0 --port 8000
-    ;;
-
-  "prod")
-    ./bin/db create
-    npx tailwindcss -o wolvwealth/static/css/output.css
-    npx webpack --config webpack.config.js
-    sudo flask --app wolvwealth --debug run --host 0.0.0.0 --port 80
-    ;;
-  *)
-    usage
-    exit 1
-    ;;
-esac
-
-
+./bin/db create
+npx tailwindcss -o wolvwealth/static/css/output.css --watch &
+npx webpack --config webpack.config.js --watch &
+flask --app wolvwealth --debug run --port 8000
