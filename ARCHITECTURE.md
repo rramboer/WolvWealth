@@ -18,7 +18,7 @@ Three things live in the same process:
 |---|---|---|
 | Server-rendered website (landing, workspace picker, workspace page with portfolio CRUD, optimizer results) | `wolvwealth/views/`, `wolvwealth/templates/` | Working end to end |
 | JSON API (optimize, list workspaces) | `wolvwealth/api/` | Working, no auth required |
-| Market data cache (tickers + ~20 years of daily adjusted closes) | `ticker_universe.csv`, `historical_prices.csv`, loaded by `wolvwealth/api/state.py` | Loaded into memory at import; auto-refreshed on startup when older than 7 days, or on demand via `python -m wolvwealth refresh-data` |
+| Market data cache (tickers + ~20 years of daily adjusted closes) | `ticker_universe.csv` (in repo), `var/historical_prices.csv` (local cache), loaded by `wolvwealth/api/state.py` | Loaded into memory at import; auto-refreshed on startup when older than 7 days, or on demand via `python -m wolvwealth refresh-data` |
 
 There is also a standalone walk-forward backtest script, `backtest.py`, that reuses the app's data loader but is not reachable from the web app. The old React optimizer page still exists as an empty shell at `/optimizer/`; the working optimizer UI is server-rendered from the workspace page.
 
@@ -48,7 +48,7 @@ flowchart LR
         DB[("var/wolvwealth.sqlite3<br/>workspaces, portfolios, holdings<br/>created on first run, gitignored")]
         Secret["var/secret_key<br/>per-install cookie key, gitignored"]
         Tickers["ticker_universe.csv<br/>1,982 symbols, sorted by market cap"]
-        Prices["historical_prices.csv<br/>4,549 days x 1,982 symbols"]
+        Prices["var/historical_prices.csv<br/>local cache, ~1,982 symbols<br/>built/migrated on first run"]
     end
 
     YF["Yahoo Finance<br/>(via yfinance, manual refresh only)"]
@@ -101,7 +101,7 @@ Everything is file-local to the repository root, but all paths (CSVs, `var/`, `s
 ├── sql/data.sql               Seed: a `demo` workspace with one `starter` portfolio
 ├── var/                       Local state, gitignored: wolvwealth.sqlite3, secret_key
 ├── ticker_universe.csv        One ticker per line, descending market cap
-├── historical_prices.csv      Date + one column per ticker, adjusted close (40 MB)
+│                              (price history lives in var/historical_prices.csv, 40 MB, not in git)
 ├── backtest.py                Standalone walk-forward backtest
 ├── bin/setup | bin/db | bin/run   Dev scripts (bin/db now uses Python's sqlite3, no CLI needed)
 ├── pyproject.toml             Package metadata, dependencies (the single source of truth), black/pylint settings
@@ -123,7 +123,7 @@ flowchart TD
     E --> F["import wolvwealth.views<br/>registers HTML routes"]
     F --> G["state = ApplicationState()"]
     G --> H["read ticker_universe.csv<br/>-> TICKER_UNIVERSE list"]
-    H --> I["pd.read_csv historical_prices.csv<br/>-> HISTORICAL_PRICES DataFrame"]
+    H --> I["var/historical_prices.csv<br/>(migrate in-repo copy or full download if missing)<br/>pd.read_csv -> HISTORICAL_PRICES DataFrame"]
     I --> R["auto-refresh if prices > 7 days old<br/>(skipped with WOLVWEALTH_NO_AUTO_REFRESH,<br/>failure is non-fatal)"]
     R --> J["Ready to serve<br/>(~1 s cached, minutes on a refresh;<br/>~70 MB DataFrame)"]
 ```
@@ -264,7 +264,7 @@ Total investment must be greater than zero, so you need cash or holdings or both
 ### Semantics that matter for "optimize my own portfolio"
 
 - **Holdings are liquidated, not held.** `initial_holdings` is converted to a dollar figure and the entire amount is reallocated across `universe`. The optimizer does not model trades or taxes. The browser flow at least adds your held tickers to the universe so keeping them is possible; the raw API does not unless you do it yourself. A held ticker absent from the result means "sell it all" — the results page says so.
-- **Prices are cached, not live.** Share counts and holding values use the last row of `historical_prices.csv`; no quote is fetched during a request. The startup auto-refresh keeps the cache within about a week of today. Both the workspace and results pages display the price date.
+- **Prices are cached, not live.** Share counts and holding values use the last row of `var/historical_prices.csv`; no quote is fetched during a request. The startup auto-refresh keeps the cache within about a week of today. Both the workspace and results pages display the price date.
 - **Expected returns are naive.** Mean historical return over the full 2006-to-present window and an exponentially weighted covariance. Any asset with a short history will have NaNs in its column, which PyPortfolioOpt handles poorly and usually surfaces as the generic "Infeasible" error.
 
 ### The optimization pipeline in detail
@@ -293,7 +293,7 @@ The `max_positions` step is a post-hoc truncation, not a cardinality constraint 
 
 ## 8. Workflow: market data
 
-Market data is two CSVs committed to git. Price refresh is scripted and automatic: `python -m wolvwealth refresh-data [--full]` from any directory, plus a startup auto-refresh in `wolvwealth/__init__.py` that runs the incremental path whenever the newest cached row is older than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days. The auto-refresh is skipped when `WOLVWEALTH_NO_AUTO_REFRESH` is set and never fails startup — on error the app keeps serving cached prices. Universe editing (add/remove/sort tickers) is still a manual Python-shell task.
+Market data is the committed `ticker_universe.csv` plus a per-machine price cache in gitignored `var/historical_prices.csv`, created on first run (migrated from the old in-repo copy if present, otherwise downloaded in full). Price refresh is scripted and automatic: `python -m wolvwealth refresh-data [--full]` from any directory, plus a startup auto-refresh in `wolvwealth/__init__.py` that runs the incremental path whenever the newest cached row is older than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days. The auto-refresh is skipped when `WOLVWEALTH_NO_AUTO_REFRESH` is set and never fails startup — on error the app keeps serving cached prices. Universe editing (add/remove/sort tickers) is still a manual Python-shell task.
 
 ```mermaid
 flowchart LR
@@ -311,7 +311,7 @@ flowchart LR
 
     YF["Yahoo Finance via yfinance<br/>Adj Close, rounded to 2 dp"]
     T["ticker_universe.csv"]
-    P["historical_prices.csv"]
+    P["var/historical_prices.csv"]
     Mem["ApplicationState.HISTORICAL_PRICES<br/>(in-memory, per process)"]
     Git["git commit"]
 
@@ -332,7 +332,7 @@ Things to know:
 - `update_historical_prices()` (the default and the auto-refresh path) appends to the in-memory DataFrame and rewrites the CSV. It does not re-download existing rows, so it is fast, but it never corrects past adjusted closes after splits or dividends. `save_historical_prices()` (`--full`) does a complete refresh and is the correct one to run before committing data.
 - Yahoo rate-limits bulk downloads: a rate-limited ticker silently comes back as an all-NaN column, which would poison the optimizer. The downloader therefore fetches in chunks of 100 with pauses, retries all-NaN tickers with backoff, and the incremental path **refuses to write the CSV** if more than 15% of previously live tickers return no data.
 - `add_tickers_to_universe` makes live `yf.Ticker(x).info` calls inside a binary search, which is slow and rate-limited. It then triggers a full price re-download.
-- The CSV is 40 MB and grows with every refresh. Each refresh is a 40 MB diff in git history — moving it out of git is still on the roadmap (MIGRATION.md).
+- The price CSV is 40 MB and grows with every refresh, but it lives in gitignored `var/`, so refreshes never touch git.
 - `yfinance` is `>=1.7`. Yahoo changes its endpoints often; if downloads start failing wholesale, bump yfinance first.
 
 ## 9. Workflow: backtest (`backtest.py`)
@@ -440,7 +440,7 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 **Operability for a local, single-user setup**
 
-4. ~~No refresh command~~ — done (`python -m wolvwealth refresh-data` + startup auto-refresh). The 40 MB CSV is still committed to git, though; it should move out (download/build on first run, cache under `var/`).
+4. ~~No refresh command / 40 MB CSV committed to git~~ — done; `python -m wolvwealth refresh-data` + startup auto-refresh, and the price cache lives in gitignored `var/` (migrated or downloaded on first run).
 5. ~~CSV paths are relative to the working directory~~ — done; all paths resolve from the package location, so everything runs from any directory.
 6. No import path for holdings: entering a 30-position portfolio one form row at a time is tedious. A CSV upload or paste box would fix it.
 

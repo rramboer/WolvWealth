@@ -25,10 +25,13 @@ SESSION_COOKIE_NAME = 'wolvwealth'
 # Database file is var/wolvwealth.sqlite3 (created on first run, not in git)
 DATABASE_FILENAME = VAR_FOLDER/'wolvwealth.sqlite3'
 
-# Market data CSVs. Absolute paths so the app and the refresh command work
-# from any working directory, not just the repo root.
+# Market data. Absolute paths so the app and the refresh command work from
+# any working directory, not just the repo root. The ticker universe is small
+# and ships with the repo; the 40 MB price history lives in var/ outside of
+# git (built on first run, or migrated from the old in-repo copy if present).
 TICKER_UNIVERSE_FILE = WOLVWEALTH_ROOT/'ticker_universe.csv'
-HISTORICAL_PRICES_FILE = WOLVWEALTH_ROOT/'historical_prices.csv'
+HISTORICAL_PRICES_FILE = VAR_FOLDER/'historical_prices.csv'
+LEGACY_HISTORICAL_PRICES_FILE = WOLVWEALTH_ROOT/'historical_prices.csv'
 
 # On startup, refresh prices automatically if the newest row is older than
 # this many days. Set the environment variable WOLVWEALTH_NO_AUTO_REFRESH

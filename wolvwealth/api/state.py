@@ -1,5 +1,6 @@
 """Global state of application."""
 import csv
+import shutil
 import time
 from datetime import datetime, timedelta
 import pandas as pd
@@ -43,7 +44,16 @@ class ApplicationState:
                 writer.writerow([ticker])
 
     def load_historical_prices(self) -> None:
-        """Load historical prices of tickers in universe into DataFrame."""
+        """Load historical prices of tickers in universe into DataFrame, creating the cache if needed."""
+        if not config.HISTORICAL_PRICES_FILE.exists():
+            if config.LEGACY_HISTORICAL_PRICES_FILE.exists():
+                # One-time migration from the era when the price history was
+                # committed to the repo: move the numbers as-is, no re-download.
+                shutil.copyfile(config.LEGACY_HISTORICAL_PRICES_FILE, config.HISTORICAL_PRICES_FILE)
+                print(f"wolvwealth: migrated price history into {config.HISTORICAL_PRICES_FILE}")
+            else:
+                print("wolvwealth: no price history cache, downloading 2006 -> today (this takes a while)...")
+                self.save_historical_prices()
         self.HISTORICAL_PRICES = pd.read_csv(config.HISTORICAL_PRICES_FILE, parse_dates=True, index_col="Date")
 
     def prices_age_days(self) -> int:

@@ -70,16 +70,16 @@ There is no "prod" mode anymore (the old `bin/run prod` ran the debug server as 
 
 ## Things that will bite you
 
-### Market data is a 40 MB CSV in git
+### Market data is a 40 MB CSV in var/
 
-Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `historical_prices.csv`. Refreshing is automatic and scripted:
+Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `var/historical_prices.csv`. The cache is created on first run: migrated from a pre-existing in-repo `historical_prices.csv` if one is still on disk (the file used to be committed), otherwise downloaded in full. Refreshing is automatic and scripted:
 
 - **Automatic:** on startup, if the newest cached row is more than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days old, the app appends the missing days. Failures are non-fatal (it keeps serving cached prices). Set `WOLVWEALTH_NO_AUTO_REFRESH=1` to disable (offline use, tests, scripts that manage data themselves).
 - **On demand:** `python -m wolvwealth refresh-data` (incremental append) or `python -m wolvwealth refresh-data --full` (complete 2006-to-today re-download).
 
-Prefer `--full` before committing refreshed data, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so the downloader works in chunks with pauses and retries; the incremental path refuses to write the CSV if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes.
+Run `--full` occasionally, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so the downloader works in chunks with pauses and retries; the incremental path refuses to write the CSV if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes, longer if Yahoo is throttling — if it keeps failing, wait an hour and try again.
 
-Keep data refreshes in their own commit titled `Update tickers and prices`, with no code changes mixed in. The diff is huge and nobody wants to review code next to it.
+Price data is never committed anymore: the cache lives in gitignored `var/`, so each machine maintains its own. (The old `Update tickers and prices` data commits are history.)
 
 To add or remove tickers:
 

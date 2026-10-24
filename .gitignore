@@ -9,7 +9,7 @@ venv3/
 .pytest_cache
 bundle.js
 *node_modules*
-*/var/*
+var/
 *~
 *.lock
 *.swp
@@ -20,3 +20,4 @@ wolvwealth/static/img/logo.psd
 wolvwealth/static/img/hero.psd
 wolvwealth/static/img/feature1.psd
 wolvwealth/static/css/output.css
+historical_prices.csv
