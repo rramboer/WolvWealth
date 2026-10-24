@@ -20,14 +20,14 @@ A **locally runnable app** where:
 - [x] **Data refresh is scripted and automatic.** `python -m wolvwealth refresh-data [--full]`, plus a startup auto-refresh when prices are more than 7 days old (`WOLVWEALTH_NO_AUTO_REFRESH=1` disables). `yfinance` was unpinned from the dead 0.2.32 to `>=1.7` (verified working); the downloader chunks requests, retries rate-limited tickers, and refuses to persist a mostly-empty result.
 - [x] **Works from any directory.** CSV/DB/sql paths all resolve from the package location, so the app, API, and CLI no longer require the repo root as the working directory.
 - [x] **Price history out of git.** `historical_prices.csv` is untracked and gitignored; the cache lives in `var/historical_prices.csv`, created on first run by migrating a pre-existing in-repo copy byte-for-byte (no re-download, numbers preserved) or, on a fresh machine, by a full download.
+- [x] **Tests.** `tests/` covers the optimizer core, the JSON API contract, and the workspace/portfolio browser flows (54 tests, ~1 s), with fixtures for a temp database and a deterministic 4-ticker synthetic market. Writing them fixed three logical bugs: universe validation let an invalid ticker slip through when it followed an alias like `top20` (mutate-while-iterate); metrics were computed from the untruncated solver output instead of the returned portfolio; and the real solver error was swallowed into a generic "Infeasible". **Policy from here on: every change ships with tests.**
 - [x] **One build system, minimal deps.** `requirements.txt` is deleted; `pyproject.toml` is the single source of truth with four runtime dependencies (Flask, pandas, pyportfolioopt, yfinance — solvers come in transitively) and lint/test tools behind a `dev` extra. `bin/setup` installs globally (`pip install --user --break-system-packages -e ".[dev]"`); the old venv setup, gunicorn, and the sudo-port-80 "prod" mode are gone, and the dev server binds to localhost only.
 
 ## Remaining, roughly in order
 
 Priority call: finish the app for **humans running it manually** first; tailoring it for agents comes after that.
 
-1. **Tests** for the optimizer core, workspace/portfolio flows, and the API contract, with a fixture pointing the DB at a temp file. While writing them, fix the logical bugs they expose (metrics computed before `max_positions` truncation; the real solver error swallowed into a generic "Infeasible") and simplify where the code allows. **Policy from here on: every change ships with tests.**
-2. **Bulk holdings import** (CSV upload or paste box) so a 30-position portfolio isn't 30 form submissions. This is also the step where an agent could load a brokerage export into a workspace.
+1. **Bulk holdings import** (CSV upload or paste box) so a 30-position portfolio isn't 30 form submissions. This is also the step where an agent could load a brokerage export into a workspace.
 3. **Hygiene.**
    - Unify `backtest.py` with `Optimization` (it duplicates the maths and can drift).
    - Delete or build out the empty React `/optimizer/` page; drop the unused frontend deps (MUI, Chart.js, Google Charts, react-scripts) if deleting.

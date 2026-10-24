@@ -265,7 +265,7 @@ Total investment must be greater than zero, so you need cash or holdings or both
 
 - **Holdings are liquidated, not held.** `initial_holdings` is converted to a dollar figure and the entire amount is reallocated across `universe`. The optimizer does not model trades or taxes. The browser flow at least adds your held tickers to the universe so keeping them is possible; the raw API does not unless you do it yourself. A held ticker absent from the result means "sell it all" — the results page says so.
 - **Prices are cached, not live.** Share counts and holding values use the last row of `var/historical_prices.csv`; no quote is fetched during a request. The startup auto-refresh keeps the cache within about a week of today. Both the workspace and results pages display the price date.
-- **Expected returns are naive.** Mean historical return over the full 2006-to-present window and an exponentially weighted covariance. Any asset with a short history will have NaNs in its column, which PyPortfolioOpt handles poorly and usually surfaces as the generic "Infeasible" error.
+- **Expected returns are naive.** Mean historical return over the full 2006-to-present window and an exponentially weighted covariance. Any asset with a short history will have NaNs in its column, which PyPortfolioOpt handles poorly; the solver's real error message is included in the 400 response.
 
 ### The optimization pipeline in detail
 
@@ -286,10 +286,10 @@ flowchart TD
     J --> K["drop zero weights"]
     K --> L["shares = w * total / last_price<br/>value = w * total"]
     L --> M["portfolio_performance -> metrics"]
-    G -. "any exception" .-> X["400 'Optimization Error. Infeasible.'<br/>(original exception swallowed)"]
+    G -. "any exception" .-> X["400 'Optimization Error. ...'<br/>(includes the real solver error)"]
 ```
 
-The `max_positions` step is a post-hoc truncation, not a cardinality constraint in the solver. The reported Sharpe/return/volatility metrics come from the **untruncated** solution, so they are slightly wrong whenever `max_positions` actually removed something.
+The `max_positions` step is a post-hoc truncation, not a cardinality constraint in the solver. The reported Sharpe/return/volatility metrics are recomputed from the truncated, renormalized weights, so they describe the portfolio that is actually returned.
 
 ## 8. Workflow: market data
 
@@ -434,8 +434,8 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 **Correctness**
 
-1. Metrics are computed before `max_positions` truncation, so they do not describe the portfolio that is returned (§7).
-2. The real optimization exception is swallowed and replaced by a generic "Infeasible" message, which makes NaN/short-history failures hard to diagnose.
+1. ~~Metrics computed before `max_positions` truncation~~ — fixed; metrics now describe the returned portfolio (§7).
+2. ~~Real optimization exception swallowed~~ — fixed; the solver's error text is part of the 400 message.
 3. `backtest.py` duplicates the optimization logic instead of importing `Optimization` (now framework-free, so the import is finally possible). The two can drift.
 
 **Operability for a local, single-user setup**
@@ -446,7 +446,7 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 **Hygiene**
 
-7. No tests. `pytest` and `pytest-mock` are installed but `tests/` does not exist. The workspace/portfolio flows are now easy to test with the Flask test client and a temp database.
+7. ~~No tests~~ — `tests/` covers the optimizer core, the API contract, and the workspace/portfolio flows (temp DB + synthetic market fixtures). Every change from now on ships with tests.
 8. ~~`pyproject.toml` dependencies disagree with `requirements.txt`~~ — done; `requirements.txt` is deleted and `pyproject.toml` is the single source of truth (four runtime deps, dev tools behind a `dev` extra).
 9. Each Jinja template carries its own copy of the header, nav, footer, and scroll script. No base template.
 10. The React optimizer page is an empty shell; either build it against `/api/optimize/` or delete it along with the unused frontend dependencies (MUI, Chart.js, Google Charts, react-scripts) and `bundle.js.map`.

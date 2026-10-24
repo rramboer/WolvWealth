@@ -127,17 +127,19 @@ Conventions the existing code follows and new code should too:
 
 ### Tests
 
-There are none yet. `pytest` and `pytest-mock` come with the `dev` extra and the editable install makes the package importable. When you add the first ones, put them in `tests/`, set `WOLVWEALTH_NO_AUTO_REFRESH=1`, and use the Flask test client:
-
-```python
-import wolvwealth
-
-def test_workspace_required():
-    client = wolvwealth.app.test_client()
-    assert client.get("/workspace/").status_code == 302  # redirects to the picker
+```bash
+pytest tests/ -q
 ```
 
-Tests that create or mutate workspaces touch your local `var/wolvwealth.sqlite3`. Until there is a fixture that points `DATABASE_FILENAME` at a temp file, clean up after yourself (`./bin/db reset` restores the seed state) or test against throwaway workspace names.
+The suite covers the optimizer core, the JSON API contract, and the workspace/portfolio browser flows. The fixtures in `tests/conftest.py` give you:
+
+- `client` — a Flask test client backed by a **temp database** (your real `var/wolvwealth.sqlite3` is never touched).
+- `market` — swaps the global price data for 4 synthetic tickers (`AAA`–`DDD`) with a fixed random seed, so optimizer assertions are deterministic and fast.
+- `workspace_client` — `client` with a `tester` workspace open and one seeded portfolio.
+
+`conftest.py` sets `WOLVWEALTH_NO_AUTO_REFRESH=1` before importing the app, so tests never hit the network.
+
+**Every change ships with tests.** Bug fix → a regression test that fails without the fix. New feature → tests for its happy path and its validation errors. The suite runs in about a second; there is no excuse to skip it.
 
 ### Where things go
 
