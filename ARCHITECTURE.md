@@ -20,15 +20,14 @@ Three things live in the same process:
 | JSON API (optimize, list workspaces) | `wolvwealth/api/` | Working, no auth required |
 | Market data cache (tickers + ~20 years of daily adjusted closes) | `ticker_universe.csv` (in repo), `var/historical_prices.csv` (local cache), loaded by `wolvwealth/api/state.py` | Loaded into memory at import; auto-refreshed on startup when older than 7 days, or on demand via `python -m wolvwealth refresh-data` |
 
-There is also a standalone walk-forward backtest script, `backtest.py`, that reuses the app's data loader but is not reachable from the web app. The old React optimizer page still exists as an empty shell at `/optimizer/`; the working optimizer UI is server-rendered from the workspace page.
+There is also a standalone walk-forward backtest script, `scripts/backtest.py`, that reuses the app's data loader and `Optimization` class but is not reachable from the web app. The optimizer UI is server-rendered from the workspace page.
 
 ## 2. System overview
 
 ```mermaid
 flowchart LR
     subgraph Browser
-        HTML["Jinja pages<br/>(Tailwind CSS)<br/>picker, workspace, results"]
-        React["React bundle<br/>(optimizer page, still empty)"]
+        HTML["Jinja pages<br/>(Tailwind CSS, shared base.html)<br/>picker, workspace, results"]
     end
 
     subgraph Client["API client (curl, script)"]
@@ -54,7 +53,6 @@ flowchart LR
     YF["Yahoo Finance<br/>(via yfinance, manual refresh only)"]
 
     HTML --> Views
-    React -. "no API calls yet" .-> API
     APIClient --> API
     Views --> Helpers
     Views --> Opt
@@ -88,25 +86,25 @@ Everything is file-local to the repository root, but all paths (CSVs, `var/`, `s
 │   │   ├── index.py           Landing page
 │   │   ├── workspaces.py      Picker, create/enter/leave/delete, current_workspace(), legacy redirects
 │   │   ├── portfolios.py      Workspace page: portfolio + holdings + cash CRUD
-│   │   └── optimizer.py       React shell page + POST /optimizer/run/ (server-rendered results)
-│   ├── templates/             Jinja templates, one per page, each with its own copy of the header/footer
+│   │   └── optimizer.py       POST /optimizer/run/ (server-rendered results)
+│   ├── templates/             Jinja templates, one per page, all extending base.html
 │   │   ├── index.html         Landing
 │   │   ├── workspaces.html    Workspace picker (replaces login/register)
 │   │   ├── workspace.html     Portfolios of the active workspace (replaces account)
 │   │   ├── results.html       Optimization results table + metrics
-│   │   └── optimizer.html     Empty React shell
-│   ├── js/                    React source (main.jsx -> App.jsx -> pages/optimizer.jsx, still empty)
-│   └── static/                Images, util.css, and build outputs (output.css, bundle.js)
+│   │   ├── base.html          Shared layout: head, nav header, footer (all pages extend it)
+│   │   └── _flashes.html      Flashed-message partial
+│   └── static/                Images, util.css, and the Tailwind build output (output.css)
 ├── sql/schema.sql             Three tables: workspaces, portfolios, holdings
 ├── sql/data.sql               Seed: a `demo` workspace with one `starter` portfolio
 ├── var/                       Local state, gitignored: wolvwealth.sqlite3, secret_key
 ├── ticker_universe.csv        One ticker per line, descending market cap
 │                              (price history lives in var/historical_prices.csv, 40 MB, not in git)
-├── backtest.py                Standalone walk-forward backtest
+├── scripts/backtest.py        Standalone walk-forward backtest (reuses the app's Optimization)
 ├── bin/setup | bin/db | bin/run   Dev scripts (bin/db now uses Python's sqlite3, no CLI needed)
 ├── pyproject.toml             Package metadata, dependencies (the single source of truth), black/pylint settings
-├── package.json               Node deps for Tailwind + webpack/Babel/React
-├── tailwind.config.js, webpack.config.js
+├── package.json               Node deps: Tailwind only
+├── tailwind.config.js
 └── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
 ```
 
@@ -130,7 +128,7 @@ flowchart TD
 
 Two per-install files are generated automatically under `var/` (gitignored): the SQLite database and the session-cookie signing key. A fresh clone therefore works with no setup beyond installing dependencies, and no secrets ship with the repo.
 
-`ApplicationState` is a singleton. Any later `ApplicationState()` call anywhere in the process returns the same loaded object. `backtest.py` relies on this to swap in a truncated price history.
+`ApplicationState` is a singleton. Any later `ApplicationState()` call anywhere in the process returns the same loaded object. `scripts/backtest.py` relies on this to swap in a truncated price history.
 
 ## 5. Workflow: workspaces
 
@@ -335,9 +333,9 @@ Things to know:
 - The price CSV is 40 MB and grows with every refresh, but it lives in gitignored `var/`, so refreshes never touch git.
 - `yfinance` is `>=1.7`. Yahoo changes its endpoints often; if downloads start failing wholesale, bump yfinance first.
 
-## 9. Workflow: backtest (`backtest.py`)
+## 9. Workflow: backtest (`scripts/backtest.py`)
 
-A standalone script, run as `python3 backtest.py` from the repo root. It is not imported by the app. It duplicates the optimization logic (without the Flask parts) and walks forward in time.
+A standalone script, run as `python3 scripts/backtest.py`. It is not imported by the app. It reuses the app's `Optimization` class and walks forward in time, truncating the price history before each solve.
 
 ```mermaid
 flowchart TD
@@ -363,17 +361,15 @@ flowchart LR
     subgraph RunDev["bin/run dev"]
         DB1["./bin/db create<br/>(python sqlite3, no-op if DB exists;<br/>the app also self-creates it)"]
         TW["npx tailwindcss -o static/css/output.css --watch"]
-        WP["npx webpack --watch<br/>js/main.jsx -> static/js/bundle.js"]
         FL["flask --app wolvwealth --debug run :8000"]
     end
-    DB1 --> TW --> WP --> FL
+    DB1 --> TW --> FL
     TPL["templates/*.html"] -. "link" .-> OUT["output.css (gitignored)"]
-    OPT["templates/optimizer.html<br/>&lt;div id=reactEntry&gt;"] -. "script" .-> BUN["bundle.js (gitignored)"]
 ```
 
 - `bin/db` now uses Python's built-in `sqlite3` module, so the `sqlite3` CLI is no longer required. `create`/`destroy`/`reset`/`dump` operate on workspaces, portfolios, and holdings.
 - `bin/run` only has a `dev` mode and binds to localhost. The old `prod` mode (debug server under `sudo` on port 80) and the gunicorn config are gone: this app has no auth and is localhost-only by design.
-- The React app (`js/App.jsx`) has one route, `/optimizer/`, whose component renders an empty `<section>`. The working optimizer UI is the server-rendered form on `/workspace/` plus `results.html`. `package.json` still pulls in MUI, Chart.js, Google Charts, a pie chart lib, and `react-scripts`, none of which are used.
+- There is no JavaScript build beyond Tailwind. The optimizer UI is the server-rendered form on `/workspace/` plus `results.html`.
 
 ## 11. Data model
 
@@ -416,7 +412,6 @@ Foreign keys cascade on delete (delete a workspace and its portfolios and holdin
 | POST | `/portfolios/delete/` | yes | views/portfolios.py | Scoped to open workspace |
 | POST | `/portfolios/cash/` | yes | views/portfolios.py | Set uninvested cash |
 | POST | `/portfolios/holdings/` | yes | views/portfolios.py | Upsert one ticker (0 shares removes); ticker must be in the universe |
-| GET | `/optimizer/` | yes | views/optimizer.py | Empty React shell (legacy) |
 | POST | `/optimizer/run/` | yes | views/optimizer.py | Optimize a saved portfolio, render results.html |
 | GET/POST | `/api/` | no | api/__init__.py | Endpoint listing |
 | GET | `/api/workspaces/` | no | api/__init__.py | All workspaces, portfolios, holdings as JSON |
@@ -436,7 +431,7 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 1. ~~Metrics computed before `max_positions` truncation~~ — fixed; metrics now describe the returned portfolio (§7).
 2. ~~Real optimization exception swallowed~~ — fixed; the solver's error text is part of the 400 message.
-3. `backtest.py` duplicates the optimization logic instead of importing `Optimization` (now framework-free, so the import is finally possible). The two can drift.
+3. ~~`backtest.py` duplicates the optimization logic~~ — fixed; `scripts/backtest.py` imports and reuses `Optimization`.
 
 **Operability for a local, single-user setup**
 
@@ -448,6 +443,6 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 7. ~~No tests~~ — `tests/` covers the optimizer core, the API contract, and the workspace/portfolio flows (temp DB + synthetic market fixtures). Every change from now on ships with tests.
 8. ~~`pyproject.toml` dependencies disagree with `requirements.txt`~~ — done; `requirements.txt` is deleted and `pyproject.toml` is the single source of truth (four runtime deps, dev tools behind a `dev` extra).
-9. Each Jinja template carries its own copy of the header, nav, footer, and scroll script. No base template.
-10. The React optimizer page is an empty shell; either build it against `/api/optimize/` or delete it along with the unused frontend dependencies (MUI, Chart.js, Google Charts, react-scripts) and `bundle.js.map`.
+9. ~~Each Jinja template carries its own copy of the header, nav, footer, and scroll script~~ — fixed; all pages extend `templates/base.html` and include `_flashes.html`.
+10. ~~The React optimizer page is an empty shell~~ — deleted, along with webpack and all unused frontend dependencies; `/optimizer/` now 404s.
 11. Timezones: `created` timestamps are stored in UTC and now displayed nowhere, so the old hardcoded UTC-5 conversion is gone — but if we surface timestamps again, do it properly.

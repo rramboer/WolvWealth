@@ -15,5 +15,4 @@ fi
 
 ./bin/db create
 npx tailwindcss -o wolvwealth/static/css/output.css --watch &
-npx webpack --config webpack.config.js --watch &
 flask --app wolvwealth --debug run --port 8000

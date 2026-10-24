@@ -30,6 +30,9 @@ dev = [
 [tool.setuptools]
 packages = ["wolvwealth"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.pylint."messages control"]
 disable = ["cyclic-import"]
 

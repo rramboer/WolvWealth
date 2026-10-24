@@ -107,3 +107,17 @@ def test_legacy_redirects(client):
     assert "/workspaces/" in client.get("/login/").headers["Location"]
     assert "/workspaces/" in client.get("/register/").headers["Location"]
     assert "/workspace/" in client.get("/account/").headers["Location"]
+
+
+def test_landing_and_picker_render(client):
+    assert client.get("/").status_code == 200
+    assert client.get("/workspaces/").status_code == 200
+
+
+def test_flashed_message_renders_on_picker(client):
+    client.post("/workspaces/create/", data={"name": "bad/name"})
+    assert b"Workspace names are" in client.get("/workspaces/").data
+
+
+def test_react_shell_page_is_gone(client):
+    assert client.get("/optimizer/").status_code == 404

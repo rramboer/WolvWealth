@@ -10,7 +10,7 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code
 |---|---|---|
 | Python | 3.12 (3.10+ required) | We use the **global interpreter on purpose** — no venv. The optimizer and API must work from anywhere on the device, including for AI agents spawned in arbitrary directories (see README "Why local-first"). |
 | pip | any recent | |
-| Node.js + npm | Node 24 / npm 11 | Only needed for the website CSS and the React bundle. The JSON API works without Node. |
+| Node.js + npm | Node 24 / npm 11 | Only needed to build the website CSS (Tailwind). The JSON API works without Node. |
 | git | any | |
 
 The `sqlite3` CLI is **not** required: `bin/db` uses Python's built-in sqlite3 module, and the app creates its own database on first run.
@@ -23,7 +23,7 @@ cd WolvWealth
 ./bin/setup
 ```
 
-`bin/setup` runs `pip install --user --break-system-packages -e ".[dev]"` (an editable install into the global interpreter, including the dev tools) and `npm install` (Tailwind, webpack, Babel, React — skipped automatically if npm is missing; the JSON API works without it). Dependencies are declared in `pyproject.toml` and deliberately minimal — just Flask, pandas, pyportfolioopt, and yfinance at runtime — because this gets installed globally on other people's machines. There is no `requirements.txt` anymore.
+`bin/setup` runs `pip install --user --break-system-packages -e ".[dev]"` (an editable install into the global interpreter, including the dev tools) and `npm install` (Tailwind only — skipped automatically if npm is missing; the JSON API works without it). Dependencies are declared in `pyproject.toml` and deliberately minimal — just Flask, pandas, pyportfolioopt, and yfinance at runtime — because this gets installed globally on other people's machines. There is no `requirements.txt` anymore.
 
 Because the install is editable and data-file paths are resolved from the install location, `import wolvwealth`, the Flask app, and `python -m wolvwealth` all work from **any directory**.
 
@@ -44,7 +44,7 @@ To wipe all local workspaces and start over:
 # http://localhost:8000
 ```
 
-This starts a Tailwind watcher and a webpack watcher in the background and then the Flask debug server in the foreground. Ctrl-C stops Flask; the two `npx` watchers may keep running and need to be killed separately (`pkill -f tailwindcss; pkill -f webpack`).
+This starts a Tailwind watcher in the background and then the Flask debug server in the foreground. Ctrl-C stops Flask; the Tailwind watcher may keep running and need to be killed separately (`pkill -f tailwindcss`).
 
 **API only** (no Node needed):
 
@@ -112,8 +112,8 @@ A holding can only be added if its ticker has a column in `historical_prices.csv
 Settings live in `pyproject.toml`. The tools come with the `dev` extra (`pip install -e ".[dev]"`, which `bin/setup` does).
 
 ```bash
-black --line-length 120 wolvwealth backtest.py
-pycodestyle --max-line-length 120 wolvwealth
+black --line-length 120 wolvwealth scripts/backtest.py
+pycodestyle --max-line-length 120 wolvwealth scripts tests
 pydocstyle wolvwealth
 pylint wolvwealth
 ```
@@ -146,9 +146,9 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 | I want to... | Touch |
 |---|---|
 | Add or change an API endpoint | `wolvwealth/api/<module>.py`, import it in `wolvwealth/api/__init__.py` |
-| Add or change a web page | `wolvwealth/views/<page>.py` + `wolvwealth/templates/<page>.html`, import in `wolvwealth/views/__init__.py` |
+| Add or change a web page | `wolvwealth/views/<page>.py` + `wolvwealth/templates/<page>.html` (extend `base.html`), import in `wolvwealth/views/__init__.py` |
 | Change workspace/portfolio storage | `wolvwealth/portfolios.py` (helpers), `sql/schema.sql` + `sql/data.sql` (schema), then `./bin/db reset` |
-| Change the optimizer maths | `Optimization` in `wolvwealth/api/optimize.py` — framework-free, plain dict in, plain dict out. Mirror the change in `backtest.py` until the two are unified |
+| Change the optimizer maths | `Optimization` in `wolvwealth/api/optimize.py` — framework-free, plain dict in, plain dict out. `scripts/backtest.py` reuses it |
 | Change the browser optimize flow | `wolvwealth/views/optimizer.py` + `templates/results.html`, forms live in `templates/workspace.html` |
 | Change global config | `wolvwealth/config.py` |
 

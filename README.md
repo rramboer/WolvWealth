@@ -34,8 +34,7 @@ The current state of the code, with diagrams of every workflow and an honest lis
 | Optimize a saved portfolio from the browser, results page with metrics and target allocation | Working |
 | `POST /api/optimize/`: optimize by stored portfolio name or explicit holdings, no auth header | Working |
 | Market data: 2006-01-03 to today, adjusted close, 1,982 tickers | Cached in gitignored `var/` (built or migrated on first run). Auto-refreshed on startup when stale; `python -m wolvwealth refresh-data` on demand |
-| Walk-forward backtest (`backtest.py`) | Runs standalone from the command line |
-| React optimizer page (`/optimizer/`) | Empty shell, superseded by the server-rendered flow |
+| Walk-forward backtest (`scripts/backtest.py`) | Runs standalone from the command line, reuses the app's optimizer |
 
 ## Quickstart
 

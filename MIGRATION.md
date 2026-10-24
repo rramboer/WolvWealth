@@ -21,6 +21,7 @@ A **locally runnable app** where:
 - [x] **Works from any directory.** CSV/DB/sql paths all resolve from the package location, so the app, API, and CLI no longer require the repo root as the working directory.
 - [x] **Price history out of git.** `historical_prices.csv` is untracked and gitignored; the cache lives in `var/historical_prices.csv`, created on first run by migrating a pre-existing in-repo copy byte-for-byte (no re-download, numbers preserved) or, on a fresh machine, by a full download.
 - [x] **Tests.** `tests/` covers the optimizer core, the JSON API contract, and the workspace/portfolio browser flows (54 tests, ~1 s), with fixtures for a temp database and a deterministic 4-ticker synthetic market. Writing them fixed three logical bugs: universe validation let an invalid ticker slip through when it followed an alias like `top20` (mutate-while-iterate); metrics were computed from the untruncated solver output instead of the returned portfolio; and the real solver error was swallowed into a generic "Infeasible". **Policy from here on: every change ships with tests.**
+- [x] **Hygiene.** The empty React `/optimizer/` page, the webpack build, and every unused frontend dependency (MUI, Chart.js, Google Charts, react-scripts, ...) are deleted; `package.json` only carries Tailwind. `scripts/backtest.py` now reuses the app's `Optimization` class instead of a stale duplicate, with tests. The templates share one Jinja `base.html` (header, nav, footer, flashes) instead of five copies.
 - [x] **One build system, minimal deps.** `requirements.txt` is deleted; `pyproject.toml` is the single source of truth with four runtime dependencies (Flask, pandas, pyportfolioopt, yfinance — solvers come in transitively) and lint/test tools behind a `dev` extra. `bin/setup` installs globally (`pip install --user --break-system-packages -e ".[dev]"`); the old venv setup, gunicorn, and the sudo-port-80 "prod" mode are gone, and the dev server binds to localhost only.
 
 ## Remaining, roughly in order
@@ -28,12 +29,8 @@ A **locally runnable app** where:
 Priority call: finish the app for **humans running it manually** first; tailoring it for agents comes after that.
 
 1. **Bulk holdings import** (CSV upload or paste box) so a 30-position portfolio isn't 30 form submissions. This is also the step where an agent could load a brokerage export into a workspace.
-2. **Hygiene.**
-   - Unify `backtest.py` with `Optimization` (it duplicates the maths and can drift).
-   - Delete or build out the empty React `/optimizer/` page; drop the unused frontend deps (MUI, Chart.js, Google Charts, react-scripts) if deleting.
-   - A Jinja base template instead of per-page header/footer copies.
-3. **One-command setup** on any machine (installer script or container) so a non-developer household member can get it running. Note the tension with the global-install requirement: if we containerize, the API port is still what agents talk to, but "packages work anywhere on the device" argues for a plain installer first.
-4. **Agent-readiness of the API** (deliberately last — on the back burner until the app is done for manual human use).
+2. **One-command setup** on any machine (installer script or container) so a non-developer household member can get it running. Note the tension with the global-install requirement: if we containerize, the API port is still what agents talk to, but "packages work anywhere on the device" argues for a plain installer first.
+3. **Agent-readiness of the API** (deliberately last — on the back burner until the app is done for manual human use).
    - Consider a `trades` block in the optimize response (buy/sell share deltas vs. `initial_holdings`) so an agent can feed the broker MCP directly instead of diffing allocations itself.
    - Document the API contract well enough that it can be dropped into an agent's context (or exposed via a thin MCP wrapper of our own) without reading the code.
 
