@@ -1,16 +1,11 @@
 PRAGMA foreign_keys = ON;
 
-INSERT INTO users(username, password, email, created) VALUES 
-('rramboer', '$2b$12$wiiEvz7U.ovEUCY88vLzyeYnBVQkh6rSz0fc5DR5Hxk2VtJ/ub1EC', 'ryanramboer@gmail.com', '2023-11-19 00:00:00'),
-('cvano', '$2b$12$Gkob/WzSEZJMeb5an3ZN5uT9P90np/88vnQwJDM.Lc8mx.2N6jiGm', 'cvano@umich.edu', '2023-11-19 00:00:00'),
-('nvano', '$2b$12$sEodwM/WSt3oLojlcSYM..pVvAb0.wTtlubmzcNDF6eQCcsJLP8De', 'nvano@umich.edu', '2023-11-19 00:00:00');
+-- Example workspace so a fresh install has something to click on.
+-- Safe to delete from the Workspaces page.
+INSERT INTO workspaces(name) VALUES ('demo');
 
-INSERT INTO tokens(owner, token, expires, uses) VALUES
-('rramboer', 'sXcu2A_Sic09hbBqmRsWKQ', '2123-11-19 00:00:00', 1000000000),
-('cvano', '_P7ZI-CiSeLd_xY38R_KLQ', '2123-11-19 00:00:00', 1000000000),
-('nvano', 'YNMjoPg6FP7FIWNRjmnylA', '2123-11-19 00:00:00', 1000000000);
+INSERT INTO portfolios(workspace, name, cash) VALUES ('demo', 'starter', 10000.0);
 
-INSERT INTO admins(username) VALUES
-('rramboer'),
-('cvano'),
-('nvano');
+INSERT INTO holdings(portfolio_id, ticker, shares) VALUES
+((SELECT id FROM portfolios WHERE workspace = 'demo' AND name = 'starter'), 'AAPL', 10.0),
+((SELECT id FROM portfolios WHERE workspace = 'demo' AND name = 'starter'), 'MSFT', 5.0);

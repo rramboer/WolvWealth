@@ -5,15 +5,11 @@ GET /
 
 from flask import render_template
 import wolvwealth
-from wolvwealth.views.accounts import is_logged_in
+from wolvwealth.views.workspaces import current_workspace
 
 
 @wolvwealth.app.route("/", methods=["GET"])
 def show_landing():
     """Display / route."""
-    context = {
-        "user": {
-            "is_authenticated": is_logged_in(),
-        },
-    }
+    context = {"workspace": current_workspace()}
     return render_template("index.html", **context)

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Workspaces | WolvWealth</title>
+    <meta name="description" content="Choose or create a WolvWealth workspace.">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/css/output.css">
+    <link rel="stylesheet" href="/static/css/util.css">
+    <link rel="icon" href="/static/img/logo.png" type="image/png">
+</head>
+
+<body class="bg-gray-dark font-sans">
+    <section
+        class="bg-[url('/static/img/gold.png')] w-full h-screen bg-center bg-cover flex flex-wrap items-center justify-between mx-auto p-4">
+        <div class="flex flex-col items-center justify-center px-6 py-8 mx-auto md:h-screen lg:py-0 h-auto w-screen">
+            <a href="/" class="flex items-center space-x-3 rtl:space-x-reverse mb-6">
+                <img src="/static/img/logo.png" class="h-8" alt="WolvWealth Logo" />
+                <span class="self-center text-2xl font-semibold whitespace-nowrap text-white ubuntu">WolvWealth</span>
+            </a>
+            <div class="w-full rounded-lg shadow-lg md:mt-0 sm:max-w-md xl:p-0 backdrop-blur bg-gray-dark/30">
+                <div class="p-6 space-y-4 md:space-y-6 sm:p-8">
+                    <h1 class="text-lg font-bold leading-tight tracking-tight text-white">
+                        Choose a workspace
+                    </h1>
+                    <p class="text-sm font-light text-[#cad0da]">
+                        A workspace keeps one person's portfolios separate on this computer. No passwords.
+                    </p>
+
+                    {% with messages = get_flashed_messages() %}
+                    {% if messages %}
+                    <div class="rounded-lg border border-red p-2.5">
+                        {% for message in messages %}
+                        <p class="text-sm text-red">{{ message }}</p>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% endwith %}
+
+                    {% if workspaces %}
+                    <div class="space-y-2">
+                        {% for ws in workspaces %}
+                        <div class="flex items-center space-x-2">
+                            <form action="{{ url_for('workspaces_enter') }}" method="post" class="flex-grow">
+                                <input type="hidden" name="name" value="{{ ws.name }}" />
+                                <button type="submit"
+                                    class="w-full text-left text-white font-medium rounded-lg text-sm px-4 py-2.5 bg-gray-dark/60 hover:bg-gray-dark">
+                                    {{ ws.name }}
+                                    <span class="text-xs" style="color: gray;">
+                                        &mdash; {{ ws.portfolio_count }} portfolio{{ '' if ws.portfolio_count == 1 else 's' }}
+                                    </span>
+                                </button>
+                            </form>
+                            <form action="{{ url_for('workspaces_delete') }}" method="post"
+                                onsubmit="return confirm('Delete workspace \'{{ ws.name }}\' and all of its portfolios?');">
+                                <input type="hidden" name="name" value="{{ ws.name }}" />
+                                <button type="submit" title="Delete workspace"
+                                    class="text-red rounded-lg text-sm px-3 py-2.5 bg-gray-dark/60 hover:bg-gray-dark">&times;</button>
+                            </form>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-sm text-white">No workspaces yet. Create the first one below.</p>
+                    {% endif %}
+
+                    <form class="space-y-4" action="{{ url_for('workspaces_create') }}" method="post">
+                        <div>
+                            <label for="name" class="block mb-2 text-sm font-medium text-white">New workspace</label>
+                            <input type="text" name="name" id="name" maxlength="64"
+                                class="bg-gray-50 border sm:text-sm rounded-lg block w-full p-2.5"
+                                placeholder="e.g. ryan" required="">
+                        </div>
+                        <button type="submit"
+                            class="w-full text-white focus:ring-4 font-medium rounded-lg text-sm px-5 py-2.5 text-center bg-gray-dark/60">Create
+                            and open</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="w-[90%] h-10 mx-auto">
+        <div class="text-center py-12">
+            <p class="text-white mb-2">&copy; 2024 WolvWealth. All rights reserved.</p>
+            <p class="text-xs mx-auto" style="max-width: 1017px; color: gray;">
+                The calculations and information on this site are for educational
+                purposes only and are not investment advice. Calculations are estimates and do not account for all
+                market conditions. Nothing contained on this site constitutes a solicitation, recommendation,
+                or offer to buy or sell any financial instruments. Stock
+                recommendations presented on this site do not represent the opinions of WolvWealth on whether to buy,
+                sell or hold shares of a particular stock. Past stock performance is no
+                guarantee of future price performance.
+            </p>
+        </div>
+    </footer>
+</body>
+
+</html>

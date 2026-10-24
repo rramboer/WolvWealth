@@ -2,9 +2,8 @@
 
 import flask
 import wolvwealth
-import wolvwealth.api.admin
+import wolvwealth.portfolios
 import wolvwealth.api.api_exceptions
-import wolvwealth.api.auth
 import wolvwealth.api.optimize
 from wolvwealth.api.state import ApplicationState
 
@@ -12,26 +11,28 @@ from wolvwealth.api.state import ApplicationState
 @wolvwealth.app.route("/api/", methods=["GET", "POST"])
 def api_default():
     """WolvWealth API Usage Endpoint."""
-    api_key = flask.request.headers.get("Authorization")
-    if wolvwealth.api.admin.check_admin_priv(api_key):
-        return flask.jsonify(
-            {
-                "/api/": "API Usage Info",
-                "/api/optimize/": "Optimize Portfolio",
-                "/api/account/": "View Account Details",
-                "/api/db/status/": "Test Database Connection",
-                "/api/db/dump/": "Dump Database",
-                "/api/admin/add/": "Add Admin",
-                "/api/admin/remove/": "Remove Admin",
-                "/api/admin/user-info/": "Fetch User Info",
-                "/api/admin/update-user/": "Update User Info",
-                "/api/admin/delete-user/": "Delete User",
-            }
-        )
     return flask.jsonify(
         {
             "/api/": "API Usage Info",
-            "/api/optimize/": "Optimize Portfolio",
-            "/api/account/": "View Account Details",
+            "/api/optimize/": "Optimize Portfolio (POST JSON; accepts workspace/portfolio or explicit holdings)",
+            "/api/workspaces/": "List workspaces and their portfolios",
         }
     )
+
+
+@wolvwealth.app.route("/api/workspaces/", methods=["GET"])
+def api_workspaces():
+    """List all workspaces with their portfolios and holdings."""
+    output = {"workspaces": []}
+    for workspace in wolvwealth.portfolios.fetch_workspaces():
+        portfolios = wolvwealth.portfolios.fetch_portfolios(workspace["name"])
+        output["workspaces"].append(
+            {
+                "name": workspace["name"],
+                "created": workspace["created"],
+                "portfolios": [
+                    {"name": p["name"], "cash": p["cash"], "holdings": p["holdings"]} for p in portfolios
+                ],
+            }
+        )
+    return flask.jsonify(output)

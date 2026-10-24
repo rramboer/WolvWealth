@@ -1,24 +1,29 @@
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE users(
-  username VARCHAR(20) NOT NULL,
-  password VARCHAR(256) NOT NULL,
+-- A workspace is a person using this machine (e.g. "ryan", "my-brother").
+-- No passwords: anyone at the keyboard can open any workspace.
+CREATE TABLE workspaces(
+  name VARCHAR(64) NOT NULL,
   created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  email VARCHAR(256) NOT NULL,
-  PRIMARY KEY(username)
+  PRIMARY KEY(name)
 );
 
-CREATE TABLE tokens(
-    owner VARCHAR(20) NOT NULL,
-    token VARCHAR(32) NOT NULL,
-    expires DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    uses INT NOT NULL DEFAULT 10,
-    PRIMARY KEY(token),
-    FOREIGN KEY(owner) REFERENCES users(username) ON DELETE CASCADE
+-- A portfolio belongs to one workspace (e.g. "long-term", "lottery-tickets").
+CREATE TABLE portfolios(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace VARCHAR(64) NOT NULL,
+  name VARCHAR(64) NOT NULL,
+  cash REAL NOT NULL DEFAULT 0,
+  created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(workspace, name),
+  FOREIGN KEY(workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
-CREATE TABLE admins(
-    username VARCHAR(20) NOT NULL,
-    PRIMARY KEY(username),
-    FOREIGN KEY(username) REFERENCES users(username) ON DELETE CASCADE
+-- Current holdings of a portfolio: share counts per ticker.
+CREATE TABLE holdings(
+  portfolio_id INTEGER NOT NULL,
+  ticker VARCHAR(16) NOT NULL,
+  shares REAL NOT NULL,
+  PRIMARY KEY(portfolio_id, ticker),
+  FOREIGN KEY(portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
 );

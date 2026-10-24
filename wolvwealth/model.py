@@ -1,4 +1,5 @@
 """WolvWealth model (database) API."""
+import pathlib
 import sqlite3
 import flask
 import wolvwealth
@@ -11,6 +12,23 @@ def dict_factory(cursor, row):
     template.  Note that this would be inefficient for large queries.
     """
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
+def ensure_db():
+    """Create the database from sql/ if it does not exist yet.
+
+    The database holds per-person workspaces and portfolios, so it lives in
+    var/ outside of git and every machine builds its own on first run.
+    """
+    db_filename = pathlib.Path(wolvwealth.app.config["DATABASE_FILENAME"])
+    if db_filename.exists():
+        return
+    root = pathlib.Path(wolvwealth.app.config["WOLVWEALTH_ROOT"])
+    connection = sqlite3.connect(str(db_filename))
+    connection.executescript((root/"sql"/"schema.sql").read_text())
+    connection.executescript((root/"sql"/"data.sql").read_text())
+    connection.commit()
+    connection.close()
 
 
 def get_db():

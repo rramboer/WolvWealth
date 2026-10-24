@@ -1,18 +1,26 @@
 """API Portfolio Optimization."""
 import flask
 import wolvwealth
+import wolvwealth.portfolios
 
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.api.api_exceptions import InvalidUsage
-from wolvwealth.api.auth import check_api_key
 
 
 class Optimization:
-    def __init__(self) -> None:
+    """Run one optimization from a plain input dictionary.
+
+    Framework-free on purpose: callers (JSON API, HTML views, scripts) build
+    the input dict themselves and read the plain-dict result from .result.
+    """
+
+    def __init__(self, input_json: dict) -> None:
         """Initialize optimization."""
-        check_api_key()
+        if not isinstance(input_json, dict):
+            raise InvalidUsage("Parse Error. Request body must be a JSON object.")
+        self.input_json = input_json
         self.state = ApplicationState()
         self.set_defaults()
         self.parse_input()
@@ -28,11 +36,7 @@ class Optimization:
         self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%.
 
     def parse_input(self) -> None:
-        """Parse request as JSON."""
-        try:
-            self.input_json = flask.request.json
-        except Exception:
-            raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
+        """Parse the input dictionary."""
         self.parse_initial_cash()
         self.parse_universe()
         self.parse_initial_holdings()
@@ -202,10 +206,42 @@ class Optimization:
                 "sharpe_ratio": round(metrics[2], 2),
                 "num_assets": len(cleaned_weights),
             }
-        self.output = flask.jsonify(output)
+        self.result = output
+
+
+def resolve_portfolio_input(input_json: dict) -> dict:
+    """Expand a saved-portfolio reference into cash and holdings.
+
+    A request may say {"workspace": "ryan", "portfolio": "long-term"} instead
+    of spelling out initial_cash/initial_holdings. The workspace falls back to
+    the browser session's active workspace. Explicit fields win over stored
+    values so a request can still override either one.
+    """
+    if not isinstance(input_json, dict) or "portfolio" not in input_json:
+        return input_json
+    if not isinstance(input_json["portfolio"], str):
+        raise InvalidUsage("Invalid portfolio. portfolio must be a string (a portfolio name).")
+    workspace = input_json.pop("workspace", None)
+    if workspace is None:
+        workspace = flask.session.get("workspace")
+    if workspace is None:
+        raise InvalidUsage("No workspace given. Pass \"workspace\" or open one in the browser first.")
+    if not isinstance(workspace, str):
+        raise InvalidUsage("Invalid workspace. workspace must be a string.")
+    portfolio = wolvwealth.portfolios.fetch_portfolio(workspace, name=input_json.pop("portfolio"))
+    if portfolio is None:
+        raise InvalidUsage("Unknown portfolio for this workspace.", status_code=404)
+    input_json.setdefault("initial_cash", portfolio["cash"])
+    input_json.setdefault("initial_holdings", portfolio["holdings"])
+    return input_json
 
 
 @wolvwealth.app.route("/api/optimize/", methods=["POST"])
 def optimize():
     """Execute Optimization"""
-    return Optimization().output
+    try:
+        input_json = flask.request.get_json(force=True)
+    except Exception:
+        raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
+    input_json = resolve_portfolio_input(input_json)
+    return flask.jsonify(Optimization(input_json).result)

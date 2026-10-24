@@ -1,9 +1,41 @@
 #!/bin/bash
 # wolvwealthdb
+#
+# Manages the local workspace database (var/wolvwealth.sqlite3). Uses Python's
+# sqlite3 module so the sqlite3 CLI does not need to be installed.
 
 # Stop script on errors
 set -Eeuo pipefail
 # set -x
+
+create_db() {
+  python3 - <<'EOF'
+import pathlib
+import sqlite3
+
+path = pathlib.Path("var/wolvwealth.sqlite3")
+path.parent.mkdir(exist_ok=True)
+db = sqlite3.connect(path)
+db.executescript(pathlib.Path("sql/schema.sql").read_text())
+db.executescript(pathlib.Path("sql/data.sql").read_text())
+db.commit()
+db.close()
+EOF
+}
+
+dump_db() {
+  python3 - <<'EOF'
+import sqlite3
+
+db = sqlite3.connect("var/wolvwealth.sqlite3")
+db.row_factory = sqlite3.Row
+for table in ("workspaces", "portfolios", "holdings"):
+    print(f"== {table} ==")
+    for row in db.execute(f"SELECT * FROM {table}"):
+        print(dict(row))
+    print()
+EOF
+}
 
 # Sanity check command line options
 usage() {
@@ -21,30 +53,24 @@ case $1 in
     if [ -e var/wolvwealth.sqlite3 ]; then
       echo "Database already exists."
     else
-      sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
-      sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
+      create_db
       echo "Database created."
     fi
     ;;
 
   "destroy")
-    rm -rf var/wolvwealth.sqlite3 var/uploads
+    rm -rf var/wolvwealth.sqlite3
     echo "Database Destroyed."
     ;;
 
   "reset")
-    rm -rf var/wolvwealth.sqlite3 var/uploads
-    sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
-    sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
-    echo "Database destroyed and recreated. All data erased."
+    rm -rf var/wolvwealth.sqlite3
+    create_db
+    echo "Database destroyed and recreated. All workspaces erased."
     ;;
 
   "dump")
-    echo "Printing Users:"
-    sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM users'
-    echo ""
-    echo "Printing Tokens:"
-    sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM tokens'
+    dump_db
     ;;
   *)
     usage
