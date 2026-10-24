@@ -5,12 +5,12 @@ app = Flask(__name__)
 
 app.config.from_object("wolvwealth.config")
 
-import wolvwealth.model
+import wolvwealth.model  # noqa: E402  (needs `app` to exist first)
 
 wolvwealth.model.ensure_db()  # Build var/wolvwealth.sqlite3 on first run
 
-import wolvwealth.api
-import wolvwealth.views
+import wolvwealth.api  # noqa: E402
+import wolvwealth.views  # noqa: E402
 
 state = wolvwealth.api.ApplicationState()  # Preload global resources on startup
 

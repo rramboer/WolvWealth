@@ -106,7 +106,7 @@ class ApplicationState:
         return data
 
     def save_historical_prices(self) -> None:
-        """Saves historical stock prices of tickers in universe to CSV."""
+        """Save the full price history of the universe to the cache CSV."""
         historical_data = self._download_prices("2006-01-01")
         historical_data.to_csv(config.HISTORICAL_PRICES_FILE, index=True)
 

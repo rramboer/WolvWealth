@@ -1,14 +1,23 @@
-"""WolvWealth local configuration."""
+"""WolvWealth local configuration.
 
+Every path is absolute and derived from the install location, so the app,
+the API, and the ``wolvwealth`` command work from any working directory.
+"""
+
+import os
 import pathlib
 import secrets
 
 # Root of this application, useful if it doesn't occupy an entire domain
 APPLICATION_ROOT = '/'
 
-WOLVWEALTH_ROOT = pathlib.Path(__file__).resolve().parent.parent
-VAR_FOLDER = WOLVWEALTH_ROOT/'var'
-VAR_FOLDER.mkdir(exist_ok=True)
+PACKAGE_DIR = pathlib.Path(__file__).resolve().parent
+WOLVWEALTH_ROOT = PACKAGE_DIR.parent
+
+# Per-machine state (database, cookie key, price cache). Never in git.
+# WOLVWEALTH_VAR overrides the location (used by the tests for a hermetic run).
+VAR_FOLDER = pathlib.Path(os.environ.get("WOLVWEALTH_VAR", WOLVWEALTH_ROOT/'var'))
+VAR_FOLDER.mkdir(parents=True, exist_ok=True)
 
 # Key for signing the session cookie (which only stores the active workspace
 # name). Generated once per install and kept in var/, outside of git, so no
@@ -22,14 +31,14 @@ else:
 
 SESSION_COOKIE_NAME = 'wolvwealth'
 
-# Database file is var/wolvwealth.sqlite3 (created on first run, not in git)
+# Database file (created on first run from the SQL shipped in the package)
 DATABASE_FILENAME = VAR_FOLDER/'wolvwealth.sqlite3'
+SQL_DIR = PACKAGE_DIR/'sql'
 
-# Market data. Absolute paths so the app and the refresh command work from
-# any working directory, not just the repo root. The ticker universe is small
-# and ships with the repo; the 40 MB price history lives in var/ outside of
-# git (built on first run, or migrated from the old in-repo copy if present).
-TICKER_UNIVERSE_FILE = WOLVWEALTH_ROOT/'ticker_universe.csv'
+# Market data. The ticker universe is small and ships inside the package; the
+# 40 MB price history lives in var/ (built on first run, or migrated from the
+# old in-repo copy if one is present).
+TICKER_UNIVERSE_FILE = PACKAGE_DIR/'data'/'ticker_universe.csv'
 HISTORICAL_PRICES_FILE = VAR_FOLDER/'historical_prices.csv'
 LEGACY_HISTORICAL_PRICES_FILE = WOLVWEALTH_ROOT/'historical_prices.csv'
 

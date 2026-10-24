@@ -18,7 +18,11 @@ def _priced(portfolio: dict, state: ApplicationState) -> dict:
     rows = []
     total = portfolio["cash"]
     for ticker, shares in portfolio["holdings"].items():
-        price = state.fetch_ticker_price(ticker)
+        try:
+            price = state.fetch_ticker_price(ticker)
+        except KeyError:  # ticker dropped from the price cache (e.g. delisted)
+            rows.append({"ticker": ticker, "shares": shares, "price": None, "value": None})
+            continue
         value = round(shares * price, 2)
         total += value
         rows.append({"ticker": ticker, "shares": shares, "price": price, "value": value})

@@ -1,6 +1,6 @@
 # WolvWealth Architecture
 
-This document is an eagle-eye view of the codebase **as it exists today**. It describes what the app actually does, not what we want it to do. See the README for the goal, MIGRATION.md for the plan to get there, and CONTRIBUTING.md for how to work on it.
+This document is an eagle-eye view of the codebase **as it exists today**. It describes what the app actually does, not what we want it to do. See the README for the goal, [MIGRATION.md](MIGRATION.md) for the plan to get there, and [CONTRIBUTING.md](../CONTRIBUTING.md) for how to work on it.
 
 Facts in here were verified by reading the code and by running the app with the Flask test client. Where something is broken or surprising, it is called out rather than smoothed over.
 
@@ -18,17 +18,16 @@ Three things live in the same process:
 |---|---|---|
 | Server-rendered website (landing, workspace picker, workspace page with portfolio CRUD, optimizer results) | `wolvwealth/views/`, `wolvwealth/templates/` | Working end to end |
 | JSON API (optimize, list workspaces) | `wolvwealth/api/` | Working, no auth required |
-| Market data cache (tickers + ~20 years of daily adjusted closes) | `ticker_universe.csv` (in repo), `var/historical_prices.csv` (local cache), loaded by `wolvwealth/api/state.py` | Loaded into memory at import; auto-refreshed on startup when older than 7 days, or on demand via `python -m wolvwealth refresh-data` |
+| Market data cache (tickers + ~20 years of daily adjusted closes) | `wolvwealth/data/ticker_universe.csv` (in the package), `var/historical_prices.csv` (local cache), loaded by `wolvwealth/api/state.py` | Loaded into memory at import; auto-refreshed on startup when older than 7 days, or on demand via `python -m wolvwealth refresh-data` |
 
-There is also a standalone walk-forward backtest script, `backtest.py`, that reuses the app's data loader but is not reachable from the web app. The old React optimizer page still exists as an empty shell at `/optimizer/`; the working optimizer UI is server-rendered from the workspace page.
+There is also a walk-forward backtest, `scripts/backtest.py`, that drives the same `Optimization` class from the command line. The optimizer UI is server-rendered from the workspace page; the old React shell is gone.
 
 ## 2. System overview
 
 ```mermaid
 flowchart LR
     subgraph Browser
-        HTML["Jinja pages<br/>(Tailwind CSS)<br/>picker, workspace, results"]
-        React["React bundle<br/>(optimizer page, still empty)"]
+        HTML["Jinja pages extending base.html<br/>(Tailwind CSS)<br/>landing, picker, workspace, results"]
     end
 
     subgraph Client["API client (curl, script)"]
@@ -44,17 +43,16 @@ flowchart LR
         Opt["api/optimize.py<br/>PyPortfolioOpt EfficientFrontier"]
     end
 
-    subgraph Disk["Files in repo root"]
+    subgraph Disk["Files on disk"]
         DB[("var/wolvwealth.sqlite3<br/>workspaces, portfolios, holdings<br/>created on first run, gitignored")]
         Secret["var/secret_key<br/>per-install cookie key, gitignored"]
-        Tickers["ticker_universe.csv<br/>1,982 symbols, sorted by market cap"]
+        Tickers["wolvwealth/data/ticker_universe.csv<br/>1,982 symbols, sorted by market cap"]
         Prices["var/historical_prices.csv<br/>local cache, ~1,982 symbols<br/>built/migrated on first run"]
     end
 
     YF["Yahoo Finance<br/>(via yfinance, manual refresh only)"]
 
     HTML --> Views
-    React -. "no API calls yet" .-> API
     APIClient --> API
     Views --> Helpers
     Views --> Opt
@@ -68,46 +66,47 @@ flowchart LR
     State -. "save/update methods,<br/>not wired to any route" .-> YF
 ```
 
-Everything is file-local to the repository root, but all paths (CSVs, `var/`, `sql/`) are resolved as absolute paths from the package location in `config.py`, so the app, the API, and `python -m wolvwealth` can be started from **any** working directory.
+All paths (package data, `var/`) are resolved as absolute paths from the package location in `config.py`, so the app, the API, and the `wolvwealth` command can be started from **any** working directory. `WOLVWEALTH_VAR` relocates the state directory (the tests use this).
 
 ## 3. Repository layout
 
 ```
 .
 ├── wolvwealth/                Flask package (the app)
-│   ├── __init__.py            Creates `app`, loads config, ensures DB exists, imports api + views, builds ApplicationState
-│   ├── config.py              Per-install secret key (var/secret_key), DB path
-│   ├── model.py               SQLite connection helper + ensure_db() (builds DB from sql/ on first run)
+│   ├── __init__.py            Creates `app`, loads config, ensures DB exists, imports api + views, loads market data, auto-refreshes stale prices
+│   ├── __main__.py            `wolvwealth` / `python -m wolvwealth` command (refresh-data)
+│   ├── config.py              Absolute paths (package data, var/), per-install secret key, auto-refresh age
+│   ├── model.py               SQLite connection helper + ensure_db() (builds the DB from sql/ on first run)
 │   ├── portfolios.py          Workspace/portfolio DB helpers shared by views and API
 │   ├── api/
 │   │   ├── __init__.py        /api/ usage endpoint, /api/workspaces/
-│   │   ├── state.py           ApplicationState: loads/saves CSVs, yfinance helpers
+│   │   ├── state.py           ApplicationState: loads/saves/refreshes market data (yfinance, rate-limit aware)
 │   │   ├── optimize.py        Optimization class (framework-free) + POST /api/optimize/
 │   │   └── api_exceptions.py  InvalidUsage -> JSON error responses
 │   ├── views/                 HTML routes
 │   │   ├── index.py           Landing page
 │   │   ├── workspaces.py      Picker, create/enter/leave/delete, current_workspace(), legacy redirects
 │   │   ├── portfolios.py      Workspace page: portfolio + holdings + cash CRUD
-│   │   └── optimizer.py       React shell page + POST /optimizer/run/ (server-rendered results)
-│   ├── templates/             Jinja templates, one per page, each with its own copy of the header/footer
+│   │   └── optimizer.py       POST /optimizer/run/ (server-rendered results)
+│   ├── templates/
+│   │   ├── base.html          Head, nav, footer, scripts; every page extends it
+│   │   ├── _flashes.html      Flashed-message partial
 │   │   ├── index.html         Landing
-│   │   ├── workspaces.html    Workspace picker (replaces login/register)
-│   │   ├── workspace.html     Portfolios of the active workspace (replaces account)
-│   │   ├── results.html       Optimization results table + metrics
-│   │   └── optimizer.html     Empty React shell
-│   ├── js/                    React source (main.jsx -> App.jsx -> pages/optimizer.jsx, still empty)
-│   └── static/                Images, util.css, and build outputs (output.css, bundle.js)
-├── sql/schema.sql             Three tables: workspaces, portfolios, holdings
-├── sql/data.sql               Seed: a `demo` workspace with one `starter` portfolio
-├── var/                       Local state, gitignored: wolvwealth.sqlite3, secret_key
-├── ticker_universe.csv        One ticker per line, descending market cap
-│                              (price history lives in var/historical_prices.csv, 40 MB, not in git)
-├── backtest.py                Standalone walk-forward backtest
-├── bin/setup | bin/db | bin/run   Dev scripts (bin/db now uses Python's sqlite3, no CLI needed)
-├── pyproject.toml             Package metadata, dependencies (the single source of truth), black/pylint settings
-├── package.json               Node deps for Tailwind + webpack/Babel/React
-├── tailwind.config.js, webpack.config.js
-└── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
+│   │   ├── workspaces.html    Workspace picker
+│   │   ├── workspace.html     Portfolios of the active workspace
+│   │   └── results.html       Optimization results table + metrics
+│   ├── static/                logo + hero image, util.css, and the built output.css (gitignored)
+│   ├── data/ticker_universe.csv   One ticker per line, descending market cap (package data)
+│   └── sql/schema.sql, seed.sql   Three tables: workspaces, portfolios, holdings; seed = a `demo` workspace
+├── tests/                     pytest suite; conftest.py builds a hermetic var/ with synthetic prices
+├── scripts/backtest.py        Walk-forward backtest using the app's Optimization class
+├── docs/                      This file and MIGRATION.md
+├── bin/setup | bin/run | bin/db   Dev scripts (global pip install, dev server, DB reset/dump)
+├── .github/workflows/ci.yml   Style checks + tests on every pull request
+├── var/                       Per-machine state, gitignored: wolvwealth.sqlite3, secret_key, historical_prices.csv
+├── pyproject.toml             Package metadata, dependencies (single source of truth), console script, tool settings
+├── package.json, tailwind.config.js   Tailwind CSS build (the only Node dependency)
+└── README.md, CONTRIBUTING.md
 ```
 
 ## 4. Process startup
@@ -116,13 +115,13 @@ Importing the `wolvwealth` package has side effects. Routes are registered by de
 
 ```mermaid
 flowchart TD
-    A["flask --app wolvwealth run<br/>or python -m wolvwealth refresh-data<br/>or python -c 'import wolvwealth'"] --> B["wolvwealth/__init__.py<br/>app = Flask(__name__)"]
+    A["flask --app wolvwealth run<br/>or wolvwealth refresh-data<br/>or python -c 'import wolvwealth'"] --> B["wolvwealth/__init__.py<br/>app = Flask(__name__)"]
     B --> C["app.config.from_object('wolvwealth.config')<br/>creates var/, loads or generates var/secret_key"]
-    C --> D["import wolvwealth.model<br/>then ensure_db():<br/>build var/wolvwealth.sqlite3 from sql/ if missing"]
+    C --> D["import wolvwealth.model<br/>then ensure_db():<br/>build var/wolvwealth.sqlite3 from wolvwealth/sql/ if missing"]
     D --> E["import wolvwealth.api<br/>registers /api/* routes"]
     E --> F["import wolvwealth.views<br/>registers HTML routes"]
     F --> G["state = ApplicationState()"]
-    G --> H["read ticker_universe.csv<br/>-> TICKER_UNIVERSE list"]
+    G --> H["read wolvwealth/data/ticker_universe.csv<br/>-> TICKER_UNIVERSE list"]
     H --> I["var/historical_prices.csv<br/>(migrate in-repo copy or full download if missing)<br/>pd.read_csv -> HISTORICAL_PRICES DataFrame"]
     I --> R["auto-refresh if prices > 7 days old<br/>(skipped with WOLVWEALTH_NO_AUTO_REFRESH,<br/>failure is non-fatal)"]
     R --> J["Ready to serve<br/>(~1 s cached, minutes on a refresh;<br/>~70 MB DataFrame)"]
@@ -130,7 +129,7 @@ flowchart TD
 
 Two per-install files are generated automatically under `var/` (gitignored): the SQLite database and the session-cookie signing key. A fresh clone therefore works with no setup beyond installing dependencies, and no secrets ship with the repo.
 
-`ApplicationState` is a singleton. Any later `ApplicationState()` call anywhere in the process returns the same loaded object. `backtest.py` relies on this to swap in a truncated price history.
+`ApplicationState` is a singleton. Any later `ApplicationState()` call anywhere in the process returns the same loaded object. `scripts/backtest.py` relies on this to swap in a truncated price history.
 
 ## 5. Workflow: workspaces
 
@@ -187,7 +186,7 @@ flowchart TD
     F4 --> WS
 ```
 
-Every mutation query is scoped by `(workspace, portfolio_id)` in `portfolios.py`, so a stale or guessed form value cannot touch another workspace's portfolio — again for tidiness, not security, since anyone can just open the other workspace.
+A holding whose ticker has dropped out of the price cache is shown with "no cached price" instead of breaking the page. Every mutation query is scoped by `(workspace, portfolio_id)` in `portfolios.py`, so a stale or guessed form value cannot touch another workspace's portfolio — again for tidiness, not security, since anyone can just open the other workspace.
 
 ## 7. Workflow: optimize a portfolio (the core feature)
 
@@ -293,11 +292,11 @@ The `max_positions` step is a post-hoc truncation, not a cardinality constraint 
 
 ## 8. Workflow: market data
 
-Market data is the committed `ticker_universe.csv` plus a per-machine price cache in gitignored `var/historical_prices.csv`, created on first run (migrated from the old in-repo copy if present, otherwise downloaded in full). Price refresh is scripted and automatic: `python -m wolvwealth refresh-data [--full]` from any directory, plus a startup auto-refresh in `wolvwealth/__init__.py` that runs the incremental path whenever the newest cached row is older than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days. The auto-refresh is skipped when `WOLVWEALTH_NO_AUTO_REFRESH` is set and never fails startup — on error the app keeps serving cached prices. Universe editing (add/remove/sort tickers) is still a manual Python-shell task.
+Market data is the committed `ticker_universe.csv` plus a per-machine price cache in gitignored `var/historical_prices.csv`, created on first run (migrated from the old in-repo copy if present, otherwise downloaded in full). Price refresh is scripted and automatic: `wolvwealth refresh-data [--full]` from any directory, plus a startup auto-refresh in `wolvwealth/__init__.py` that runs the incremental path whenever the newest cached row is older than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days. The auto-refresh is skipped when `WOLVWEALTH_NO_AUTO_REFRESH` is set and never fails startup — on error the app keeps serving cached prices. Universe editing (add/remove/sort tickers) is still a manual Python-shell task.
 
 ```mermaid
 flowchart LR
-    subgraph Refresh["python -m wolvwealth refresh-data<br/>or startup auto-refresh (prices > 7 days old)"]
+    subgraph Refresh["wolvwealth refresh-data<br/>or startup auto-refresh (prices > 7 days old)"]
         direction TB
         R1["save_historical_prices()  (--full)<br/>full re-download 2006 -> today"]
         R2["update_historical_prices()  (default)<br/>download from last row + 1 day,<br/>abort if too many live tickers come back empty"]
@@ -335,45 +334,38 @@ Things to know:
 - The price CSV is 40 MB and grows with every refresh, but it lives in gitignored `var/`, so refreshes never touch git.
 - `yfinance` is `>=1.7`. Yahoo changes its endpoints often; if downloads start failing wholesale, bump yfinance first.
 
-## 9. Workflow: backtest (`backtest.py`)
+## 9. Workflow: backtest (`scripts/backtest.py`)
 
-A standalone script, run as `python3 backtest.py` from the repo root. It is not imported by the app. It duplicates the optimization logic (without the Flask parts) and walks forward in time.
+A command-line script (`python scripts/backtest.py [--frequency yearly] [--start 2019-01-01] [--cash 100000] [--universe top50] [--max-positions 10]`). It imports the app's `Optimization` class, so the backtest and the API can no longer drift apart, and it sets `WOLVWEALTH_NO_AUTO_REFRESH` so it never touches the network.
 
 ```mermaid
 flowchart TD
-    S["START_DATE = first trading day on/after 2019-01-01<br/>INITIAL_CASH = 100,000<br/>universe = top 50, max_positions = 10"] --> F["for FREQ in yearly, semiannual, quarterly, monthly, weekly"]
-    F --> T["truncate singleton HISTORICAL_PRICES to [:START_DATE]"]
-    T --> O0["optimize from cash only"]
-    O0 --> L{"curr_date < today?"}
-    L -- yes --> T2["truncate prices to [:curr_date]"]
-    T2 --> O["optimize with previous output's shares as initial_holdings"]
-    O --> V["record portfolio_value and % change"]
-    V --> N["curr_date += FREQ<br/>(bump by 1 day if not a trading day, once)"]
-    N --> L
-    L -- no --> P["print per-period values and TOTAL RETURN"]
-    P --> F
+    S["first trading day on/after --start<br/>optimize from cash only"] --> L{"next rebalance date<br/>within the price history?"}
+    L -- yes --> T["truncate HISTORICAL_PRICES to [:date]<br/>(no lookahead)"]
+    T --> O["Optimization(initial_holdings = previous target shares)"]
+    O --> V["print value and % change"]
+    V --> L
+    L -- no --> P["print TOTAL RETURN, restore full prices"]
 ```
 
-Caveats: it is lookahead-free only because the DataFrame is truncated before each solve, it mutates the global singleton in place (so never import it inside the running web app), and `get_next_date` only tries one extra day when it lands on a non-trading day, so it can land on a missing index and raise.
+Rebalance dates snap forward to the next trading day via `Index.searchsorted`, so weekends and holidays cannot land on a missing index. It mutates the global `ApplicationState` singleton while running, so never import it inside the web app.
 
 ## 10. Workflow: frontend build and dev scripts
 
 ```mermaid
 flowchart LR
     subgraph RunDev["bin/run dev"]
-        DB1["./bin/db create<br/>(python sqlite3, no-op if DB exists;<br/>the app also self-creates it)"]
         TW["npx tailwindcss -o static/css/output.css --watch"]
-        WP["npx webpack --watch<br/>js/main.jsx -> static/js/bundle.js"]
-        FL["flask --app wolvwealth --debug run :8000"]
+        FL["flask --app wolvwealth --debug run --port 8000"]
     end
-    DB1 --> TW --> WP --> FL
-    TPL["templates/*.html"] -. "link" .-> OUT["output.css (gitignored)"]
-    OPT["templates/optimizer.html<br/>&lt;div id=reactEntry&gt;"] -. "script" .-> BUN["bundle.js (gitignored)"]
+    TW --> FL
+    BASE["templates/base.html<br/>(head, nav, footer, scripts)"] -. "extends" .-> PAGES["index / workspaces / workspace / results"]
+    PAGES -. "link" .-> OUT["output.css (gitignored)"]
 ```
 
-- `bin/db` now uses Python's built-in `sqlite3` module, so the `sqlite3` CLI is no longer required. `create`/`destroy`/`reset`/`dump` operate on workspaces, portfolios, and holdings.
-- `bin/run` only has a `dev` mode and binds to localhost. The old `prod` mode (debug server under `sudo` on port 80) and the gunicorn config are gone: this app has no auth and is localhost-only by design.
-- The React app (`js/App.jsx`) has one route, `/optimizer/`, whose component renders an empty `<section>`. The working optimizer UI is the server-rendered form on `/workspace/` plus `results.html`. `package.json` still pulls in MUI, Chart.js, Google Charts, a pie chart lib, and `react-scripts`, none of which are used.
+- Tailwind is the only Node dependency (`npm run build` for a minified one-off build). The React/webpack/Babel toolchain and its unused UI libraries were removed along with the empty `/optimizer/` page.
+- `bin/db` uses Python's built-in `sqlite3` module, so the `sqlite3` CLI is not required. `create`/`destroy`/`reset`/`dump` operate on workspaces, portfolios, and holdings, resolving the DB path from `wolvwealth.config`.
+- `bin/run` only has a `dev` mode and binds to localhost: this app has no auth and is localhost-only by design.
 
 ## 11. Data model
 
@@ -399,7 +391,7 @@ erDiagram
     portfolios ||--o{ holdings : "holds"
 ```
 
-Foreign keys cascade on delete (delete a workspace and its portfolios and holdings go with it) and `PRAGMA foreign_keys = ON` is set per connection in `model.py`. Names are validated in `portfolios.py` (1-64 chars: letters, digits, space, `.`, `_`, `-`). The database is created from `sql/schema.sql` + `sql/data.sql` on first run and lives in gitignored `var/`, so each machine has its own private workspaces.
+Foreign keys cascade on delete (delete a workspace and its portfolios and holdings go with it) and `PRAGMA foreign_keys = ON` is set per connection in `model.py`. Names are validated in `portfolios.py` (1-64 chars: letters, digits, space, `.`, `_`, `-`). The database is created from `wolvwealth/sql/schema.sql` + `seed.sql` on first run and lives in gitignored `var/`, so each machine has its own private workspaces.
 
 ## 12. Route reference
 
@@ -416,7 +408,6 @@ Foreign keys cascade on delete (delete a workspace and its portfolios and holdin
 | POST | `/portfolios/delete/` | yes | views/portfolios.py | Scoped to open workspace |
 | POST | `/portfolios/cash/` | yes | views/portfolios.py | Set uninvested cash |
 | POST | `/portfolios/holdings/` | yes | views/portfolios.py | Upsert one ticker (0 shares removes); ticker must be in the universe |
-| GET | `/optimizer/` | yes | views/optimizer.py | Empty React shell (legacy) |
 | POST | `/optimizer/run/` | yes | views/optimizer.py | Optimize a saved portfolio, render results.html |
 | GET/POST | `/api/` | no | api/__init__.py | Endpoint listing |
 | GET | `/api/workspaces/` | no | api/__init__.py | All workspaces, portfolios, holdings as JSON |
@@ -424,7 +415,7 @@ Foreign keys cascade on delete (delete a workspace and its portfolios and holdin
 | GET | `/login/`, `/register/` | no | views/workspaces.py | 302 to `/workspaces/` (legacy bookmarks) |
 | GET | `/account/` | no | views/workspaces.py | 302 to `/workspace/` (legacy bookmark) |
 
-Everything removed with the auth system now 404s: `/accounts/*`, `/api/account`, `/api/admin/*`, `/api/db/*`.
+Everything removed with the auth system now 404s: `/accounts/*`, `/api/account`, `/api/admin/*`, `/api/db/*`, and so does the old React `/optimizer/` page.
 
 **Trust model:** none. The app assumes it is bound to localhost on a machine whose users trust each other. Workspaces separate data for convenience; any workspace can be opened, modified, or deleted by whoever is at the keyboard, and the JSON API can read and optimize any workspace's portfolios. Do not expose this to a network you don't trust.
 
@@ -436,7 +427,7 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 1. ~~Metrics computed before `max_positions` truncation~~ — fixed; metrics now describe the returned portfolio (§7).
 2. ~~Real optimization exception swallowed~~ — fixed; the solver's error text is part of the 400 message.
-3. `backtest.py` duplicates the optimization logic instead of importing `Optimization` (now framework-free, so the import is finally possible). The two can drift.
+3. ~~`backtest.py` duplicates the optimization logic~~ — fixed; `scripts/backtest.py` imports `Optimization`.
 
 **Operability for a local, single-user setup**
 
@@ -448,6 +439,6 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 7. ~~No tests~~ — `tests/` covers the optimizer core, the API contract, and the workspace/portfolio flows (temp DB + synthetic market fixtures). Every change from now on ships with tests.
 8. ~~`pyproject.toml` dependencies disagree with `requirements.txt`~~ — done; `requirements.txt` is deleted and `pyproject.toml` is the single source of truth (four runtime deps, dev tools behind a `dev` extra).
-9. Each Jinja template carries its own copy of the header, nav, footer, and scroll script. No base template.
-10. The React optimizer page is an empty shell; either build it against `/api/optimize/` or delete it along with the unused frontend dependencies (MUI, Chart.js, Google Charts, react-scripts) and `bundle.js.map`.
+9. ~~No base template~~ — fixed; pages extend `templates/base.html`.
+10. ~~Empty React optimizer page and unused frontend dependencies~~ — deleted.
 11. Timezones: `created` timestamps are stored in UTC and now displayed nowhere, so the old hardcoded UTC-5 conversion is gone — but if we surface timestamps again, do it properly.

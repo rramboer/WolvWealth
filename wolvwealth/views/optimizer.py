@@ -1,6 +1,5 @@
-"""Routes and code for optimizer pages.
+"""Optimize a saved portfolio from the browser.
 
-GET  /optimizer/      - optimizer page (React shell)
 POST /optimizer/run/  - optimize one saved portfolio, render the results
 """
 
@@ -13,16 +12,6 @@ from wolvwealth.api.state import ApplicationState
 from wolvwealth.views.workspaces import current_workspace
 
 UNIVERSE_CHOICES = ["top20", "top50", "top100", "top200", "top300", "top400", "top500"]
-
-
-@wolvwealth.app.route("/optimizer/", methods=["GET"])
-def show_optimizer():
-    """Display /optimizer route."""
-    workspace = current_workspace()
-    if workspace is None:
-        return flask.redirect(flask.url_for("show_workspaces"))
-    context = {"workspace": workspace}
-    return flask.render_template("optimizer.html", **context)
 
 
 @wolvwealth.app.route("/optimizer/run/", methods=["POST"])

@@ -107,3 +107,22 @@ def test_legacy_redirects(client):
     assert "/workspaces/" in client.get("/login/").headers["Location"]
     assert "/workspaces/" in client.get("/register/").headers["Location"]
     assert "/workspace/" in client.get("/account/").headers["Location"]
+
+
+def test_landing_page_renders(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Choose a workspace" in response.data
+
+
+def test_old_react_optimizer_page_is_gone(client):
+    client.post("/workspaces/enter/", data={"name": "demo"})
+    assert client.get("/optimizer/").status_code == 404
+
+
+def test_holding_without_cached_price_does_not_break_page(client):
+    # The demo seed holds AAPL/MSFT, which the synthetic test market does not price.
+    client.post("/workspaces/enter/", data={"name": "demo"})
+    response = client.get("/workspace/")
+    assert response.status_code == 200
+    assert b"no cached price" in response.data

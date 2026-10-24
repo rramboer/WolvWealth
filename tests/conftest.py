@@ -1,16 +1,40 @@
-"""Shared fixtures: an isolated temp database and a small deterministic market."""
+"""Shared fixtures: a hermetic var/ directory, a temp database, and a small synthetic market.
+
+The app loads market data at import time, so the synthetic price history is
+written to a throwaway var/ directory *before* ``wolvwealth`` is imported.
+This keeps the tests independent of the 40 MB real price cache and of the
+network, which is what lets them run in CI.
+"""
 import os
+import tempfile
 
-os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"  # Must be set before the app import below
-
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import pytest  # noqa: E402
-
-import wolvwealth  # noqa: E402
-import wolvwealth.model  # noqa: E402
+import numpy as np
+import pandas as pd
+import pytest
 
 TICKERS = ["AAA", "BBB", "CCC", "DDD"]
+
+
+def synthetic_prices() -> pd.DataFrame:
+    """Four tickers, 400 trading days, fixed seed: deterministic but non-trivial."""
+    rng = np.random.default_rng(42)
+    dates = pd.bdate_range("2020-01-02", periods=400)
+    prices = {
+        ticker: np.round(100 * np.exp(np.cumsum(0.0004 * (i + 1) + 0.01 * rng.standard_normal(len(dates)))), 2)
+        for i, ticker in enumerate(TICKERS)
+    }
+    frame = pd.DataFrame(prices, index=dates)
+    frame.index.name = "Date"
+    return frame
+
+
+_VAR = tempfile.mkdtemp(prefix="wolvwealth-test-var-")
+synthetic_prices().to_csv(os.path.join(_VAR, "historical_prices.csv"))
+os.environ["WOLVWEALTH_VAR"] = _VAR
+os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
+
+import wolvwealth  # noqa: E402  (must come after the environment is prepared)
+import wolvwealth.model  # noqa: E402
 
 
 @pytest.fixture
@@ -25,17 +49,8 @@ def client(tmp_path):
 
 @pytest.fixture
 def market(monkeypatch):
-    """Replace the global market data with 4 synthetic tickers, deterministic seed."""
+    """The app state with the synthetic 4-ticker universe (prices were loaded at import)."""
     state = wolvwealth.state
-    rng = np.random.default_rng(42)
-    dates = pd.bdate_range("2020-01-02", periods=400)
-    prices = {
-        ticker: np.round(100 * np.exp(np.cumsum(0.0004 * (i + 1) + 0.01 * rng.standard_normal(len(dates)))), 2)
-        for i, ticker in enumerate(TICKERS)
-    }
-    frame = pd.DataFrame(prices, index=dates)
-    frame.index.name = "Date"
-    monkeypatch.setattr(state, "HISTORICAL_PRICES", frame)
     monkeypatch.setattr(state, "TICKER_UNIVERSE", list(TICKERS))
     return state
 
@@ -50,7 +65,7 @@ def workspace_client(client, market):
 
 
 def _portfolio_id(client):
-    """Fetch the id of tester/main through the JSON API-free DB helpers."""
+    """Fetch the id of tester/main through the DB helpers."""
     with wolvwealth.app.test_request_context():
         portfolio = wolvwealth.portfolios.fetch_portfolio("tester", name="main")
         return portfolio["id"]

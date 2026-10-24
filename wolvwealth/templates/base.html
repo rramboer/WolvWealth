@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111111">
+    <meta name="description" content="{% block description %}Local-first portfolio optimizer.{% endblock %}">
+    <title>{% block title %}WolvWealth{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}" type="image/png">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/output.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/util.css') }}">
+    {% block head %}{% endblock %}
+</head>
+
+<body class="bg-gray-dark font-sans">
+    {% block header %}
+    <header class="fixed w-screen z-50">
+        <nav class="px-5">
+            <div class="max-w-screen-xl flex flex-wrap items-center justify-between mx-auto p-4">
+                <a href="{{ url_for('show_landing') }}" class="flex items-center space-x-3 rtl:space-x-reverse">
+                    <img src="{{ url_for('static', filename='img/logo.png') }}" class="h-8" alt="WolvWealth Logo" />
+                    <span class="self-center text-2xl font-semibold whitespace-nowrap text-white ubuntu">WolvWealth</span>
+                </a>
+                <button id="toggleButton" type="button" aria-controls="navbar-default" aria-expanded="false"
+                    class="inline-flex items-center p-2 w-10 h-10 justify-center text-sm text-white rounded-lg sm:hidden hover:bg-gray focus:outline-none">
+                    <span class="sr-only">Open main menu</span>
+                    <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 17 14">
+                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M1 1h15M1 7h15M1 13h15" />
+                    </svg>
+                </button>
+                <div class="hidden w-full sm:flex sm:w-auto" id="navbar-default">
+                    <ul class="font-medium flex flex-col items-center p-4 sm:p-0 mt-4 sm:mt-0 border border-[#cccccc] rounded-lg sm:flex-row sm:space-x-8 sm:border-0 bg-transparent">
+                        {% if workspace %}
+                        <li><a href="{{ url_for('show_workspace') }}" class="block py-2 px-3 text-white rounded sm:p-0">{{ workspace }}</a></li>
+                        <li><a href="{{ url_for('workspaces_leave') }}" class="block py-2 px-3 text-white rounded sm:p-0">Switch Workspace</a></li>
+                        {% else %}
+                        <li><a href="{{ url_for('show_workspaces') }}" class="block py-2 px-3 text-white rounded sm:p-0">Workspaces</a></li>
+                        {% endif %}
+                    </ul>
+                </div>
+            </div>
+        </nav>
+    </header>
+    {% endblock %}
+
+    {% block content %}{% endblock %}
+
+    <footer class="w-[90%] h-10 mx-auto">
+        <div class="text-center py-12">
+            <p class="text-white mb-2">&copy; 2024 WolvWealth. All rights reserved.</p>
+            <p class="text-xs mx-auto" style="max-width: 1017px; color: gray;">
+                The calculations and information on this site are for educational purposes only and are not
+                investment advice. Calculations are estimates and do not account for all market conditions. Nothing
+                contained on this site constitutes a solicitation, recommendation, or offer to buy or sell any
+                financial instruments. Past stock performance is no guarantee of future price performance.
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        (function () {
+            var toggle = document.getElementById('toggleButton');
+            var menu = document.getElementById('navbar-default');
+            if (toggle && menu) {
+                toggle.addEventListener('click', function () { menu.classList.toggle('hidden'); });
+            }
+            var header = document.querySelector('header');
+            if (header) {
+                window.addEventListener('scroll', function () {
+                    header.classList.add('transition', 'duration-300', 'ease-out');
+                    header.classList.toggle('bg-gray-dark/50', window.scrollY > 0);
+                    header.classList.toggle('backdrop-blur', window.scrollY > 0);
+                });
+            }
+        })();
+    </script>
+</body>
+
+</html>

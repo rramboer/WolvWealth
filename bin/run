@@ -1,19 +1,13 @@
 #!/bin/bash
-# Run the dev server (and create the database if it doesn't exist).
+# Run the dev server with the Tailwind CSS watcher.
 # Localhost only: this app has no authentication by design.
 
 set -Eeuo pipefail
 
-usage() {
-  echo "Usage: $0 dev"
-}
-
 if [ $# -ne 1 ] || [ "$1" != "dev" ]; then
-  usage
+  echo "Usage: $0 dev"
   exit 1
 fi
 
-./bin/db create
 npx tailwindcss -o wolvwealth/static/css/output.css --watch &
-npx webpack --config webpack.config.js --watch &
 flask --app wolvwealth --debug run --port 8000

@@ -15,7 +15,7 @@ def dict_factory(cursor, row):
 
 
 def ensure_db():
-    """Create the database from sql/ if it does not exist yet.
+    """Create the database from the packaged SQL if it does not exist yet.
 
     The database holds per-person workspaces and portfolios, so it lives in
     var/ outside of git and every machine builds its own on first run.
@@ -23,10 +23,10 @@ def ensure_db():
     db_filename = pathlib.Path(wolvwealth.app.config["DATABASE_FILENAME"])
     if db_filename.exists():
         return
-    root = pathlib.Path(wolvwealth.app.config["WOLVWEALTH_ROOT"])
+    sql_dir = pathlib.Path(wolvwealth.app.config["SQL_DIR"])
     connection = sqlite3.connect(str(db_filename))
-    connection.executescript((root/"sql"/"schema.sql").read_text())
-    connection.executescript((root/"sql"/"data.sql").read_text())
+    connection.executescript((sql_dir/"schema.sql").read_text())
+    connection.executescript((sql_dir/"seed.sql").read_text())
     connection.commit()
     connection.close()
 

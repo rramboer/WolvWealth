@@ -1,45 +1,43 @@
 #!/bin/bash
-# wolvwealthdb
-#
-# Manages the local workspace database (var/wolvwealth.sqlite3). Uses Python's
-# sqlite3 module so the sqlite3 CLI does not need to be installed.
+# Manage the local workspace database (var/wolvwealth.sqlite3).
+# Uses Python's sqlite3 module, so the sqlite3 CLI is not required.
 
-# Stop script on errors
 set -Eeuo pipefail
-# set -x
+
+usage() {
+  echo "Usage: $0 (create|destroy|reset|dump)"
+}
+
+db_path() {
+  python3 -c 'from wolvwealth import config; print(config.DATABASE_FILENAME)'
+}
 
 create_db() {
-  python3 - <<'EOF'
-import pathlib
+  python3 - <<'PY'
 import sqlite3
+from wolvwealth import config
 
-path = pathlib.Path("var/wolvwealth.sqlite3")
-path.parent.mkdir(exist_ok=True)
-db = sqlite3.connect(path)
-db.executescript(pathlib.Path("sql/schema.sql").read_text())
-db.executescript(pathlib.Path("sql/data.sql").read_text())
+db = sqlite3.connect(config.DATABASE_FILENAME)
+db.executescript((config.SQL_DIR / "schema.sql").read_text())
+db.executescript((config.SQL_DIR / "seed.sql").read_text())
 db.commit()
 db.close()
-EOF
+PY
 }
 
 dump_db() {
-  python3 - <<'EOF'
+  python3 - <<'PY'
 import sqlite3
+from wolvwealth import config
 
-db = sqlite3.connect("var/wolvwealth.sqlite3")
+db = sqlite3.connect(config.DATABASE_FILENAME)
 db.row_factory = sqlite3.Row
 for table in ("workspaces", "portfolios", "holdings"):
     print(f"== {table} ==")
     for row in db.execute(f"SELECT * FROM {table}"):
         print(dict(row))
     print()
-EOF
-}
-
-# Sanity check command line options
-usage() {
-  echo "Usage: $0 (create|destroy|reset|dump)"
+PY
 }
 
 if [ $# -ne 1 ]; then
@@ -47,28 +45,24 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
-# Parse argument.  $1 is the first argument
 case $1 in
   "create")
-    if [ -e var/wolvwealth.sqlite3 ]; then
+    if [ -e "$(db_path)" ]; then
       echo "Database already exists."
     else
       create_db
       echo "Database created."
     fi
     ;;
-
   "destroy")
-    rm -rf var/wolvwealth.sqlite3
-    echo "Database Destroyed."
+    rm -f "$(db_path)"
+    echo "Database destroyed."
     ;;
-
   "reset")
-    rm -rf var/wolvwealth.sqlite3
+    rm -f "$(db_path)"
     create_db
     echo "Database destroyed and recreated. All workspaces erased."
     ;;
-
   "dump")
     dump_db
     ;;

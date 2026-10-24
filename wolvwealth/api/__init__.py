@@ -10,7 +10,7 @@ from wolvwealth.api.state import ApplicationState
 
 @wolvwealth.app.route("/api/", methods=["GET", "POST"])
 def api_default():
-    """WolvWealth API Usage Endpoint."""
+    """List the API endpoints."""
     return flask.jsonify(
         {
             "/api/": "API Usage Info",

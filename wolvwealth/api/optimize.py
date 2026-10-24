@@ -35,6 +35,7 @@ class Optimization:
     RISK_FREE_RATE = 0.02
 
     def set_defaults(self) -> None:
+        """Set the defaults every request starts from."""
         self.initial_cash = 0  # $0.00
         self.universe = self.state.TICKER_UNIVERSE[:500]  # Top 500 stocks by market cap.
         self.exclude_metrics = False  # Include metrics in output.
@@ -52,6 +53,7 @@ class Optimization:
         self.parse_constraints()
 
     def parse_constraints(self) -> None:
+        """Validate and apply the optional constraints block."""
         if "constraints" not in self.input_json:
             return
         if not isinstance(self.input_json["constraints"], dict):
@@ -92,6 +94,7 @@ class Optimization:
             raise InvalidUsage("Invalid constraints. min_weight must be less than max_weight.")
 
     def parse_exclude_metrics(self) -> None:
+        """Validate the optional exclude_metrics flag."""
         if "exclude_metrics" not in self.input_json:
             return
         if not isinstance(self.input_json["exclude_metrics"], bool):
@@ -99,6 +102,7 @@ class Optimization:
         self.exclude_metrics = self.input_json["exclude_metrics"]
 
     def parse_initial_cash(self) -> None:
+        """Validate the optional initial_cash amount."""
         if "initial_cash" not in self.input_json:
             return
         if not isinstance(self.input_json["initial_cash"], (int, float)):
@@ -108,6 +112,7 @@ class Optimization:
         self.initial_cash = round(self.input_json["initial_cash"], 2)
 
     def parse_universe(self) -> None:
+        """Validate the universe, expanding topN aliases and upper-casing tickers."""
         if "universe" not in self.input_json:
             return
         if not isinstance(self.input_json["universe"], list):
@@ -127,6 +132,7 @@ class Optimization:
         self.universe = list(dict.fromkeys(expanded))
 
     def parse_initial_holdings(self) -> None:
+        """Validate the optional initial_holdings map of ticker to shares."""
         self.initial_holdings = {}
         if "initial_holdings" not in self.input_json:
             return
@@ -227,7 +233,7 @@ def resolve_portfolio_input(input_json: dict) -> dict:
 
 @wolvwealth.app.route("/api/optimize/", methods=["POST"])
 def optimize():
-    """Execute Optimization"""
+    """Execute an optimization from a JSON request body."""
     try:
         input_json = flask.request.get_json(force=True)
     except Exception:

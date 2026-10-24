@@ -1,4 +1,4 @@
-![WolvWealth Logo](/wolvwealth/static/img/logo.png)
+<img src="wolvwealth/static/img/logo.png" alt="WolvWealth logo" height="64">
 
 # WolvWealth
 
@@ -15,7 +15,7 @@ Two reasons we abandoned the cloud model:
 
 This is also why the Python packages are installed into the **global interpreter** (no venv): the optimizer and its API must be runnable from anywhere on the device — by you at a shell, or by an agent spawned from any working directory — without activating an environment first.
 
-The remaining work to fully get there is tracked in **[MIGRATION.md](MIGRATION.md)**.
+The remaining work to fully get there is tracked in **[docs/MIGRATION.md](docs/MIGRATION.md)**.
 
 ## How it works now: workspaces
 
@@ -23,7 +23,7 @@ The accounts system is gone. In its place are **local workspaces** — one per p
 
 So on the family computer: you keep `long-term`, `short-term`, and `lottery-tickets` in your workspace, and your brother keeps his four portfolios in his, without the two of you tripping over each other's data. Switching is one click — it's organizational separation, not security. Everything stays in a local SQLite file under gitignored `var/`, so nobody's holdings ever end up in the repo.
 
-The current state of the code, with diagrams of every workflow and an honest list of what is still rough, is in **[ARCHITECTURE.md](ARCHITECTURE.md)**. How to set up, run, and make changes is in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+The current state of the code, with diagrams of every workflow and an honest list of what is still rough, is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. How to set up, run, and make changes is in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ## What works right now
 
@@ -33,9 +33,8 @@ The current state of the code, with diagrams of every workflow and an honest lis
 | Portfolios per workspace: cash, holdings, valuations at last cached price | Working |
 | Optimize a saved portfolio from the browser, results page with metrics and target allocation | Working |
 | `POST /api/optimize/`: optimize by stored portfolio name or explicit holdings, no auth header | Working |
-| Market data: 2006-01-03 to today, adjusted close, 1,982 tickers | Cached in gitignored `var/` (built or migrated on first run). Auto-refreshed on startup when stale; `python -m wolvwealth refresh-data` on demand |
-| Walk-forward backtest (`backtest.py`) | Runs standalone from the command line |
-| React optimizer page (`/optimizer/`) | Empty shell, superseded by the server-rendered flow |
+| Market data: 2006-01-03 to today, adjusted close, 1,982 tickers | Cached in gitignored `var/` (built or migrated on first run). Auto-refreshed on startup when stale; `wolvwealth refresh-data` on demand |
+| Walk-forward backtest (`scripts/backtest.py`) | Runs from the command line, shares the app's optimizer |
 
 ## Quickstart
 
@@ -48,13 +47,24 @@ cd WolvWealth
 ./bin/run dev               # http://localhost:8000
 ```
 
+Repository layout, for orientation:
+
+```
+wolvwealth/        the Flask package: api/, views/, templates/, static/, data/ (ticker universe), sql/
+tests/             pytest suite (hermetic: temp database, synthetic prices, no network)
+scripts/           backtest.py and other one-off tools
+docs/              ARCHITECTURE.md (how it works today), MIGRATION.md (what is left)
+bin/               setup, run, db helpers for development
+var/               per-machine state, gitignored: database, cookie key, price cache
+```
+
 If you only want the API and do not have Node installed:
 
 ```bash
 flask --app wolvwealth --debug run --port 8000
 ```
 
-On first run the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`. On startup it also refreshes the committed price history up to today if it is more than a week old (set `WOLVWEALTH_NO_AUTO_REFRESH=1` to skip, e.g. offline); you can refresh any time with `python -m wolvwealth refresh-data`.
+On first run the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`. On startup it also refreshes the committed price history up to today if it is more than a week old (set `WOLVWEALTH_NO_AUTO_REFRESH=1` to skip, e.g. offline); you can refresh any time with `wolvwealth refresh-data`.
 
 Then in the browser: open `http://localhost:8000/workspaces/`, create your workspace, add a portfolio with your cash and holdings, and hit **Optimize**.
 
@@ -109,7 +119,7 @@ Two things to understand before trusting the numbers:
 - **Your holdings are valued and then fully reallocated.** The optimizer does not try to keep what you own. The browser flow adds your held tickers to the universe so keeping them is possible; a held ticker missing from the result means "sell it all".
 - **Prices come from the local cache, not live quotes.** Share counts and dollar values use the last row of `historical_prices.csv`. The startup auto-refresh keeps it within about a week of today; the pages show the price date.
 
-The full request schema is in [ARCHITECTURE.md §7](ARCHITECTURE.md#7-workflow-optimize-a-portfolio-the-core-feature).
+The full request schema is in [docs/ARCHITECTURE.md §7](docs/ARCHITECTURE.md#7-workflow-optimize-a-portfolio-the-core-feature).
 
 ## A note on trust
 
@@ -117,7 +127,7 @@ There is deliberately no authentication. This is a localhost tool for a machine 
 
 ## Roadmap
 
-The end state: a locally runnable app where multiple people on one device each keep their own portfolios in a workspace, optimize them on that machine, and optionally have an AI agent run the optimizer and place the resulting trades through a broker MCP (e.g. Robinhood). The full plan, with what's done and what's left in order, lives in **[MIGRATION.md](MIGRATION.md)**.
+The end state: a locally runnable app where multiple people on one device each keep their own portfolios in a workspace, optimize them on that machine, and optionally have an AI agent run the optimizer and place the resulting trades through a broker MCP (e.g. Robinhood). The full plan, with what's done and what's left in order, lives in **[docs/MIGRATION.md](docs/MIGRATION.md)**.
 
 ## Disclaimer
 
