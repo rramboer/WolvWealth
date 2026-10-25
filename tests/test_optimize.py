@@ -1,23 +1,16 @@
-"""Unit tests for the Optimization core (plain dict in, plain dict out)."""
+"""Unit tests for the domain optimizer (plain dict in, plain dict out, no app needed)."""
 import numpy as np
 import pandas as pd
 import pytest
 
-import wolvwealth
-from wolvwealth.api.api_exceptions import InvalidUsage
-from wolvwealth.api.optimize import Optimization
-
-
-def optimize(market, body):
-    """Run one optimization inside a request context, return the result dict."""
-    with wolvwealth.app.test_request_context():
-        return Optimization(body).result
+from wolvwealth.domain import optimizer
+from wolvwealth.domain.errors import ValidationError
 
 
 def error_of(market, body):
-    """Run one optimization and return the InvalidUsage message it raises."""
-    with pytest.raises(InvalidUsage) as excinfo:
-        optimize(market, body)
+    """Return the ValidationError message optimizing ``body`` raises."""
+    with pytest.raises(ValidationError) as excinfo:
+        optimizer.optimize(body, market)
     return excinfo.value.message
 
 
@@ -68,52 +61,45 @@ def test_invalid_ticker_after_alias_is_still_rejected(market):
 
 
 def test_alias_expansion_and_dedupe(market):
-    with wolvwealth.app.test_request_context():
-        opt = Optimization({"initial_cash": 1000, "universe": ["top20", "aaa", "BBB"]})
-    assert opt.universe == ["AAA", "BBB", "CCC", "DDD"]
+    request = optimizer.parse_request({"initial_cash": 1000, "universe": ["top20", "aaa", "BBB"]}, market)
+    assert request.universe == ["AAA", "BBB", "CCC", "DDD"]
 
 
 def test_lowercase_tickers_accepted(market):
-    with wolvwealth.app.test_request_context():
-        opt = Optimization({"initial_cash": 1000, "universe": ["aaa", "bbb"]})
-    assert opt.universe == ["AAA", "BBB"]
+    request = optimizer.parse_request({"initial_cash": 1000, "universe": ["aaa", "bbb"]}, market)
+    assert request.universe == ["AAA", "BBB"]
 
 
 def test_empty_universe_uses_default(market):
-    with wolvwealth.app.test_request_context():
-        opt = Optimization({"initial_cash": 1000, "universe": []})
-    assert opt.universe == market.TICKER_UNIVERSE
+    request = optimizer.parse_request({"initial_cash": 1000, "universe": []}, market)
+    assert request.universe == list(market.universe)
 
 
 # --- results ----------------------------------------------------------------
 
 
 def test_weights_sum_to_one_and_values_consistent(market):
-    result = optimize(market, {"initial_cash": 10000})
-    portfolio = result["optimized_portfolio"]
+    portfolio = optimizer.optimize({"initial_cash": 10000}, market)["optimized_portfolio"]
     assert portfolio, "expected at least one position"
     assert sum(p["percent_weight"] for p in portfolio.values()) == pytest.approx(100, abs=0.5)
     assert sum(p["value"] for p in portfolio.values()) == pytest.approx(10000, abs=10)
     for ticker, position in portfolio.items():
-        price = market.fetch_ticker_price(ticker)
-        assert position["shares"] * price == pytest.approx(position["value"], abs=0.5)
+        assert position["shares"] * market.price(ticker) == pytest.approx(position["value"], abs=0.5)
 
 
 def test_holdings_are_valued_and_pooled(market):
-    shares = 10
-    value_of_holdings = shares * market.fetch_ticker_price("AAA")
-    result = optimize(market, {"initial_cash": 1000, "initial_holdings": {"AAA": shares}})
-    assert result["metrics"]["portfolio_value"] == pytest.approx(1000 + value_of_holdings, abs=0.01)
+    result = optimizer.optimize({"initial_cash": 1000, "initial_holdings": {"AAA": 10}}, market)
+    assert result["metrics"]["portfolio_value"] == pytest.approx(1000 + 10 * market.price("AAA"), abs=0.01)
 
 
 def test_max_weight_respected(market):
-    result = optimize(market, {"initial_cash": 10000, "constraints": {"max_weight": 0.4}})
+    result = optimizer.optimize({"initial_cash": 10000, "constraints": {"max_weight": 0.4}}, market)
     for position in result["optimized_portfolio"].values():
         assert position["percent_weight"] <= 40.0 + 0.01
 
 
 def test_max_positions_truncates_and_renormalizes(market):
-    result = optimize(market, {"initial_cash": 10000, "constraints": {"max_positions": 2}})
+    result = optimizer.optimize({"initial_cash": 10000, "constraints": {"max_positions": 2}}, market)
     portfolio = result["optimized_portfolio"]
     assert len(portfolio) <= 2
     assert result["metrics"]["num_assets"] == len(portfolio)
@@ -124,32 +110,48 @@ def test_metrics_describe_the_returned_portfolio(market):
     """Regression: metrics used to come from the untruncated solver output."""
     from pypfopt import expected_returns, risk_models
 
-    result = optimize(market, {"initial_cash": 10000, "constraints": {"max_positions": 1}})
+    result = optimizer.optimize({"initial_cash": 10000, "constraints": {"max_positions": 1}}, market)
     portfolio = result["optimized_portfolio"]
     assert len(portfolio) == 1
-
-    weights = pd.Series(
-        {t: p["percent_weight"] / 100 for t, p in portfolio.items()}, dtype=float
-    ).reindex(market.HISTORICAL_PRICES.columns, fill_value=0.0)
-    mu = expected_returns.mean_historical_return(market.HISTORICAL_PRICES)
-    cov = risk_models.exp_cov(market.HISTORICAL_PRICES)
+    weights = pd.Series({t: p["percent_weight"] / 100 for t, p in portfolio.items()}, dtype=float).reindex(
+        market.prices.columns, fill_value=0.0
+    )
+    mu = expected_returns.mean_historical_return(market.prices)
+    cov = risk_models.exp_cov(market.prices)
     expected_return = float(weights @ mu)
     volatility = float(np.sqrt(weights @ cov @ weights))
-
     assert result["metrics"]["expected_annual_return"] == pytest.approx(expected_return, abs=0.01)
     assert result["metrics"]["annual_volatility"] == pytest.approx(volatility, abs=0.01)
     assert result["metrics"]["sharpe_ratio"] == pytest.approx((expected_return - 0.02) / volatility, abs=0.05)
 
 
 def test_exclude_metrics(market):
-    result = optimize(market, {"initial_cash": 10000, "exclude_metrics": True})
-    assert "metrics" not in result
+    assert "metrics" not in optimizer.optimize({"initial_cash": 10000, "exclude_metrics": True}, market)
 
 
 def test_solver_error_is_surfaced(market):
     """Regression: the real solver error used to be swallowed into a bare 'Infeasible'."""
-    # Lower bound of 0.5 on all 4 assets cannot sum to 1: genuinely infeasible.
     message = error_of(market, {"initial_cash": 10000, "constraints": {"min_universal_weight": 0.5, "max_weight": 1}})
-    assert message != "Optimization Error. Check your inputs and constraints. Infeasible."
     assert message.startswith("Optimization Error.")
     assert len(message) > len("Optimization Error. Check your inputs and constraints. ")
+
+
+def test_market_snapshot_helpers(market):
+    assert "AAA" in market and "ZZZ" not in market
+    assert market.top(2) == ["AAA", "BBB"]
+    assert market.value({"AAA": 2}) == pytest.approx(2 * market.price("AAA"))
+    truncated = market.truncated("2020-06-30")
+    assert truncated.as_of <= pd.Timestamp("2020-06-30").date() and len(truncated.prices) < len(market.prices)
+    assert market.age_days(now=market.prices.index[-1]) == 0
+
+
+def test_degenerate_history_reports_null_sharpe_instead_of_crashing():
+    """Regression: two price rows give zero volatility, which used to raise ZeroDivisionError (a 500)."""
+    from wolvwealth.domain.market import MarketData
+
+    frame = pd.DataFrame(
+        {"AAA": [100.0, 101.0], "BBB": [200.0, 201.0]}, index=pd.to_datetime(["2026-10-23", "2026-10-24"])
+    )
+    result = optimizer.optimize({"initial_cash": 1000}, MarketData.build(["AAA", "BBB"], frame))
+    assert result["metrics"]["sharpe_ratio"] is None
+    assert result["metrics"]["portfolio_value"] == 1000

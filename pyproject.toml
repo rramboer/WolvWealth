@@ -30,14 +30,24 @@ dev = [
     "pytest-mock",
 ]
 
-[tool.setuptools]
-packages = ["wolvwealth"]
+[tool.setuptools.packages.find]
+include = ["wolvwealth*"]
+
+[tool.setuptools.package-data]
+# Everything the app needs at runtime ships inside the package, so a
+# non-editable install would work too.
+wolvwealth = ["data/*.csv", "storage/sql/*.sql", "web/templates/*.html", "web/static/css/*", "web/static/img/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.pylint."messages control"]
 disable = ["cyclic-import"]
+
+[tool.pylint.design]
+max-args = 8
+max-returns = 8
+max-branches = 15
 
 [tool.black]
 line-length = 120

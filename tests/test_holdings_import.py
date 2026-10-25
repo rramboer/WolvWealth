@@ -1,16 +1,9 @@
 """Tests for bulk holdings import: the parser, the browser form, and the JSON API."""
 import io
 
-import wolvwealth
-from wolvwealth.holdings_import import parse_holdings, parse_number
+from wolvwealth.domain.holdings_parse import parse_holdings, parse_number
 
 UNIVERSE = ["AAA", "BBB", "CCC", "DDD"]
-
-
-def fetch_portfolio(workspace, name):
-    """Read a portfolio through the DB helpers inside a request context."""
-    with wolvwealth.app.test_request_context():
-        return wolvwealth.portfolios.fetch_portfolio(workspace, name=name)
 
 
 # --- parser -----------------------------------------------------------------
@@ -83,62 +76,62 @@ def test_parse_without_universe_accepts_any_ticker():
 # --- browser form ------------------------------------------------------------
 
 
-def test_import_paste_merges_by_default(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_import_paste_merges_by_default(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post(
         "/portfolios/import/", data={"portfolio_id": pid, "text": "BBB, 5\nCCC, 2.5\nCASH, 999"}
     )
     assert response.status_code == 302
-    portfolio = fetch_portfolio("tester", "main")
-    assert portfolio["holdings"] == {"AAA": 10, "BBB": 5, "CCC": 2.5}  # AAA kept
-    assert portfolio["cash"] == 999
+    portfolio = repo.get_portfolio("tester", name="main")
+    assert portfolio.holdings == {"AAA": 10, "BBB": 5, "CCC": 2.5}  # AAA kept
+    assert portfolio.cash == 999
     page = workspace_client.get("/workspace/").data
     assert b"Imported 2 holdings" in page and b"Cash set to $999.00" in page
 
 
-def test_import_replace_mode_drops_existing(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_import_replace_mode_drops_existing(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.post("/portfolios/import/", data={"portfolio_id": pid, "text": "BBB 1", "mode": "replace"})
-    assert fetch_portfolio("tester", "main")["holdings"] == {"BBB": 1}
+    assert repo.get_portfolio("tester", name="main").holdings == {"BBB": 1}
 
 
-def test_import_file_upload(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_import_file_upload(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     csv_bytes = "﻿Symbol,Quantity\r\nBBB,7\r\nDDD,1\r\n".encode("utf-8")
     workspace_client.post(
         "/portfolios/import/",
         data={"portfolio_id": pid, "file": (io.BytesIO(csv_bytes), "positions.csv")},
         content_type="multipart/form-data",
     )
-    assert fetch_portfolio("tester", "main")["holdings"] == {"AAA": 10, "BBB": 7, "DDD": 1}
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10, "BBB": 7, "DDD": 1}
 
 
-def test_import_is_all_or_nothing_on_unknown_ticker(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_import_is_all_or_nothing_on_unknown_ticker(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.post("/portfolios/import/", data={"portfolio_id": pid, "text": "BBB 1\nFAKE 2"})
-    assert fetch_portfolio("tester", "main")["holdings"] == {"AAA": 10}
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10}
     page = workspace_client.get("/workspace/").data
     assert b"Nothing imported" in page and b"FAKE" in page
 
 
-def test_import_skip_unknown_checkbox(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_import_skip_unknown_checkbox(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.post(
         "/portfolios/import/", data={"portfolio_id": pid, "text": "BBB 1\nFAKE 2", "skip_unknown": "on"}
     )
-    assert fetch_portfolio("tester", "main")["holdings"] == {"AAA": 10, "BBB": 1}
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10, "BBB": 1}
     assert b"Skipped unknown tickers: FAKE" in workspace_client.get("/workspace/").data
 
 
-def test_import_scoped_to_workspace(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_import_scoped_to_workspace(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.get("/workspaces/leave/")
     workspace_client.post("/workspaces/create/", data={"name": "intruder"})
     workspace_client.post("/portfolios/import/", data={"portfolio_id": pid, "text": "BBB 1", "mode": "replace"})
-    assert fetch_portfolio("tester", "main")["holdings"] == {"AAA": 10}
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10}
 
 
-def test_import_requires_open_workspace(client, market):
+def test_import_requires_open_workspace(client):
     response = client.post("/portfolios/import/", data={"portfolio_id": 1, "text": "AAA 1"})
     assert "/workspaces/" in response.headers["Location"]
 
@@ -150,7 +143,7 @@ def test_api_index_lists_import_endpoint(client):
     assert "/api/holdings/import/" in client.get("/api/").get_json()
 
 
-def test_api_import_holdings_map(workspace_client):
+def test_api_import_holdings_map(workspace_client, repo):
     response = workspace_client.post(
         "/api/holdings/import/",
         json={"workspace": "tester", "portfolio": "main", "holdings": {"bbb": 3, "CCC": 1.5}, "cash": 42},
@@ -163,7 +156,7 @@ def test_api_import_holdings_map(workspace_client):
     assert body["mode"] == "merge"
 
 
-def test_api_import_csv_replace_and_create_portfolio(workspace_client):
+def test_api_import_csv_replace_and_create_portfolio(workspace_client, repo):
     response = workspace_client.post(
         "/api/holdings/import/",
         json={
@@ -177,10 +170,10 @@ def test_api_import_csv_replace_and_create_portfolio(workspace_client):
     assert response.status_code == 200, response.get_json()
     body = response.get_json()
     assert body["holdings"] == {"AAA": 1, "BBB": 2} and body["cash"] == 100
-    assert fetch_portfolio("tester", "brokerage")["holdings"] == {"AAA": 1, "BBB": 2}
+    assert repo.get_portfolio("tester", name="brokerage").holdings == {"AAA": 1, "BBB": 2}
 
 
-def test_api_import_then_optimize_round_trip(workspace_client):
+def test_api_import_then_optimize_round_trip(workspace_client, repo):
     workspace_client.post(
         "/api/holdings/import/",
         json={"workspace": "tester", "portfolio": "main", "mode": "replace", "holdings": {"BBB": 20}},
@@ -192,13 +185,13 @@ def test_api_import_then_optimize_round_trip(workspace_client):
     assert response.get_json()["metrics"]["portfolio_value"] > 5000  # cash + 20 BBB
 
 
-def test_api_import_unknown_ticker_is_400_with_payload(workspace_client):
+def test_api_import_unknown_ticker_is_400_with_payload(workspace_client, repo):
     response = workspace_client.post(
         "/api/holdings/import/", json={"workspace": "tester", "portfolio": "main", "holdings": {"FAKE": 1}}
     )
     assert response.status_code == 400
     assert response.get_json()["error"]["payload"]["unknown_tickers"] == ["FAKE"]
-    assert fetch_portfolio("tester", "main")["holdings"] == {"AAA": 10}
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10}
     ok = workspace_client.post(
         "/api/holdings/import/",
         json={"workspace": "tester", "portfolio": "main", "holdings": {"FAKE": 1, "BBB": 1}, "skip_unknown": True},
@@ -206,7 +199,7 @@ def test_api_import_unknown_ticker_is_400_with_payload(workspace_client):
     assert ok.status_code == 200 and ok.get_json()["skipped_unknown"] == ["FAKE"]
 
 
-def test_api_import_validation_errors(workspace_client):
+def test_api_import_validation_errors(workspace_client, repo):
     base = {"workspace": "tester", "portfolio": "main"}
     cases = [
         ({**base}, "Missing input"),
@@ -226,15 +219,15 @@ def test_api_import_validation_errors(workspace_client):
             response.get_json()["error"].get("payload", {}).get("errors", [])
         )
         assert needle in message, (body, message)
-    assert fetch_portfolio("tester", "main")["holdings"] == {"AAA": 10}
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10}
 
 
-def test_api_import_session_workspace_fallback(workspace_client):
+def test_api_import_session_workspace_fallback(workspace_client, repo):
     response = workspace_client.post("/api/holdings/import/", json={"portfolio": "main", "holdings": {"BBB": 1}})
     assert response.status_code == 200 and response.get_json()["workspace"] == "tester"
 
 
-def test_api_import_rejects_bad_json(client, market):
+def test_api_import_rejects_bad_json(client):
     response = client.post("/api/holdings/import/", data="{nope", content_type="application/json")
     assert response.status_code == 400
     response = client.post("/api/holdings/import/", json=[1, 2])

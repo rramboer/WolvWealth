@@ -13,6 +13,8 @@ import sys
 import threading
 import webbrowser
 
+from wolvwealth.services.container import Services
+
 DEFAULT_PORT = 8000
 
 
@@ -39,67 +41,50 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_serve(args) -> int:
-    """Run the Flask app on localhost (this app has no auth, so never bind elsewhere)."""
-    import wolvwealth  # Startup auto-refresh of stale prices is wanted here
+def cmd_serve(args, services: Services) -> int:
+    """Load prices (refreshing stale ones), then run Flask on localhost only (no auth, so never elsewhere)."""
+    from wolvwealth.web import create_app  # pylint: disable=import-outside-toplevel
 
+    in_reloader_child = bool(os.environ.get("WERKZEUG_RUN_MAIN"))
+    if not in_reloader_child:
+        services.market.data  # pylint: disable=pointless-statement  # load (or build) the cache up front
+        if services.settings.auto_refresh:
+            services.market.auto_refresh_if_stale(services.settings.auto_refresh_max_age_days)
+    app = create_app(services)
     url = f"http://localhost:{args.port}/"
     print(f"WolvWealth is running at {url}  (Ctrl-C to stop)")
-    if not args.no_browser and not os.environ.get("WERKZEUG_RUN_MAIN"):  # not in the reloader child
+    if not args.no_browser and not in_reloader_child:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    wolvwealth.app.run(host="127.0.0.1", port=args.port, debug=args.dev)
+    app.run(host="127.0.0.1", port=args.port, debug=args.dev)
     return 0
 
 
-def cmd_refresh_data(args) -> int:
+def cmd_refresh_data(args, services: Services) -> int:
     """Refresh the price cache, incrementally or in full."""
-    # Importing the package would trigger the startup auto-refresh; this
-    # command manages the refresh itself.
-    os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
-    import wolvwealth
-
-    state = wolvwealth.state
-    last = state.HISTORICAL_PRICES.index[-1].date()
-    print(f"Universe: {len(state.TICKER_UNIVERSE)} tickers. Cached prices end {last}.")
+    market = services.market
+    print(f"Universe: {len(market.data.universe)} tickers. Cached prices end {market.data.as_of}.")
     if args.full:
         print("Full re-download, 2006 -> today. This takes a while and rewrites historical_prices.csv ...")
-        state.save_historical_prices()
-        state.load_historical_prices()
-        changed = True
-    else:
-        changed = state.update_historical_prices()
-    if changed:
-        print(f"Done. Prices now end {state.HISTORICAL_PRICES.index[-1].date()}.")
+    if market.refresh(full=args.full):
+        print(f"Done. Prices now end {market.data.as_of}.")
     else:
         print("Already up to date.")
     return 0
 
 
-def cmd_reset_db(_args) -> int:
+def cmd_reset_db(_args, services: Services) -> int:
     """Erase all workspaces by rebuilding the database from sql/."""
-    os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
-    import wolvwealth
-    import wolvwealth.model
-
-    path = wolvwealth.app.config["DATABASE_FILENAME"]
-    if path.exists():
-        path.unlink()
-    wolvwealth.model.ensure_db()
-    print(f"Database recreated at {path}. All workspaces erased; the demo workspace is back.")
+    services.database.reset()
+    print(f"Database recreated at {services.database.path}. All workspaces erased; the demo workspace is back.")
     return 0
 
 
-def cmd_dump_db(_args) -> int:
+def cmd_dump_db(_args, services: Services) -> int:
     """Print the contents of every table."""
-    os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
-    import wolvwealth
-    import wolvwealth.model
-
-    with wolvwealth.app.app_context():
-        connection = wolvwealth.model.get_db()
-        for table in ("workspaces", "portfolios", "holdings"):
+    with services.database.connect() as connection:
+        for table, rows in services.repository(connection).dump().items():
             print(f"== {table} ==")
-            for row in connection.execute(f"SELECT * FROM {table}"):  # table names are a fixed tuple
+            for row in rows:
                 print(row)
             print()
     return 0
@@ -113,10 +98,10 @@ COMMANDS = {
 }
 
 
-def main(argv=None) -> int:
+def main(argv=None, services: Services = None) -> int:
     """Parse arguments and dispatch to a command."""
     args = build_parser().parse_args(argv)
-    return COMMANDS[args.command](args)
+    return COMMANDS[args.command](args, services or Services.build())
 
 
 if __name__ == "__main__":

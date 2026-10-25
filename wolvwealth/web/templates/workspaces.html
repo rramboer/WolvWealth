@@ -29,7 +29,7 @@
                 <div class="space-y-2">
                     {% for ws in workspaces %}
                     <div class="flex items-center space-x-2">
-                        <form action="{{ url_for('workspaces_enter') }}" method="post" class="flex-grow">
+                        <form action="{{ url_for('views.workspaces_enter') }}" method="post" class="flex-grow">
                             <input type="hidden" name="name" value="{{ ws.name }}" />
                             <button type="submit"
                                 class="w-full text-left text-white font-medium rounded-lg text-sm px-4 py-2.5 bg-gray-dark/60 hover:bg-gray-dark">
@@ -39,7 +39,7 @@
                                 </span>
                             </button>
                         </form>
-                        <form action="{{ url_for('workspaces_delete') }}" method="post"
+                        <form action="{{ url_for('views.workspaces_delete') }}" method="post"
                             onsubmit="return confirm('Delete workspace \'{{ ws.name }}\' and all of its portfolios?');">
                             <input type="hidden" name="name" value="{{ ws.name }}" />
                             <button type="submit" title="Delete workspace"
@@ -52,7 +52,7 @@
                 <p class="text-sm text-white">No workspaces yet. Create the first one below.</p>
                 {% endif %}
 
-                <form class="space-y-4" action="{{ url_for('workspaces_create') }}" method="post">
+                <form class="space-y-4" action="{{ url_for('views.workspaces_create') }}" method="post">
                     <div>
                         <label for="name" class="block mb-2 text-sm font-medium text-white">New workspace</label>
                         <input type="text" name="name" id="name" maxlength="64"

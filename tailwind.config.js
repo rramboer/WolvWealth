@@ -1,7 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 
 module.exports = {
-  content: ["./wolvwealth/**/*.{html,js,jsx}"],
+  content: ["./wolvwealth/web/templates/**/*.html"],
   theme: {
     colors: {
       'gray-dark': '#111111',

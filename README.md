@@ -1,4 +1,4 @@
-![WolvWealth Logo](/wolvwealth/static/img/logo.png)
+![WolvWealth Logo](/wolvwealth/web/static/img/logo.png)
 
 # WolvWealth
 

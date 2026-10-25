@@ -1,7 +1,6 @@
 """Tests for the `wolvwealth` command line (serve, reset-db, dump-db, refresh-data parsing)."""
 import pytest
 
-import wolvwealth
 import wolvwealth.__main__ as cli
 
 
@@ -19,9 +18,9 @@ def test_parser_commands_and_defaults():
         parser.parse_args(["bogus"])
 
 
-def test_serve_binds_localhost_and_opens_browser(monkeypatch):
+def test_serve_binds_localhost_and_opens_browser(services, monkeypatch):
     calls = {}
-    monkeypatch.setattr(wolvwealth.app, "run", lambda **kwargs: calls.update(kwargs))
+    monkeypatch.setattr("flask.Flask.run", lambda self, **kwargs: calls.update(kwargs))
     opened = []
     monkeypatch.setattr(cli.webbrowser, "open", opened.append)
 
@@ -33,23 +32,35 @@ def test_serve_binds_localhost_and_opens_browser(monkeypatch):
             self.func(*self.args)
 
     monkeypatch.setattr(cli.threading, "Timer", ImmediateTimer)
-    assert cli.main(["serve", "--port", "8123"]) == 0
+    assert cli.main(["serve", "--port", "8123"], services) == 0
     assert calls == {"host": "127.0.0.1", "port": 8123, "debug": False}
     assert opened == ["http://localhost:8123/"]
 
     opened.clear()
-    cli.main(["serve", "--no-browser", "--dev"])
+    cli.main(["serve", "--no-browser", "--dev"], services)
     assert calls["debug"] is True and opened == []
 
 
-def test_reset_db_erases_workspaces_and_restores_demo(workspace_client, capsys):
-    assert cli.main(["reset-db"]) == 0
+def test_reset_db_erases_workspaces_and_restores_demo(workspace_client, services, capsys):
+    assert cli.main(["reset-db"], services) == 0
     names = [w["name"] for w in workspace_client.get("/api/workspaces/").get_json()["workspaces"]]
     assert names == ["demo"]
     assert "All workspaces erased" in capsys.readouterr().out
 
 
-def test_dump_db_prints_tables(workspace_client, capsys):
-    assert cli.main(["dump-db"]) == 0
+def test_dump_db_prints_tables(workspace_client, services, capsys):
+    assert cli.main(["dump-db"], services) == 0
     out = capsys.readouterr().out
     assert "== workspaces ==" in out and "tester" in out and "'AAA'" in out
+
+
+def test_refresh_data_reports_up_to_date(services, capsys):
+    services.market.downloader = lambda *a, **k: pytest.fail("must not download when nothing is missing")
+    import pandas as pd
+
+    # Pretend the newest cached row is today so the incremental path has nothing to fetch.
+    frame = services.market.data.prices.copy()
+    frame.index = pd.date_range(end=pd.Timestamp.now().normalize(), periods=len(frame))
+    services.market.set_data(services.market.data.__class__(services.market.data.universe, frame))
+    assert cli.main(["refresh-data"], services) == 0
+    assert "Already up to date" in capsys.readouterr().out

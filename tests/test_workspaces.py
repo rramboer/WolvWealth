@@ -1,11 +1,4 @@
 """Browser-flow tests for workspaces and portfolios (Flask test client, temp DB)."""
-import wolvwealth
-
-
-def fetch_portfolio(workspace, name):
-    """Read a portfolio through the DB helpers inside a request context."""
-    with wolvwealth.app.test_request_context():
-        return wolvwealth.portfolios.fetch_portfolio(workspace, name=name)
 
 
 def test_workspace_page_requires_open_workspace(client):
@@ -49,58 +42,63 @@ def test_enter_missing_workspace_flashes(client):
     assert client.get("/workspace/").status_code == 302  # nothing was opened
 
 
-def test_delete_workspace_cascades_and_clears_session(workspace_client):
+def test_delete_workspace_cascades_and_clears_session(workspace_client, repo):
     workspace_client.post("/workspaces/delete/", data={"name": "tester"})
-    assert fetch_portfolio("tester", "main") is None
+    assert repo.get_portfolio("tester", name="main") is None
     assert workspace_client.get("/workspace/").status_code == 302  # session cleared
 
 
-def test_portfolio_create_and_holdings(workspace_client):
-    portfolio = fetch_portfolio("tester", "main")
-    assert portfolio["cash"] == 5000
-    assert portfolio["holdings"] == {"AAA": 10}
+def test_portfolio_create_and_holdings(workspace_client, repo):
+    portfolio = repo.get_portfolio("tester", name="main")
+    assert portfolio.cash == 5000
+    assert portfolio.holdings == {"AAA": 10}
 
 
-def test_holdings_upsert_and_zero_removes(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_holdings_upsert_and_zero_removes(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.post("/portfolios/holdings/", data={"portfolio_id": pid, "ticker": "AAA", "shares": "4"})
-    assert fetch_portfolio("tester", "main")["holdings"] == {"AAA": 4}
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 4}
     workspace_client.post("/portfolios/holdings/", data={"portfolio_id": pid, "ticker": "AAA", "shares": "0"})
-    assert fetch_portfolio("tester", "main")["holdings"] == {}
+    assert repo.get_portfolio("tester", name="main").holdings == {}
 
 
-def test_holdings_reject_unknown_ticker(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_holdings_reject_unknown_ticker(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.post("/portfolios/holdings/", data={"portfolio_id": pid, "ticker": "FAKE", "shares": "1"})
-    assert "FAKE" not in fetch_portfolio("tester", "main")["holdings"]
+    assert "FAKE" not in repo.get_portfolio("tester", name="main").holdings
 
 
-def test_set_cash(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_set_cash(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.post("/portfolios/cash/", data={"portfolio_id": pid, "cash": "123.45"})
-    assert fetch_portfolio("tester", "main")["cash"] == 123.45
+    assert repo.get_portfolio("tester", name="main").cash == 123.45
 
 
-def test_portfolio_delete_scoped_to_workspace(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
-    # Another workspace cannot delete tester's portfolio with a guessed id
+def test_portfolio_delete_scoped_to_workspace(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     workspace_client.get("/workspaces/leave/")
     workspace_client.post("/workspaces/create/", data={"name": "intruder"})
     workspace_client.post("/portfolios/delete/", data={"portfolio_id": pid})
-    assert fetch_portfolio("tester", "main") is not None
-    # The owner can
+    assert repo.get_portfolio("tester", name="main") is not None
     workspace_client.post("/workspaces/enter/", data={"name": "tester"})
     workspace_client.post("/portfolios/delete/", data={"portfolio_id": pid})
-    assert fetch_portfolio("tester", "main") is None
+    assert repo.get_portfolio("tester", name="main") is None
 
 
-def test_browser_optimize_flow(workspace_client):
-    pid = fetch_portfolio("tester", "main")["id"]
+def test_browser_optimize_flow(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post(
         "/optimizer/run/", data={"portfolio_id": pid, "universe": "top20", "max_positions": "2"}
     )
     assert response.status_code == 200
     assert b"%" in response.data  # results table rendered
+
+
+def test_browser_optimize_error_flashes(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
+    response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "max_positions": "x"})
+    assert response.status_code == 302
+    assert b"Max positions must be a whole number" in workspace_client.get("/workspace/").data
 
 
 def test_legacy_redirects(client):
@@ -112,6 +110,7 @@ def test_legacy_redirects(client):
 def test_landing_and_picker_render(client):
     assert client.get("/").status_code == 200
     assert client.get("/workspaces/").status_code == 200
+    assert client.get("/static/css/output.css").status_code == 200
 
 
 def test_flashed_message_renders_on_picker(client):
@@ -121,3 +120,22 @@ def test_flashed_message_renders_on_picker(client):
 
 def test_react_shell_page_is_gone(client):
     assert client.get("/optimizer/").status_code == 404
+
+
+def test_repository_transaction_rolls_back_on_error(services):
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        with services.database.connect() as connection:
+            services.repository(connection).create_workspace("doomed")
+            raise RuntimeError("abort")
+    with services.database.connect() as connection:
+        assert not services.repository(connection).workspace_exists("doomed")
+
+
+def test_workspace_page_survives_holding_without_price_data(client):
+    # The demo seed holds AAPL/MSFT, which the synthetic market does not price.
+    client.post("/workspaces/enter/", data={"name": "demo"})
+    response = client.get("/workspace/")
+    assert response.status_code == 200
+    assert b"no price data" in response.data

@@ -38,16 +38,16 @@
                         class="font-medium flex flex-col items-center p-4 sm:p-0 mt-4 sm:mt-0 border border-[#cccccc] rounded-lg sm:flex-row sm:space-x-8 sm:border-0 bg-transparent">
                         {% if workspace %}
                         <li>
-                            <a href="{{ url_for('show_workspace') }}"
+                            <a href="{{ url_for('views.show_workspace') }}"
                                 class="block py-2 px-3 text-white rounded sm:p-0">{{ workspace }}</a>
                         </li>
                         <li>
-                            <a href="{{ url_for('workspaces_leave') }}"
+                            <a href="{{ url_for('views.workspaces_leave') }}"
                                 class="block py-2 px-3 text-white rounded sm:p-0">Switch Workspace</a>
                         </li>
                         {% else %}
                         <li>
-                            <a href="{{ url_for('show_workspaces') }}"
+                            <a href="{{ url_for('views.show_workspaces') }}"
                                 class="block py-2 px-3 text-white rounded sm:p-0">Workspaces</a>
                         </li>
                         {% endif %}

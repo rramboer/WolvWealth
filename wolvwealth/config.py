@@ -1,44 +1,58 @@
-"""WolvWealth local configuration."""
+"""Settings: where files live and a few tunables. No side effects at import.
 
+Everything is a plain dataclass built from the environment by
+``Settings.from_env()``. Nothing here touches the filesystem or network; the
+storage layer creates directories when it first needs them.
+"""
+import dataclasses
 import os
 import pathlib
-import secrets
 
-# Root of this application, useful if it doesn't occupy an entire domain
-APPLICATION_ROOT = '/'
+PACKAGE_DIR = pathlib.Path(__file__).resolve().parent
+REPO_ROOT = PACKAGE_DIR.parent
 
-WOLVWEALTH_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Local state (database, secret key, price cache). Defaults to var/ next to
-# the package; WOLVWEALTH_VAR overrides it so tests and scratch runs can use
-# a throwaway folder without touching the real one.
-VAR_FOLDER = pathlib.Path(os.environ.get('WOLVWEALTH_VAR') or WOLVWEALTH_ROOT/'var')
-VAR_FOLDER.mkdir(parents=True, exist_ok=True)
+@dataclasses.dataclass(frozen=True)
+class Settings:
+    """Paths and tunables for one install."""
 
-# Key for signing the session cookie (which only stores the active workspace
-# name). Generated once per install and kept in var/, outside of git, so no
-# shared secret ships with the repo.
-_SECRET_KEY_FILE = VAR_FOLDER/'secret_key'
-if _SECRET_KEY_FILE.exists():
-    SECRET_KEY = _SECRET_KEY_FILE.read_bytes()
-else:
-    SECRET_KEY = secrets.token_bytes(32)
-    _SECRET_KEY_FILE.write_bytes(SECRET_KEY)
+    #: Local state (database, secret key, price cache). Defaults to var/ next
+    #: to the package; WOLVWEALTH_VAR overrides it so tests and scratch runs
+    #: can use a throwaway folder without touching the real one.
+    var_dir: pathlib.Path = REPO_ROOT / "var"
+    #: Ticker symbols, one per line, descending market cap. Ships inside the package.
+    ticker_universe_path: pathlib.Path = PACKAGE_DIR / "data" / "ticker_universe.csv"
+    #: Where the price history was committed in the repo before it moved to var/.
+    legacy_prices_path: pathlib.Path = REPO_ROOT / "historical_prices.csv"
+    #: On startup, refresh prices if the newest cached row is older than this.
+    auto_refresh_max_age_days: int = 7
+    #: WOLVWEALTH_NO_AUTO_REFRESH disables the startup refresh (offline use, tests).
+    auto_refresh: bool = True
+    #: Earliest date in the price history.
+    price_history_start: str = "2006-01-01"
 
-SESSION_COOKIE_NAME = 'wolvwealth'
+    @property
+    def database_path(self) -> pathlib.Path:
+        """Path of the SQLite file holding workspaces, portfolios, and holdings."""
+        return self.var_dir / "wolvwealth.sqlite3"
 
-# Database file is var/wolvwealth.sqlite3 (created on first run, not in git)
-DATABASE_FILENAME = VAR_FOLDER/'wolvwealth.sqlite3'
+    @property
+    def secret_key_path(self) -> pathlib.Path:
+        """Per-install key that signs the session cookie."""
+        return self.var_dir / "secret_key"
 
-# Market data. Absolute paths so the app and the refresh command work from
-# any working directory, not just the repo root. The ticker universe is small
-# and ships with the repo; the 40 MB price history lives in var/ outside of
-# git (built on first run, or migrated from the old in-repo copy if present).
-TICKER_UNIVERSE_FILE = WOLVWEALTH_ROOT/'ticker_universe.csv'
-HISTORICAL_PRICES_FILE = VAR_FOLDER/'historical_prices.csv'
-LEGACY_HISTORICAL_PRICES_FILE = WOLVWEALTH_ROOT/'historical_prices.csv'
+    @property
+    def prices_path(self) -> pathlib.Path:
+        """Cached daily adjusted closes for the whole universe."""
+        return self.var_dir / "historical_prices.csv"
 
-# On startup, refresh prices automatically if the newest row is older than
-# this many days. Set the environment variable WOLVWEALTH_NO_AUTO_REFRESH
-# to any value to disable (e.g. offline use, tests).
-AUTO_REFRESH_MAX_AGE_DAYS = 7
+    @classmethod
+    def from_env(cls, environ=None) -> "Settings":
+        """Build settings from environment variables (WOLVWEALTH_VAR, WOLVWEALTH_NO_AUTO_REFRESH)."""
+        environ = os.environ if environ is None else environ
+        overrides = {}
+        if environ.get("WOLVWEALTH_VAR"):
+            overrides["var_dir"] = pathlib.Path(environ["WOLVWEALTH_VAR"])
+        if environ.get("WOLVWEALTH_NO_AUTO_REFRESH"):
+            overrides["auto_refresh"] = False
+        return cls(**overrides)

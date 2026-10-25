@@ -10,7 +10,7 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code
 |---|---|---|
 | Python | 3.12 (3.10+ required) | We use the **global interpreter on purpose** — no venv. The optimizer and API must work from anywhere on the device, including for AI agents spawned in arbitrary directories (see README "Why local-first"). |
 | pip | any recent | |
-| Node.js + npm | Node 24 / npm 11 | **Only if you change the styling.** The built Tailwind CSS (`wolvwealth/static/css/output.css`) is committed, so running the app never needs Node. |
+| Node.js + npm | Node 24 / npm 11 | **Only if you change the styling.** The built Tailwind CSS (`wolvwealth/web/static/css/output.css`) is committed, so running the app never needs Node. |
 | git | any | |
 
 The `sqlite3` CLI is **not** required: the app creates its own database on first run, and `wolvwealth reset-db` / `dump-db` use Python's built-in sqlite3 module.
@@ -27,7 +27,7 @@ cd WolvWealth
 
 Because the install is editable and data-file paths are resolved from the install location, `import wolvwealth`, the Flask app, and `wolvwealth <command>` all work from **any directory**. The clone must stay where it is (it *is* the install).
 
-On first start the app creates `var/wolvwealth.sqlite3` (from `sql/schema.sql` + `sql/data.sql`, seeded with a deletable `demo` workspace) and `var/secret_key` (a per-install session-cookie key). Both live in gitignored `var/`, so your workspaces and portfolios stay on your machine and never end up in a commit. `WOLVWEALTH_VAR=/some/dir` relocates `var/` for a run.
+On first start the app creates `var/wolvwealth.sqlite3` (from `wolvwealth/storage/sql/`, seeded with a deletable `demo` workspace) and `var/secret_key` (a per-install session-cookie key). Both live in gitignored `var/`, so your workspaces and portfolios stay on your machine and never end up in a commit. `WOLVWEALTH_VAR=/some/dir` relocates `var/` for a run.
 
 To wipe all local workspaces and start over:
 
@@ -44,7 +44,7 @@ wolvwealth serve            # what a household member runs; --no-browser and --p
 
 `flask --app wolvwealth --debug run --port 8000` still works if you prefer the Flask CLI.
 
-**Changing the styling** needs Node. The templates link the committed `wolvwealth/static/css/output.css`; after editing Tailwind classes, rebuild it and commit the result:
+**Changing the styling** needs Node. The templates link the committed `wolvwealth/web/static/css/output.css`; after editing Tailwind classes, rebuild it and commit the result:
 
 ```bash
 npm install                 # once
@@ -55,13 +55,13 @@ npm run css:watch           # rebuild on every template change while you work
 **Smoke test without a server**, using the Flask test client:
 
 ```bash
-python3 - <<'EOF'
-import wolvwealth
-c = wolvwealth.app.test_client()
+python3 - <<'PY'
+from wolvwealth import create_app
+c = create_app().test_client()
 r = c.post("/api/optimize/",
            json={"initial_cash": 10000, "universe": ["top20"], "constraints": {"max_positions": 5}})
 print(r.status_code, r.get_json())
-EOF
+PY
 ```
 
 There is no "prod" mode: `wolvwealth serve` binds to 127.0.0.1 and that is the only mode. This app has **no authentication by design**.
@@ -70,31 +70,20 @@ There is no "prod" mode: `wolvwealth serve` binds to 127.0.0.1 and that is the o
 
 ### Market data is a 40 MB CSV in var/
 
-Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `var/historical_prices.csv`. The cache is created on first run: migrated from a pre-existing in-repo `historical_prices.csv` if one is still on disk (the file used to be committed), otherwise downloaded in full. Refreshing is automatic and scripted:
+Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `var/historical_prices.csv`, read through `storage/price_store.py` and held in memory as a `MarketData` snapshot by `services/market_data.py`. The cache is created on first access: migrated from a pre-existing in-repo `historical_prices.csv` if one is still on disk (the file used to be committed), otherwise downloaded in full. Refreshing is scripted and automatic:
 
-- **Automatic:** on startup, if the newest cached row is more than `AUTO_REFRESH_MAX_AGE_DAYS` (7) days old, the app appends the missing days. Failures are non-fatal (it keeps serving cached prices). Set `WOLVWEALTH_NO_AUTO_REFRESH=1` to disable (offline use, tests, scripts that manage data themselves).
-- **On demand:** `python -m wolvwealth refresh-data` (incremental append) or `python -m wolvwealth refresh-data --full` (complete 2006-to-today re-download).
+- **Automatic:** `wolvwealth serve` refreshes before binding if the newest cached row is more than `auto_refresh_max_age_days` (7) days old. Failures are non-fatal (it keeps serving cached prices). `WOLVWEALTH_NO_AUTO_REFRESH=1` disables it (offline use, scripts that manage data themselves). `create_app()` itself never refreshes.
+- **On demand:** `wolvwealth refresh-data` (incremental append) or `wolvwealth refresh-data --full` (complete 2006-to-today re-download).
 
-Run `--full` occasionally, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so the downloader works in chunks with pauses and retries; the incremental path refuses to write the CSV if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes, longer if Yahoo is throttling — if it keeps failing, wait an hour and try again.
+Run `--full` occasionally, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so `market/yahoo.py` works in chunks with pauses and retries; the incremental path refuses to write the CSV if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes, longer if Yahoo is throttling. To change the universe, edit `wolvwealth/data/ticker_universe.csv` (keep it sorted by market cap, largest first) and run `--full`.
 
-Price data is never committed anymore: the cache lives in gitignored `var/`, so each machine maintains its own. (The old `Update tickers and prices` data commits are history.)
+### Importing the package has no side effects; building Services does
 
-To add or remove tickers:
-
-```python
-from wolvwealth.api.state import ApplicationState
-s = ApplicationState()
-s.add_tickers_to_universe(["PLTR", "ARM"])   # slow: live market-cap lookups, then full price re-download
-s.remove_tickers_from_universe(["SAVE"])
-```
-
-### Importing the package has side effects
-
-`import wolvwealth` creates the Flask app, registers every route, creates the database if missing, loads ~70 MB of prices into memory, and **may hit the network** (the startup auto-refresh when prices are stale — set `WOLVWEALTH_NO_AUTO_REFRESH=1` in tests and scripts). Keep that in mind. Routes are registered by decorators, so a new view or API module does nothing until it is imported from `wolvwealth/views/__init__.py` or `wolvwealth/api/__init__.py`.
+`import wolvwealth` only defines things. `Services.build()` wires settings, the database, the price store, and the market-data service without touching disk; the first access to `services.market.data` loads (or downloads) the price cache, and the first `database.open()` creates the SQLite file. Routes live on two blueprints (`web/api`, `web/views`) registered by `create_app()`, so a new module does nothing until it is registered there.
 
 ### Holdings tickers must be in the universe
 
-A holding can only be added if its ticker has a column in `historical_prices.csv` (equivalently, a line in `ticker_universe.csv`). If your real portfolio has something exotic, add the ticker to the universe and refresh prices first.
+A holding can only be added if its ticker has a column in `var/historical_prices.csv` (equivalently, a line in `wolvwealth/data/ticker_universe.csv`). If your real portfolio has something exotic, add the ticker to the universe and refresh prices first.
 
 ## Making changes
 
@@ -119,8 +108,9 @@ pylint wolvwealth
 Conventions the existing code follows and new code should too:
 
 - Every module and function has a docstring (pydocstyle is part of the toolchain).
-- API input validation raises `InvalidUsage("...")` from `wolvwealth/api/api_exceptions.py`, which becomes a JSON error response. HTML form handlers report problems with `flask.flash(...)` and redirect back to the page.
-- Database access goes through `wolvwealth.model.get_db()` with parameterised queries, and workspace/portfolio reads and writes go through the helpers in `wolvwealth/portfolios.py` — every portfolio query there is scoped by workspace, keep it that way. The connection is committed and closed at the end of the request automatically.
+- Rule violations raise `ValidationError` / `NotFoundError` from `wolvwealth/domain/errors.py`; they carry a message and optional `details`, never an HTTP status. The API blueprint maps them to 400/404 JSON; views catch them and `flask.flash(...)` the message, then redirect back to the page.
+- All SQL lives in `wolvwealth/storage/repository.py` (parameterised, every portfolio query scoped by workspace, keep it that way). Views and the API get a repository from `web/context.py`, on a per-request connection committed at teardown; the CLI and tests use `with services.database.connect() as conn:`.
+- **The dependency rule is enforced by `tests/test_architecture.py`:** `domain` imports nothing from the rest of the package; `storage`/`market` import only `domain`; `services` imports those three; `web` and the CLI import anything. If you need to add a new top-level package, add it to the layer map in that test.
 - Front-end styling uses the Tailwind palette defined in `tailwind.config.js`. Do not add ad-hoc hex colours in templates.
 
 ### Tests
@@ -143,12 +133,13 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 
 | I want to... | Touch |
 |---|---|
-| Add or change an API endpoint | `wolvwealth/api/<module>.py`, import it in `wolvwealth/api/__init__.py` |
-| Add or change a web page | `wolvwealth/views/<page>.py` + `wolvwealth/templates/<page>.html` (extend `base.html`), import in `wolvwealth/views/__init__.py` |
-| Change workspace/portfolio storage | `wolvwealth/portfolios.py` (helpers), `sql/schema.sql` + `sql/data.sql` (schema), then `wolvwealth reset-db` |
-| Change the optimizer maths | `Optimization` in `wolvwealth/api/optimize.py` — framework-free, plain dict in, plain dict out. `scripts/backtest.py` reuses it |
-| Change the browser optimize flow | `wolvwealth/views/optimizer.py` + `templates/results.html`, forms live in `templates/workspace.html` |
-| Change global config | `wolvwealth/config.py` |
+| Add or change an API endpoint | `wolvwealth/web/api/__init__.py` (route) calling a function in `wolvwealth/services/` |
+| Add or change a web page | `wolvwealth/web/views/<page>.py` + `wolvwealth/web/templates/<page>.html` (extend `base.html`); import the module in `web/views/__init__.py` |
+| Change workspace/portfolio storage | `wolvwealth/storage/repository.py` (SQL), `wolvwealth/domain/models.py` (entities), `wolvwealth/storage/sql/` (schema), then `wolvwealth reset-db` |
+| Change the optimizer maths | `wolvwealth/domain/optimizer.py` — plain dict in, plain dict out, only reads a `MarketData`. `scripts/backtest.py` reuses it |
+| Change the browser optimize flow | `wolvwealth/web/views/optimizer.py` + `templates/results.html`, forms live in `templates/workspace.html` |
+| Change where files live or a tunable | `wolvwealth/config.py` (`Settings`) |
+| Add a bolt-on feature | A module in `wolvwealth/services/` for the use case, a blueprint or CLI command to expose it, tests. See ARCHITECTURE.md "Adding a bolt-on" |
 | Add a CLI command | `wolvwealth/__main__.py` (argparse subcommand + `cmd_*` function), tests in `tests/test_cli.py` |
 | Change the installer | `install.sh`; test it with a sandbox `HOME` so your real user site and shell rc are untouched |
 
