@@ -17,6 +17,9 @@ dependencies = [
     "yfinance>=1.7",
 ]
 
+[project.scripts]
+wolvwealth = "wolvwealth.__main__:main"
+
 [project.optional-dependencies]
 dev = [
     "black",

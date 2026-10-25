@@ -37,25 +37,22 @@ The current state of the code, with diagrams of every workflow and an honest lis
 | `POST /api/holdings/import/`: load a holdings map or CSV text into a stored portfolio | Working |
 | Market data: 2006-01-03 to today, adjusted close, 1,982 tickers | Cached in gitignored `var/` (built or migrated on first run). Auto-refreshed on startup when stale; `python -m wolvwealth refresh-data` on demand |
 | Walk-forward backtest (`scripts/backtest.py`) | Runs standalone from the command line, reuses the app's optimizer |
+| One-command install (`install.sh`) and a `wolvwealth serve` command; no Node or venv at runtime | Working |
 
 ## Quickstart
 
-Everything installs into the global Python interpreter and, once installed, works from any directory.
+One command on Linux, macOS, or Windows via WSL. You need Python 3.10+ and git; nothing else (no Node, no venv, no Docker).
 
 ```bash
-git clone <repo-url> WolvWealth
-cd WolvWealth
-./bin/setup                 # pip install -e . into the global interpreter + npm install
-./bin/run dev               # http://localhost:8000
+curl -fsSL https://raw.githubusercontent.com/rramboer/WolvWealth/main/install.sh | bash
+wolvwealth serve            # http://localhost:8000, opens in your browser
 ```
 
-If you only want the API and do not have Node installed:
+Or from a clone: `./install.sh` then `wolvwealth serve`. The installer checks for Python, clones to `~/WolvWealth` if needed, installs the package into your user-level global interpreter so `wolvwealth` and `import wolvwealth` work from any directory, downloads the price history (several minutes; `--no-data` to defer it to first start), and adds the command to your PATH. Run it again to update.
 
-```bash
-flask --app wolvwealth --debug run --port 8000
-```
+Other commands: `wolvwealth refresh-data [--full]` pulls prices up to today, `wolvwealth reset-db` erases every workspace, `wolvwealth dump-db` prints them. `python -m wolvwealth ...` is equivalent.
 
-On first run the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`. On startup it also refreshes the committed price history up to today if it is more than a week old (set `WOLVWEALTH_NO_AUTO_REFRESH=1` to skip, e.g. offline); you can refresh any time with `python -m wolvwealth refresh-data`.
+On first start the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`. It also refreshes the price history if it is more than a week old (set `WOLVWEALTH_NO_AUTO_REFRESH=1` to skip, e.g. offline).
 
 Then in the browser: open `http://localhost:8000/workspaces/`, create your workspace, add a portfolio with your cash and holdings, and hit **Optimize**. For more than a handful of positions, open **Import holdings in bulk** on the portfolio card and paste `TICKER, shares` lines or upload the positions CSV your brokerage exports (Fidelity, Schwab, Vanguard, Robinhood exports work as-is; a `CASH` row sets your cash).
 

@@ -66,7 +66,7 @@ flowchart LR
     State -. "save/update methods,<br/>not wired to any route" .-> YF
 ```
 
-Everything is file-local to the repository root, but all paths (CSVs, `var/`, `sql/`) are resolved as absolute paths from the package location in `config.py`, so the app, the API, and `python -m wolvwealth` can be started from **any** working directory.
+Everything is file-local to the repository root, but all paths (CSVs, `var/`, `sql/`) are resolved as absolute paths from the package location in `config.py`, so the app, the API, and the `wolvwealth` command can be started from **any** working directory.
 
 ## 3. Repository layout
 
@@ -74,6 +74,7 @@ Everything is file-local to the repository root, but all paths (CSVs, `var/`, `s
 .
 ├── wolvwealth/                Flask package (the app)
 │   ├── __init__.py            Creates `app`, loads config, ensures DB exists, imports api + views, builds ApplicationState
+│   ├── __main__.py            The `wolvwealth` command: serve, refresh-data, reset-db, dump-db
 │   ├── config.py              Per-install secret key (var/secret_key), DB path; WOLVWEALTH_VAR relocates var/
 │   ├── model.py               SQLite connection helper + ensure_db() (builds DB from sql/ on first run)
 │   ├── portfolios.py          Workspace/portfolio DB helpers shared by views and API
@@ -96,16 +97,16 @@ Everything is file-local to the repository root, but all paths (CSVs, `var/`, `s
 │   │   ├── results.html       Optimization results table + metrics
 │   │   ├── base.html          Shared layout: head, nav header, footer (all pages extend it)
 │   │   └── _flashes.html      Flashed-message partial
-│   └── static/                Images, util.css, and the Tailwind build output (output.css)
+│   └── static/                logo + hero image, util.css, and the committed Tailwind build (output.css)
 ├── sql/schema.sql             Three tables: workspaces, portfolios, holdings
 ├── sql/data.sql               Seed: a `demo` workspace with one `starter` portfolio
 ├── var/                       Local state, gitignored: wolvwealth.sqlite3, secret_key
 ├── ticker_universe.csv        One ticker per line, descending market cap
 │                              (price history lives in var/historical_prices.csv, 40 MB, not in git)
 ├── scripts/backtest.py        Standalone walk-forward backtest (reuses the app's Optimization)
-├── bin/setup | bin/db | bin/run   Dev scripts (bin/db now uses Python's sqlite3, no CLI needed)
-├── pyproject.toml             Package metadata, dependencies (the single source of truth), black/pylint settings
-├── package.json               Node deps: Tailwind only
+├── install.sh                 One-command installer (also curl-able); replaces the old bin/ scripts
+├── pyproject.toml             Package metadata, dependencies (the single source of truth), `wolvwealth` entry point, black/pylint settings
+├── package.json               Dev-only: Tailwind + `npm run css` / `css:watch` to rebuild the committed CSS
 ├── tailwind.config.js
 └── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
 ```
@@ -116,7 +117,7 @@ Importing the `wolvwealth` package has side effects. Routes are registered by de
 
 ```mermaid
 flowchart TD
-    A["flask --app wolvwealth run<br/>or python -m wolvwealth refresh-data<br/>or python -c 'import wolvwealth'"] --> B["wolvwealth/__init__.py<br/>app = Flask(__name__)"]
+    A["wolvwealth serve<br/>or wolvwealth refresh-data<br/>or python -c 'import wolvwealth'"] --> B["wolvwealth/__init__.py<br/>app = Flask(__name__)"]
     B --> C["app.config.from_object('wolvwealth.config')<br/>creates var/, loads or generates var/secret_key"]
     C --> D["import wolvwealth.model<br/>then ensure_db():<br/>build var/wolvwealth.sqlite3 from sql/ if missing"]
     D --> E["import wolvwealth.api<br/>registers /api/* routes"]
@@ -388,22 +389,28 @@ flowchart TD
 
 Caveats: it is lookahead-free only because the DataFrame is truncated before each solve, it mutates the global singleton in place (so never import it inside the running web app), and `get_next_date` only tries one extra day when it lands on a non-trading day, so it can land on a missing index and raise.
 
-## 10. Workflow: frontend build and dev scripts
+## 10. Workflow: install, run, and the frontend build
 
 ```mermaid
 flowchart LR
-    subgraph RunDev["bin/run dev"]
-        DB1["./bin/db create<br/>(python sqlite3, no-op if DB exists;<br/>the app also self-creates it)"]
-        TW["npx tailwindcss -o static/css/output.css --watch"]
-        FL["flask --app wolvwealth --debug run :8000"]
+    subgraph Install["install.sh (curl | bash, or ./install.sh in a clone)"]
+        PY["find python3 >= 3.10 + pip"] --> CL["clone to ~/WolvWealth<br/>(skipped inside a clone)"]
+        CL --> PIP["pip install --user -e .<br/>(global per-user site, no venv)"]
+        PIP --> PATHFIX["ensure ~/.local/bin on PATH<br/>(appends to .bashrc/.zshrc)"]
+        PATHFIX --> DATA["wolvwealth refresh-data<br/>(--no-data defers to first start)"]
     end
-    DB1 --> TW --> FL
-    TPL["templates/*.html"] -. "link" .-> OUT["output.css (gitignored)"]
+    DATA --> SERVE["wolvwealth serve [--dev] [--port] [--no-browser]<br/>app.run on 127.0.0.1, opens a browser tab"]
+    subgraph Styling["contributors only (Node)"]
+        TPL["templates/*.html"] --> TW["npm run css / css:watch<br/>(tailwindcss --minify)"] --> OUT["static/css/output.css<br/>(committed)"]
+    end
+    OUT -. "link" .-> SERVE
 ```
 
-- `bin/db` now uses Python's built-in `sqlite3` module, so the `sqlite3` CLI is no longer required. `create`/`destroy`/`reset`/`dump` operate on workspaces, portfolios, and holdings.
-- `bin/run` only has a `dev` mode and binds to localhost. The old `prod` mode (debug server under `sudo` on port 80) and the gunicorn config are gone: this app has no auth and is localhost-only by design.
-- There is no JavaScript build beyond Tailwind. The optimizer UI is the server-rendered form on `/workspace/` plus `results.html`.
+- The install is **editable on purpose**: `sql/`, `ticker_universe.csv`, and `var/` are resolved relative to the package's parent, so the clone is the install and must stay put. `pyproject.toml` declares the `wolvwealth` console script, so `wolvwealth serve` works from any directory once `~/.local/bin` is on PATH.
+- `wolvwealth` (`wolvwealth/__main__.py`) has four subcommands: `serve`, `refresh-data [--full]`, `reset-db`, `dump-db`. `reset-db`/`dump-db` use Python's `sqlite3`, so the CLI tool is not required. The old `bin/setup`, `bin/run`, and `bin/db` are deleted.
+- `serve` always binds to 127.0.0.1. There is no prod mode: this app has no auth and is localhost-only by design.
+- **Node is not a runtime dependency.** The Tailwind output is committed, so a household member never installs Node. Anyone who edits classes in a template runs `npm run css` and commits the rebuilt file. There is no JavaScript build at all; the optimizer UI is the server-rendered form on `/workspace/` plus `results.html`.
+- Containers were considered and rejected for now: the point of the global install is that `import wolvwealth` works for an agent spawned anywhere on the device, which a container would hide behind a port. If a container ever becomes useful (e.g. a NAS), it is a thin wrapper around `install.sh` + `wolvwealth serve --no-browser`, not a different install path.
 
 ## 11. Data model
 

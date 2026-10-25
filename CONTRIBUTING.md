@@ -10,49 +10,47 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code
 |---|---|---|
 | Python | 3.12 (3.10+ required) | We use the **global interpreter on purpose** — no venv. The optimizer and API must work from anywhere on the device, including for AI agents spawned in arbitrary directories (see README "Why local-first"). |
 | pip | any recent | |
-| Node.js + npm | Node 24 / npm 11 | Only needed to build the website CSS (Tailwind). The JSON API works without Node. |
+| Node.js + npm | Node 24 / npm 11 | **Only if you change the styling.** The built Tailwind CSS (`wolvwealth/static/css/output.css`) is committed, so running the app never needs Node. |
 | git | any | |
 
-The `sqlite3` CLI is **not** required: `bin/db` uses Python's built-in sqlite3 module, and the app creates its own database on first run.
+The `sqlite3` CLI is **not** required: the app creates its own database on first run, and `wolvwealth reset-db` / `dump-db` use Python's built-in sqlite3 module.
 
 ## First-time setup
 
 ```bash
-git clone <repo-url> WolvWealth
+git clone git@github.com:rramboer/WolvWealth.git
 cd WolvWealth
-./bin/setup
+./install.sh --dev          # --dev adds the lint/test tools; --no-data skips the price download
 ```
 
-`bin/setup` runs `pip install --user --break-system-packages -e ".[dev]"` (an editable install into the global interpreter, including the dev tools) and `npm install` (Tailwind only — skipped automatically if npm is missing; the JSON API works without it). Dependencies are declared in `pyproject.toml` and deliberately minimal — just Flask, pandas, pyportfolioopt, and yfinance at runtime — because this gets installed globally on other people's machines. There is no `requirements.txt` anymore.
+`install.sh` is the same installer a non-developer runs (`curl ... | bash` in the README). It runs `pip install --user --break-system-packages -e ".[dev]"` (an editable install into the global interpreter), makes sure `~/.local/bin` is on your PATH so the `wolvwealth` command resolves, and downloads the price history. Dependencies are declared in `pyproject.toml` and deliberately minimal — just Flask, pandas, pyportfolioopt, and yfinance at runtime — because this gets installed globally on other people's machines.
 
-Because the install is editable and data-file paths are resolved from the install location, `import wolvwealth`, the Flask app, and `python -m wolvwealth` all work from **any directory**.
+Because the install is editable and data-file paths are resolved from the install location, `import wolvwealth`, the Flask app, and `wolvwealth <command>` all work from **any directory**. The clone must stay where it is (it *is* the install).
 
-That's it. On first start the app creates `var/wolvwealth.sqlite3` (from `sql/schema.sql` + `sql/data.sql`, seeded with a deletable `demo` workspace) and `var/secret_key` (a per-install session-cookie key). Both live in gitignored `var/`, so your workspaces and portfolios stay on your machine and never end up in a commit.
+On first start the app creates `var/wolvwealth.sqlite3` (from `sql/schema.sql` + `sql/data.sql`, seeded with a deletable `demo` workspace) and `var/secret_key` (a per-install session-cookie key). Both live in gitignored `var/`, so your workspaces and portfolios stay on your machine and never end up in a commit. `WOLVWEALTH_VAR=/some/dir` relocates `var/` for a run.
 
 To wipe all local workspaces and start over:
 
 ```bash
-./bin/db reset
+wolvwealth reset-db
 ```
 
 ## Running it
 
-**Full dev mode** (website + API, with CSS and JS rebuilt on change):
-
 ```bash
-./bin/run dev
-# http://localhost:8000
+wolvwealth serve --dev      # Flask debug server with auto-reload, http://localhost:8000, opens a browser tab
+wolvwealth serve            # what a household member runs; --no-browser and --port N also exist
 ```
 
-This starts a Tailwind watcher in the background and then the Flask debug server in the foreground. Ctrl-C stops Flask; the Tailwind watcher may keep running and need to be killed separately (`pkill -f tailwindcss`).
+`flask --app wolvwealth --debug run --port 8000` still works if you prefer the Flask CLI.
 
-**API only** (no Node needed):
+**Changing the styling** needs Node. The templates link the committed `wolvwealth/static/css/output.css`; after editing Tailwind classes, rebuild it and commit the result:
 
 ```bash
-flask --app wolvwealth --debug run --port 8000
+npm install                 # once
+npm run css                 # one-off minified build
+npm run css:watch           # rebuild on every template change while you work
 ```
-
-The HTML pages will render without styling in this mode unless `wolvwealth/static/css/output.css` was built at some point.
 
 **Smoke test without a server**, using the Flask test client:
 
@@ -66,7 +64,7 @@ print(r.status_code, r.get_json())
 EOF
 ```
 
-There is no "prod" mode anymore (the old `bin/run prod` ran the debug server as root on port 80, and gunicorn support has been removed). This app has **no authentication by design** — it binds to localhost only.
+There is no "prod" mode: `wolvwealth serve` binds to 127.0.0.1 and that is the only mode. This app has **no authentication by design**.
 
 ## Things that will bite you
 
@@ -109,7 +107,7 @@ A holding can only be added if its ticker has a column in `historical_prices.csv
 
 ### Code style
 
-Settings live in `pyproject.toml`. The tools come with the `dev` extra (`pip install -e ".[dev]"`, which `bin/setup` does).
+Settings live in `pyproject.toml`. The tools come with the `dev` extra (`./install.sh --dev`, or `pip install --user --break-system-packages -e ".[dev]"`).
 
 ```bash
 black --line-length 120 wolvwealth scripts/backtest.py
@@ -147,10 +145,12 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 |---|---|
 | Add or change an API endpoint | `wolvwealth/api/<module>.py`, import it in `wolvwealth/api/__init__.py` |
 | Add or change a web page | `wolvwealth/views/<page>.py` + `wolvwealth/templates/<page>.html` (extend `base.html`), import in `wolvwealth/views/__init__.py` |
-| Change workspace/portfolio storage | `wolvwealth/portfolios.py` (helpers), `sql/schema.sql` + `sql/data.sql` (schema), then `./bin/db reset` |
+| Change workspace/portfolio storage | `wolvwealth/portfolios.py` (helpers), `sql/schema.sql` + `sql/data.sql` (schema), then `wolvwealth reset-db` |
 | Change the optimizer maths | `Optimization` in `wolvwealth/api/optimize.py` — framework-free, plain dict in, plain dict out. `scripts/backtest.py` reuses it |
 | Change the browser optimize flow | `wolvwealth/views/optimizer.py` + `templates/results.html`, forms live in `templates/workspace.html` |
 | Change global config | `wolvwealth/config.py` |
+| Add a CLI command | `wolvwealth/__main__.py` (argparse subcommand + `cmd_*` function), tests in `tests/test_cli.py` |
+| Change the installer | `install.sh`; test it with a sandbox `HOME` so your real user site and shell rc are untouched |
 
 ## Security notes
 

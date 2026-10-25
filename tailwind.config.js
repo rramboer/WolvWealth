@@ -16,6 +16,7 @@ module.exports = {
     },
     fontFamily: {
       sans: ['-apple-system', 'BlinkMacSystemFont', 'Helvetica Neue', 'sans-serif'],
+      mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
     },
     extend: {
       borderRadius: {

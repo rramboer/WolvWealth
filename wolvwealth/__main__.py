@@ -1,25 +1,58 @@
-"""Command-line entry point: python -m wolvwealth <command>.
+"""Command-line entry point: ``wolvwealth <command>`` (or ``python -m wolvwealth``).
 
 Works from any directory; data files are resolved from the install location.
+
+    wolvwealth serve            start the app on http://localhost:8000 and open a browser
+    wolvwealth refresh-data     pull market prices up to today
+    wolvwealth reset-db         erase every workspace and start from the demo seed
+    wolvwealth dump-db          print all workspaces, portfolios, and holdings
 """
 import argparse
 import os
 import sys
+import threading
+import webbrowser
+
+DEFAULT_PORT = 8000
 
 
-def main():
-    """Run a wolvwealth maintenance command."""
-    parser = argparse.ArgumentParser(prog="python -m wolvwealth", description=__doc__)
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser (separate so tests can exercise it)."""
+    parser = argparse.ArgumentParser(prog="wolvwealth", description="Local-first portfolio optimizer.")
     sub = parser.add_subparsers(dest="command", required=True)
-    refresh = sub.add_parser("refresh-data", help="Pull market prices up to today into historical_prices.csv")
+
+    serve = sub.add_parser("serve", help="Run the app on localhost and open it in your browser")
+    serve.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port (default {DEFAULT_PORT})")
+    serve.add_argument("--no-browser", action="store_true", help="Do not open a browser tab")
+    serve.add_argument("--dev", action="store_true", help="Flask debug mode: auto-reload on code changes")
+
+    refresh = sub.add_parser("refresh-data", help="Pull market prices up to today into var/historical_prices.csv")
     refresh.add_argument(
         "--full",
         action="store_true",
         help="Re-download the entire 2006-to-today history (correct after splits/dividends) "
         "instead of appending only the missing recent rows",
     )
-    args = parser.parse_args()
 
+    sub.add_parser("reset-db", help="Delete var/wolvwealth.sqlite3 and recreate it with the demo seed")
+    sub.add_parser("dump-db", help="Print every workspace, portfolio, and holding")
+    return parser
+
+
+def cmd_serve(args) -> int:
+    """Run the Flask app on localhost (this app has no auth, so never bind elsewhere)."""
+    import wolvwealth  # Startup auto-refresh of stale prices is wanted here
+
+    url = f"http://localhost:{args.port}/"
+    print(f"WolvWealth is running at {url}  (Ctrl-C to stop)")
+    if not args.no_browser and not os.environ.get("WERKZEUG_RUN_MAIN"):  # not in the reloader child
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    wolvwealth.app.run(host="127.0.0.1", port=args.port, debug=args.dev)
+    return 0
+
+
+def cmd_refresh_data(args) -> int:
+    """Refresh the price cache, incrementally or in full."""
     # Importing the package would trigger the startup auto-refresh; this
     # command manages the refresh itself.
     os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
@@ -40,6 +73,50 @@ def main():
     else:
         print("Already up to date.")
     return 0
+
+
+def cmd_reset_db(_args) -> int:
+    """Erase all workspaces by rebuilding the database from sql/."""
+    os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
+    import wolvwealth
+    import wolvwealth.model
+
+    path = wolvwealth.app.config["DATABASE_FILENAME"]
+    if path.exists():
+        path.unlink()
+    wolvwealth.model.ensure_db()
+    print(f"Database recreated at {path}. All workspaces erased; the demo workspace is back.")
+    return 0
+
+
+def cmd_dump_db(_args) -> int:
+    """Print the contents of every table."""
+    os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
+    import wolvwealth
+    import wolvwealth.model
+
+    with wolvwealth.app.app_context():
+        connection = wolvwealth.model.get_db()
+        for table in ("workspaces", "portfolios", "holdings"):
+            print(f"== {table} ==")
+            for row in connection.execute(f"SELECT * FROM {table}"):  # table names are a fixed tuple
+                print(row)
+            print()
+    return 0
+
+
+COMMANDS = {
+    "serve": cmd_serve,
+    "refresh-data": cmd_refresh_data,
+    "reset-db": cmd_reset_db,
+    "dump-db": cmd_dump_db,
+}
+
+
+def main(argv=None) -> int:
+    """Parse arguments and dispatch to a command."""
+    args = build_parser().parse_args(argv)
+    return COMMANDS[args.command](args)
 
 
 if __name__ == "__main__":
