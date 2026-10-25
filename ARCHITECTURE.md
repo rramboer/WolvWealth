@@ -17,7 +17,7 @@ Three things live in the same process:
 | Piece | Where | State |
 |---|---|---|
 | Server-rendered website (landing, workspace picker, workspace page with portfolio CRUD, optimizer results) | `wolvwealth/views/`, `wolvwealth/templates/` | Working end to end |
-| JSON API (optimize, list workspaces) | `wolvwealth/api/` | Working, no auth required |
+| JSON API (optimize, list workspaces, bulk-import holdings) | `wolvwealth/api/` | Working, no auth required |
 | Market data cache (tickers + ~20 years of daily adjusted closes) | `ticker_universe.csv` (in repo), `var/historical_prices.csv` (local cache), loaded by `wolvwealth/api/state.py` | Loaded into memory at import; auto-refreshed on startup when older than 7 days, or on demand via `python -m wolvwealth refresh-data` |
 
 There is also a standalone walk-forward backtest script, `scripts/backtest.py`, that reuses the app's data loader and `Optimization` class but is not reachable from the web app. The optimizer UI is server-rendered from the workspace page.
@@ -74,18 +74,20 @@ Everything is file-local to the repository root, but all paths (CSVs, `var/`, `s
 .
 ├── wolvwealth/                Flask package (the app)
 │   ├── __init__.py            Creates `app`, loads config, ensures DB exists, imports api + views, builds ApplicationState
-│   ├── config.py              Per-install secret key (var/secret_key), DB path
+│   ├── config.py              Per-install secret key (var/secret_key), DB path; WOLVWEALTH_VAR relocates var/
 │   ├── model.py               SQLite connection helper + ensure_db() (builds DB from sql/ on first run)
 │   ├── portfolios.py          Workspace/portfolio DB helpers shared by views and API
+│   ├── holdings_import.py     Framework-free parser for pasted/CSV holdings (brokerage exports)
 │   ├── api/
 │   │   ├── __init__.py        /api/ usage endpoint, /api/workspaces/
 │   │   ├── state.py           ApplicationState: loads/saves CSVs, yfinance helpers
 │   │   ├── optimize.py        Optimization class (framework-free) + POST /api/optimize/
+│   │   ├── holdings.py        POST /api/holdings/import/ (bulk-load holdings into a portfolio)
 │   │   └── api_exceptions.py  InvalidUsage -> JSON error responses
 │   ├── views/                 HTML routes
 │   │   ├── index.py           Landing page
 │   │   ├── workspaces.py      Picker, create/enter/leave/delete, current_workspace(), legacy redirects
-│   │   ├── portfolios.py      Workspace page: portfolio + holdings + cash CRUD
+│   │   ├── portfolios.py      Workspace page: portfolio + holdings + cash CRUD, bulk import form
 │   │   └── optimizer.py       POST /optimizer/run/ (server-rendered results)
 │   ├── templates/             Jinja templates, one per page, all extending base.html
 │   │   ├── index.html         Landing
@@ -177,13 +179,17 @@ flowchart TD
     CARD --> F1["POST /portfolios/create/<br/>name + starting cash"]
     CARD --> F2["POST /portfolios/holdings/<br/>ticker + shares (upsert, 0 removes)<br/>ticker must exist in ticker_universe.csv"]
     CARD --> F3["POST /portfolios/cash/<br/>set uninvested cash"]
+    CARD --> F6["POST /portfolios/import/<br/>paste box or CSV upload<br/>merge or replace, all-or-nothing"]
     CARD --> F4["POST /portfolios/delete/<br/>confirm dialog"]
     CARD --> F5["POST /optimizer/run/<br/>universe + optional constraints<br/>(see next section)"]
     F1 --> WS
     F2 --> WS
     F3 --> WS
     F4 --> WS
+    F6 --> WS
 ```
+
+**Bulk import** (`/portfolios/import/`) runs the text through `holdings_import.parse_holdings()`, which is framework-free and shared with the JSON API. It accepts `TICKER, shares` lines with any common separator, or a CSV with a header row where the symbol and share columns are found by name (`symbol`/`ticker`, `quantity`/`shares`/`qty`), so brokerage position exports work unmodified; extra columns, blank lines, `#` comments, and summary rows without a share count are ignored, duplicate lots are summed, and a `CASH` row sets cash. Tickers must be in `ticker_universe.csv`; unknown ones block the import unless "skip unknown tickers" is ticked. Writes are all-or-nothing: any error leaves the portfolio untouched and every problem is flashed at once.
 
 Every mutation query is scoped by `(workspace, portfolio_id)` in `portfolios.py`, so a stale or guessed form value cannot touch another workspace's portfolio — again for tidiness, not security, since anyone can just open the other workspace.
 
@@ -286,6 +292,34 @@ flowchart TD
     L --> M["portfolio_performance -> metrics"]
     G -. "any exception" .-> X["400 'Optimization Error. ...'<br/>(includes the real solver error)"]
 ```
+
+### Bulk import endpoint
+
+`POST /api/holdings/import/` writes holdings into a stored portfolio and is the agent's way to get a brokerage export into a workspace before calling `/api/optimize/`.
+
+```json
+{
+  "workspace": "ryan",
+  "portfolio": "long-term",
+  "create_portfolio": true,
+  "mode": "replace",
+  "holdings": { "AAPL": 10, "MSFT": 5.5 },
+  "cash": 5000,
+  "skip_unknown": false
+}
+```
+
+| Field | Meaning | Default |
+|---|---|---|
+| `workspace` | Target workspace; falls back to the browser session's open workspace | session |
+| `portfolio` | Target portfolio name (required) | |
+| `create_portfolio` | Create the portfolio if it does not exist | false |
+| `holdings` **or** `csv` | Either a ticker-to-shares object, or the raw text a human would paste into the import box (same parser) | one is required |
+| `cash` | Set the portfolio's cash; a `CASH` row in `csv` does the same | unchanged |
+| `mode` | `merge` upserts each ticker (0 removes); `replace` drops every existing holding first | `merge` |
+| `skip_unknown` | Drop tickers missing from the price cache instead of failing | false |
+
+Success returns `{workspace, portfolio, mode, imported, skipped_unknown, ignored_lines, cash, holdings}` with the portfolio's final state. Any problem is a 400 whose `error.payload` carries `errors` (per-line messages) and `unknown_tickers`, and nothing is written.
 
 The `max_positions` step is a post-hoc truncation, not a cardinality constraint in the solver. The reported Sharpe/return/volatility metrics are recomputed from the truncated, renormalized weights, so they describe the portfolio that is actually returned.
 
@@ -437,7 +471,7 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 4. ~~No refresh command / 40 MB CSV committed to git~~ — done; `python -m wolvwealth refresh-data` + startup auto-refresh, and the price cache lives in gitignored `var/` (migrated or downloaded on first run).
 5. ~~CSV paths are relative to the working directory~~ — done; all paths resolve from the package location, so everything runs from any directory.
-6. No import path for holdings: entering a 30-position portfolio one form row at a time is tedious. A CSV upload or paste box would fix it.
+6. ~~No import path for holdings~~ — done; paste box / CSV upload per portfolio card and `POST /api/holdings/import/` (§6, §7).
 
 **Hygiene**
 

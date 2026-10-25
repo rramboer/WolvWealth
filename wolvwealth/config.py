@@ -1,5 +1,6 @@
 """WolvWealth local configuration."""
 
+import os
 import pathlib
 import secrets
 
@@ -7,8 +8,12 @@ import secrets
 APPLICATION_ROOT = '/'
 
 WOLVWEALTH_ROOT = pathlib.Path(__file__).resolve().parent.parent
-VAR_FOLDER = WOLVWEALTH_ROOT/'var'
-VAR_FOLDER.mkdir(exist_ok=True)
+
+# Local state (database, secret key, price cache). Defaults to var/ next to
+# the package; WOLVWEALTH_VAR overrides it so tests and scratch runs can use
+# a throwaway folder without touching the real one.
+VAR_FOLDER = pathlib.Path(os.environ.get('WOLVWEALTH_VAR') or WOLVWEALTH_ROOT/'var')
+VAR_FOLDER.mkdir(parents=True, exist_ok=True)
 
 # Key for signing the session cookie (which only stores the active workspace
 # name). Generated once per install and kept in var/, outside of git, so no

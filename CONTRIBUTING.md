@@ -137,7 +137,7 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 - `market` — swaps the global price data for 4 synthetic tickers (`AAA`–`DDD`) with a fixed random seed, so optimizer assertions are deterministic and fast.
 - `workspace_client` — `client` with a `tester` workspace open and one seeded portfolio.
 
-`conftest.py` sets `WOLVWEALTH_NO_AUTO_REFRESH=1` before importing the app, so tests never hit the network.
+`conftest.py` sets `WOLVWEALTH_NO_AUTO_REFRESH=1` and points `WOLVWEALTH_VAR` at a throwaway folder seeded with a two-row price CSV before importing the app, so tests never hit the network even on a machine with no real price cache yet. (`WOLVWEALTH_VAR` is also handy for scratch runs of the app that should not touch your real `var/`.)
 
 **Every change ships with tests.** Bug fix → a regression test that fails without the fix. New feature → tests for its happy path and its validation errors. The suite runs in about a second; there is no excuse to skip it.
 

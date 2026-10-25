@@ -3,6 +3,7 @@
 import flask
 from flask import render_template
 import wolvwealth
+import wolvwealth.holdings_import as holdings_import
 import wolvwealth.portfolios as portfolios
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.views.workspaces import current_workspace
@@ -131,3 +132,58 @@ def _parse_cash(raw: str):
         flask.flash("Cash must be zero or more.")
         return None
     return round(cash, 2)
+
+
+@wolvwealth.app.route("/portfolios/import/", methods=["POST"])
+def portfolios_import():
+    """Bulk-load holdings from a pasted block or an uploaded CSV file.
+
+    All-or-nothing: if any line is invalid or any ticker is unknown (and
+    "skip unknown" is not ticked), nothing is written and every problem is
+    flashed at once so the whole file can be fixed in one pass.
+    """
+    workspace = _require_workspace()
+    if workspace is None:
+        return flask.redirect(flask.url_for("show_workspaces"))
+    portfolio_id = _parse_portfolio_id()
+    if portfolio_id is None or not portfolios.portfolio_owned(workspace, portfolio_id):
+        flask.flash("That portfolio no longer exists.")
+        return flask.redirect(flask.url_for("show_workspace"))
+
+    text = flask.request.form.get("text") or ""
+    upload = flask.request.files.get("file")
+    if upload is not None and upload.filename:
+        try:
+            text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            flask.flash("The uploaded file is not UTF-8 text. Export as CSV and try again.")
+            return flask.redirect(flask.url_for("show_workspace"))
+    replace = flask.request.form.get("mode") == "replace"
+    skip_unknown = flask.request.form.get("skip_unknown") == "on"
+
+    parsed = holdings_import.parse_holdings(text, universe=ApplicationState().TICKER_UNIVERSE)
+    problems = list(parsed.errors)
+    if parsed.unknown and not skip_unknown:
+        problems.append(
+            "Unknown tickers (not in the cached price data): "
+            + ", ".join(parsed.unknown)
+            + ". Remove them or tick 'skip unknown tickers'."
+        )
+    if problems:
+        flask.flash("Nothing imported. " + " ".join(problems[:10]) + (" ..." if len(problems) > 10 else ""))
+        return flask.redirect(flask.url_for("show_workspace"))
+
+    written = portfolios.import_holdings(workspace, portfolio_id, parsed.holdings, replace=replace)
+    if parsed.cash is not None:
+        portfolios.set_cash(workspace, portfolio_id, parsed.cash)
+    summary = f"Imported {written} holding{'s' if written != 1 else ''}"
+    summary += " (replaced existing)." if replace else "."
+    if parsed.cash is not None:
+        summary += f" Cash set to ${parsed.cash:,.2f}."
+    if parsed.unknown:
+        summary += " Skipped unknown tickers: " + ", ".join(parsed.unknown) + "."
+    if parsed.ignored:
+        count = len(parsed.ignored)
+        summary += f" Ignored {count} line{'s' if count != 1 else ''} without a share count."
+    flask.flash(summary)
+    return flask.redirect(flask.url_for("show_workspace"))

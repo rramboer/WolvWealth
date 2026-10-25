@@ -116,11 +116,7 @@ def set_cash(workspace: str, portfolio_id: int, cash: float) -> None:
 def set_holding(workspace: str, portfolio_id: int, ticker: str, shares: float) -> None:
     """Set the share count for one ticker. Zero shares removes the holding."""
     connection = wolvwealth.model.get_db()
-    owned = connection.execute(
-        "SELECT 1 FROM portfolios WHERE workspace = ? AND id = ?",
-        (workspace, portfolio_id),
-    ).fetchone()
-    if owned is None:
+    if not portfolio_owned(workspace, portfolio_id):
         return
     if shares == 0:
         connection.execute(
@@ -133,3 +129,46 @@ def set_holding(workspace: str, portfolio_id: int, ticker: str, shares: float) -
             "ON CONFLICT(portfolio_id, ticker) DO UPDATE SET shares = excluded.shares",
             (portfolio_id, ticker, shares),
         )
+
+
+def portfolio_owned(workspace: str, portfolio_id: int) -> bool:
+    """Return true if the portfolio exists in this workspace."""
+    connection = wolvwealth.model.get_db()
+    return (
+        connection.execute(
+            "SELECT 1 FROM portfolios WHERE workspace = ? AND id = ?",
+            (workspace, portfolio_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def import_holdings(workspace: str, portfolio_id: int, holdings: dict, replace: bool = False) -> int:
+    """Write many holdings at once; returns the number of tickers written.
+
+    With replace=True every existing holding is dropped first, so the
+    portfolio ends up exactly equal to ``holdings`` (a brokerage export).
+    Otherwise it is an upsert per ticker, and zero shares removes a ticker.
+    Runs inside the request's single transaction, so a failure part-way
+    leaves the portfolio untouched.
+    """
+    connection = wolvwealth.model.get_db()
+    if not portfolio_owned(workspace, portfolio_id):
+        return 0
+    if replace:
+        connection.execute("DELETE FROM holdings WHERE portfolio_id = ?", (portfolio_id,))
+    written = 0
+    for ticker, shares in holdings.items():
+        if shares == 0:
+            connection.execute(
+                "DELETE FROM holdings WHERE portfolio_id = ? AND ticker = ?",
+                (portfolio_id, ticker),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO holdings(portfolio_id, ticker, shares) VALUES (?, ?, ?) "
+                "ON CONFLICT(portfolio_id, ticker) DO UPDATE SET shares = excluded.shares",
+                (portfolio_id, ticker, shares),
+            )
+            written += 1
+    return written

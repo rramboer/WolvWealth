@@ -31,8 +31,10 @@ The current state of the code, with diagrams of every workflow and an honest lis
 |---|---|
 | Workspaces: create, open, switch, delete from the browser | Working |
 | Portfolios per workspace: cash, holdings, valuations at last cached price | Working |
+| Bulk holdings import: paste `TICKER, shares` lines or upload a brokerage positions CSV | Working |
 | Optimize a saved portfolio from the browser, results page with metrics and target allocation | Working |
 | `POST /api/optimize/`: optimize by stored portfolio name or explicit holdings, no auth header | Working |
+| `POST /api/holdings/import/`: load a holdings map or CSV text into a stored portfolio | Working |
 | Market data: 2006-01-03 to today, adjusted close, 1,982 tickers | Cached in gitignored `var/` (built or migrated on first run). Auto-refreshed on startup when stale; `python -m wolvwealth refresh-data` on demand |
 | Walk-forward backtest (`scripts/backtest.py`) | Runs standalone from the command line, reuses the app's optimizer |
 
@@ -55,7 +57,7 @@ flask --app wolvwealth --debug run --port 8000
 
 On first run the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`. On startup it also refreshes the committed price history up to today if it is more than a week old (set `WOLVWEALTH_NO_AUTO_REFRESH=1` to skip, e.g. offline); you can refresh any time with `python -m wolvwealth refresh-data`.
 
-Then in the browser: open `http://localhost:8000/workspaces/`, create your workspace, add a portfolio with your cash and holdings, and hit **Optimize**.
+Then in the browser: open `http://localhost:8000/workspaces/`, create your workspace, add a portfolio with your cash and holdings, and hit **Optimize**. For more than a handful of positions, open **Import holdings in bulk** on the portfolio card and paste `TICKER, shares` lines or upload the positions CSV your brokerage exports (Fidelity, Schwab, Vanguard, Robinhood exports work as-is; a `CASH` row sets your cash).
 
 ## Try the API
 
@@ -82,6 +84,21 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
         "initial_holdings": {"AAPL": 10, "MSFT": 5},
         "universe": ["top100"],
         "constraints": {"max_positions": 10}
+      }'
+```
+
+Load a brokerage export into a workspace first (this is what an agent does before optimizing). Either a `holdings` map or the raw `csv` text, `mode` is `merge` (default) or `replace`:
+
+```bash
+curl -s -X POST http://localhost:8000/api/holdings/import/ \
+  -H "Content-Type: application/json" \
+  -d '{
+        "workspace": "ryan",
+        "portfolio": "long-term",
+        "create_portfolio": true,
+        "mode": "replace",
+        "holdings": {"AAPL": 10, "MSFT": 5},
+        "cash": 5000
       }'
 ```
 

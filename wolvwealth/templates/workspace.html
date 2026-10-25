@@ -127,6 +127,41 @@
                 </form>
             </div>
 
+            <!-- Bulk import -->
+            <details class="border-t border-gray-dark pt-4">
+                <summary class="cursor-pointer text-sm font-medium text-white">Import holdings in bulk (paste or
+                    upload a CSV)</summary>
+                <form action="{{ url_for('portfolios_import') }}" method="post" enctype="multipart/form-data"
+                    class="mt-3 space-y-3">
+                    <input type="hidden" name="portfolio_id" value="{{ p.id }}" />
+                    <div>
+                        <label class="block mb-1 text-xs font-medium text-white" for="import-text-{{ p.id }}">One
+                            holding per line: <code>TICKER, shares</code>. A header row from a brokerage export
+                            (Symbol / Quantity) is fine; extra columns are ignored. A <code>CASH</code> line sets
+                            cash.</label>
+                        <textarea name="text" id="import-text-{{ p.id }}" rows="6" spellcheck="false"
+                            placeholder="AAPL, 10&#10;MSFT, 5.5&#10;CASH, 2500"
+                            class="bg-gray-50 border text-sm rounded-lg p-2 w-full font-mono"></textarea>
+                    </div>
+                    <div class="flex flex-wrap items-end gap-4">
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-white" for="import-file-{{ p.id }}">or
+                                upload a .csv / .txt</label>
+                            <input type="file" name="file" id="import-file-{{ p.id }}" accept=".csv,.txt,text/csv,text/plain"
+                                class="text-sm text-white">
+                        </div>
+                        <fieldset class="text-sm text-white flex items-center gap-3">
+                            <label><input type="radio" name="mode" value="merge" checked> Add / update</label>
+                            <label><input type="radio" name="mode" value="replace"> Replace all holdings</label>
+                        </fieldset>
+                        <label class="text-sm text-white"><input type="checkbox" name="skip_unknown"> Skip unknown
+                            tickers</label>
+                        <button type="submit"
+                            class="text-white text-sm font-medium rounded-lg px-4 py-2 bg-gray-dark/60 hover:bg-gray-dark">Import</button>
+                    </div>
+                </form>
+            </details>
+
             <!-- Optimize -->
             <form action="{{ url_for('run_optimizer') }}" method="post"
                 class="flex items-end gap-2 flex-wrap border-t border-gray-dark pt-4">

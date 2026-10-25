@@ -1,7 +1,17 @@
 """Shared fixtures: an isolated temp database and a small deterministic market."""
 import os
+import pathlib
+import tempfile
 
-os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"  # Must be set before the app import below
+# Both must be set before the app import below. The throwaway var/ gets a tiny
+# synthetic price cache so importing the app never downloads anything, even on
+# a machine that has no real cache yet.
+os.environ["WOLVWEALTH_NO_AUTO_REFRESH"] = "1"
+_TEST_VAR = pathlib.Path(tempfile.mkdtemp(prefix="wolvwealth-test-var-"))
+os.environ["WOLVWEALTH_VAR"] = str(_TEST_VAR)
+(_TEST_VAR / "historical_prices.csv").write_text(
+    "Date,AAPL,MSFT\n2024-01-02,100.0,200.0\n2024-01-03,101.0,201.0\n"
+)
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402

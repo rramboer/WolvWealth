@@ -5,6 +5,7 @@ import wolvwealth
 import wolvwealth.portfolios
 import wolvwealth.api.api_exceptions
 import wolvwealth.api.optimize
+import wolvwealth.api.holdings
 from wolvwealth.api.state import ApplicationState
 
 
@@ -16,6 +17,7 @@ def api_default():
             "/api/": "API Usage Info",
             "/api/optimize/": "Optimize Portfolio (POST JSON; accepts workspace/portfolio or explicit holdings)",
             "/api/workspaces/": "List workspaces and their portfolios",
+            "/api/holdings/import/": "Bulk-load holdings into a stored portfolio (POST JSON; holdings map or csv text)",
         }
     )
 
