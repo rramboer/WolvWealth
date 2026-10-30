@@ -158,6 +158,10 @@ Deliberately **not** in scope, now or later:
 - **Live quotes per request.** Prices come from the local cache; `as_of` tells you how old they are and the refresh command controls that.
 - **Trade execution.** WolvWealth produces target allocations and trade lists. Placing orders is the job of the agent and its broker MCP, never of this app.
 
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright 2023-2026 Ryan Ramboer and the WolvWealth contributors.
+
 ## Disclaimer
 
 The calculations and information in this project are for educational purposes only and are not investment advice. Mean-variance optimization over historical returns is a model, not a forecast. Past performance does not guarantee future results.

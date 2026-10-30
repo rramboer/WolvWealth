@@ -99,7 +99,7 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 │   │   └── yahoo.py               download_prices(tickers, start, end): chunked, paused, retried
 │   ├── services/
 │   │   ├── container.py           Services.build(settings) wires everything; Services.repository(conn)
-│   │   ├── market_data.py         MarketDataService: lazy load / first-run build / refresh / auto_refresh_if_stale
+│   │   ├── market_data.py         MarketDataService: lazy load / first-run build / refresh / start_background_refresh
 │   │   ├── optimize.py            optimize(payload, market, repo, default_workspace); payload_for_portfolio()
 │   │   └── holdings_import.py     import_holdings(...) -> ImportOutcome; resolve_target(); parse_holdings_map()
 │   ├── web/

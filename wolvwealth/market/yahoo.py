@@ -72,12 +72,3 @@ def empty_tickers(prices: pd.DataFrame, tickers=None) -> list:
     """
     wanted = list(prices.columns if tickers is None else tickers)
     return [t for t in wanted if t in prices.columns and prices[t].isna().all()]
-
-
-def market_cap(ticker: str) -> float:
-    """Market cap of a stock, or total assets of an ETF. One live request per call."""
-    info = yf.Ticker(ticker).info
-    try:
-        return info["marketCap"]
-    except KeyError:
-        return info["totalAssets"]

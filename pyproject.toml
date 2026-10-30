@@ -1,29 +1,58 @@
 [build-system]
-requires = ["setuptools>=64.0.0", "wheel"]
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "wolvwealth"
 version = "1.3.0"
 description = "Self-hosted, local-first portfolio optimizer"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ryan Ramboer and the WolvWealth contributors" }]
+keywords = ["portfolio", "optimization", "finance", "local-first", "mcp", "agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Flask",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
 # Keep this list minimal: the app runs on other people's machines with a
 # global pip install, so every entry here lands on their device. Solvers
 # (cvxpy etc.) come in transitively through pyportfolioopt.
 dependencies = [
     "Flask>=3.0",
+    # scikit-base, which pyportfolioopt pulls in, imports packaging at import
+    # time without declaring it, so a clean `pip install wolvwealth` cannot
+    # even `import wolvwealth`. Declared here until that is fixed upstream;
+    # the `package` CI job is what caught it.
+    "packaging",
     "pandas>=2.1",
     "pyarrow>=14.0",
     "pyportfolioopt>=1.5.5",
     "yfinance>=1.7",
 ]
 
+[project.urls]
+Homepage = "https://github.com/rramboer/WolvWealth"
+Source = "https://github.com/rramboer/WolvWealth"
+Issues = "https://github.com/rramboer/WolvWealth/issues"
+
 [project.scripts]
 wolvwealth = "wolvwealth.__main__:main"
 
 [project.optional-dependencies]
 dev = [
-    "black",
+    "black~=26.10",
     "pycodestyle",
     "pydocstyle",
     "pylint",
@@ -45,8 +74,15 @@ testpaths = ["tests"]
 [tool.pylint."messages control"]
 disable = ["cyclic-import"]
 
+[tool.pylint.format]
+# Match black and pycodestyle; pylint's own default of 100 flagged lines the
+# rest of the toolchain accepts, which made `pylint wolvwealth` un-gateable.
+max-line-length = 120
+
 [tool.pylint.design]
 max-args = 8
+max-positional-arguments = 6
+max-attributes = 8
 max-returns = 8
 max-branches = 15
 

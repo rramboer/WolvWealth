@@ -108,11 +108,13 @@ A holding can only be added if its ticker has a column in `var/historical_prices
 Settings live in `pyproject.toml`. The tools come with the `dev` extra (`./install.sh --dev`, or `pip install --user --break-system-packages -e ".[dev]"`).
 
 ```bash
-black --line-length 120 wolvwealth scripts/backtest.py
+black --line-length 120 wolvwealth scripts tests
 pycodestyle --max-line-length 120 wolvwealth scripts tests
 pydocstyle wolvwealth
-pylint wolvwealth
+pylint wolvwealth scripts
 ```
+
+GitHub Actions runs exactly these four commands plus the test suite on every push and pull request (`.github/workflows/ci.yml`), across Python 3.10-3.13 on Linux and 3.12 on macOS. A third job builds the wheel, installs it into a clean virtualenv and smoke-tests it, which is how a packaging mistake gets caught before someone else hits it.
 
 Conventions the existing code follows and new code should too:
 
@@ -134,7 +136,7 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 - `market` — swaps the global price data for 4 synthetic tickers (`AAA`–`DDD`) with a fixed random seed, so optimizer assertions are deterministic and fast.
 - `workspace_client` — `client` with a `tester` workspace open and one seeded portfolio.
 
-`conftest.py` sets `WOLVWEALTH_NO_AUTO_REFRESH=1` and points `WOLVWEALTH_VAR` at a throwaway folder seeded with a two-row price CSV before importing the app, so tests never hit the network even on a machine with no real price cache yet. (`WOLVWEALTH_VAR` is also handy for scratch runs of the app that should not touch your real `var/`.)
+`conftest.py` builds `Services` against a `tmp_path` with `auto_refresh=False` and preloads a deterministic four-ticker synthetic market, so tests never touch your real `var/` and never hit the network — even on a machine with no price cache yet. (`WOLVWEALTH_VAR` points the app itself at a throwaway folder, which is handy for scratch runs.)
 
 **Every change ships with tests.** Bug fix → a regression test that fails without the fix. New feature → tests for its happy path and its validation errors. The suite runs in about a second; there is no excuse to skip it.
 

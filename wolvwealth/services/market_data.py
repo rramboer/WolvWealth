@@ -169,16 +169,6 @@ class MarketDataService:
         self.log(f"wolvwealth: prices now end {self.data.as_of}")
         return True
 
-    def auto_refresh_if_stale(self, max_age_days: int) -> bool:
-        """Incremental refresh when the cache is older than ``max_age_days``. Never raises."""
-        age = self._stale_by(max_age_days)
-        if not age:
-            return False
-        self.log(
-            f"wolvwealth: cached prices are {age} days old, refreshing (set WOLVWEALTH_NO_AUTO_REFRESH=1 to skip)..."
-        )
-        return self._refresh_quietly()
-
     def start_background_refresh(self, max_age_days: int):
         """Refresh in a daemon thread if the cache is stale; return the thread, or None.
 
@@ -195,7 +185,9 @@ class MarketDataService:
         age = self._stale_by(max_age_days)
         if not age:
             return None
-        if not self._refresh_lock.acquire(blocking=False):
+        # Not a `with`: the lock is acquired here and released on the worker
+        # thread when the refresh finishes, so the scopes cannot coincide.
+        if not self._refresh_lock.acquire(blocking=False):  # pylint: disable=consider-using-with
             return None
         self.log(
             f"wolvwealth: cached prices are {age} days old, refreshing in the background "

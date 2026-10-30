@@ -41,14 +41,14 @@ def install(app: flask.Flask) -> None:
 
 def _reject_cross_site():
     """Refuse the request unless it is addressed to, and made from, this machine."""
-    reason = rejection_reason(flask.request)
+    reason = _rejection_reason(flask.request)
     if reason is None:
         return None
     body = {"error": {"message": reason, "status_code": 403}}
     return flask.jsonify(body), 403
 
 
-def rejection_reason(request) -> str:
+def _rejection_reason(request) -> str:
     """Return why this request must be refused, or None if it is fine."""
     if _hostname(request.host) not in ALLOWED_HOSTNAMES:
         return f"Refused: Host '{request.host}' does not name this machine (DNS rebinding protection)."

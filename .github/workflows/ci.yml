@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # The install instructions cover macOS too, and the paths/atomic
+          # rename in the price cache are the kind of thing that differs.
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Test
+        # The suite is hermetic: fixtures build Services on a temp dir with a
+        # synthetic market, so nothing here reaches Yahoo. Fail loudly if that
+        # ever stops being true rather than letting CI depend on the network.
+        env:
+          WOLVWEALTH_NO_AUTO_REFRESH: "1"
+        run: python -m pytest -q
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      # The same four commands CONTRIBUTING.md tells contributors to run.
+      - name: black
+        run: python -m black --check --line-length 120 wolvwealth scripts tests
+      - name: pycodestyle
+        run: python -m pycodestyle --max-line-length 120 wolvwealth scripts tests
+      - name: pydocstyle
+        run: python -m pydocstyle wolvwealth
+      - name: pylint
+        run: python -m pylint wolvwealth scripts
+
+  package:
+    name: package installs cleanly
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: python -m pip install --upgrade pip build && python -m build
+
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install --upgrade pip
+          /tmp/fresh/bin/pip install dist/*.whl
+
+      - name: The console script and a bare import work
+        run: |
+          /tmp/fresh/bin/wolvwealth --help
+          /tmp/fresh/bin/python -c "import wolvwealth; print(wolvwealth.__file__)"
+
+      - name: Data files the app needs at runtime are actually in the wheel
+        # A non-editable install must carry templates, SQL, the ticker list and
+        # static assets. Editable installs hide a missing package-data entry,
+        # so check the installed tree rather than the source tree.
+        run: |
+          /tmp/fresh/bin/python - <<'PY'
+          import pathlib, wolvwealth
+          root = pathlib.Path(wolvwealth.__file__).parent
+          required = [
+              "data/ticker_universe.csv",
+              "storage/sql/schema.sql",
+              "storage/sql/data.sql",
+              "web/templates/base.html",
+              "web/static/css/output.css",
+          ]
+          missing = [name for name in required if not (root / name).exists()]
+          assert not missing, f"missing from the installed package: {missing}"
+          print(f"all {len(required)} runtime data files present")
+          PY
+
+      - name: The server starts and answers from the installed package
+        env:
+          WOLVWEALTH_VAR: /tmp/ci-var
+          WOLVWEALTH_NO_AUTO_REFRESH: "1"
+        run: |
+          /tmp/fresh/bin/python - <<'PY'
+          # No price cache in CI and no network, so drive create_app directly
+          # with a synthetic market rather than downloading 20 years of prices.
+          import pathlib, numpy as np, pandas as pd
+          from wolvwealth.config import Settings
+          from wolvwealth.domain.market import MarketData
+          from wolvwealth.services.container import Services
+          from wolvwealth.web import create_app
+
+          dates = pd.bdate_range("2024-01-02", periods=300)
+          rng = np.random.default_rng(0)
+          frame = pd.DataFrame(
+              {t: 100 * np.exp(np.cumsum(0.0005 + 0.01 * rng.standard_normal(len(dates))))
+               for t in ("AAA", "BBB", "CCC")},
+              index=dates,
+          )
+          frame.index.name = "Date"
+          services = Services.build(Settings(var_dir=pathlib.Path("/tmp/ci-var"), auto_refresh=False))
+          services.market.set_data(MarketData.build(["AAA", "BBB", "CCC"], frame))
+          client = create_app(services).test_client()
+
+          assert client.get("/api/").status_code == 200
+          body = client.post("/api/optimize/", json={"initial_cash": 1000}).get_json()
+          assert body["optimized_portfolio"] and body["trades"], body
+          assert client.get("/", headers={"Host": "evil.example"}).status_code == 403
+          print("installed package serves optimize and refuses rebound hosts")
+          PY
