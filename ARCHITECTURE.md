@@ -46,6 +46,7 @@ flowchart TB
         O["optimizer.py<br/>parse_request, solve, optimize"]
         M["market.py<br/>MarketData snapshot, universe aliases"]
         ST["stats.py<br/>MarketStats: mu + covariance, slice()"]
+        CA["cache.py<br/>LRUCache: per-snapshot memo"]
         HP["holdings_parse.py<br/>brokerage text -> ParsedHoldings"]
         MO["models.py<br/>Workspace, Portfolio, valid_name"]
         E["errors.py<br/>DomainError, ValidationError, NotFoundError"]
@@ -81,8 +82,9 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 │   ├── domain/
 │   │   ├── errors.py              DomainError(message, details) + ValidationError, NotFoundError
 │   │   ├── models.py              Workspace, Portfolio dataclasses; valid_name()
-│   │   ├── market.py              MarketData(universe, prices, stats): price(), value(), top(n), truncated(), stats_for(), expand_universe()
+│   │   ├── market.py              MarketData(universe, prices, stats, solutions): price(), value(), top(n), truncated(), stats_for(), expand_universe()
 │   │   ├── stats.py               MarketStats(mu, cov): compute() once per refresh, slice() per request
+│   │   ├── cache.py               LRUCache: bounded, thread-safe memo for solved weights and metrics
 │   │   ├── optimizer.py           parse_request() -> OptimizationRequest; solve(); optimize()
 │   │   └── holdings_parse.py      parse_holdings(text, universe) -> ParsedHoldings (pasted lines, brokerage CSVs)
 │   ├── storage/
@@ -212,9 +214,10 @@ sequenceDiagram
     S->>D: optimize(payload, market)
     D->>D: parse_request: validate every field (ValidationError)
     D->>D: total = cash + market.value(holdings); 0 -> ValidationError
-    D->>PF: mean_historical_return, exp_cov over market.prices[universe]
-    D->>PF: EfficientFrontier.max_sharpe (+ max_weight constraint)
-    PF-->>D: weights -> clean, truncate to max_positions, renormalize
+    D->>D: market.solutions: weights for<br/>(universe, max_weight, min_universal_weight)?
+    D->>PF: on a miss only: EfficientFrontier.max_sharpe<br/>over the sliced mu/cov (+ max_weight constraint)
+    PF-->>D: weights -> clean, memoize
+    D->>D: truncate to max_positions, renormalize, scale by total
     D-->>S: result dict (metrics describe the truncated portfolio)
     S-->>A: 200 JSON
     S-->>V: render results.html
@@ -251,6 +254,21 @@ All fields are optional. Unknown fields are ignored.
 | `exclude_metrics` | Omit the `metrics` block | false |
 
 Total investment must be greater than zero. The response is an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}` plus a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets}`.
+
+### Repeated requests
+
+Agents re-send the same request constantly, so the two costly halves of a solve are memoized on the `MarketData` snapshot (`market.solutions`, a bounded LRU in `domain/cache.py`):
+
+| Memo | Key | Why those fields |
+|---|---|---|
+| Max-Sharpe weights | `universe`, `max_weight`, `min_universal_weight` | Everything the solver sees. ~90% of a cold request |
+| Expected return + volatility | the same, plus `max_positions` | A function of the final weight vector, which those four fields determine |
+
+`initial_cash` and `initial_holdings` are deliberately **not** in either key: they scale the portfolio without changing its shape, so sweeping cash amounts over one universe still costs a single solve. `max_positions` truncates the weights after the solve, so it reuses the solve but gets its own metrics entry.
+
+Because the cache is a field of the snapshot, a price refresh builds a new snapshot and drops every entry with it — there is no expiry logic, and no way to serve a portfolio computed from prices that are no longer current. `truncated()` likewise gives each backtest step its own empty cache. A failed solve is not stored, so an infeasible request keeps reporting its own error.
+
+Measured on synthetic 500×5000 price data, a 200-ticker universe with 500 holdings: **190 ms cold, 0.40 ms repeated** (identical output). The valuation path feeding it was the other half of the work — `MarketData.latest_prices` is a plain ticker-to-price dict built once per snapshot, taking `market.value()` over 500 holdings from 27.6 ms to 0.19 ms.
 
 ### Bulk import endpoint
 
@@ -395,8 +413,10 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 1. ~~`mean_historical_return` and `exp_cov` recomputed on every optimize request~~ Done: computed once per data refresh, persisted in `var/market_stats.parquet`, sliced per request by `MarketData.stats_for()` (§8).
 2. ~~CSV cache takes several seconds to parse at startup~~ Done: prices and stats are Parquet; old CSV caches are converted on first load.
-3. The startup refresh blocks `wolvwealth serve` for minutes when the cache is stale; it should run in a background thread while the app serves cached prices.
-4. Identical optimize requests (which agents will send) could be served from an LRU cache keyed on (universe, constraints, data date).
+3. The startup refresh blocks `wolvwealth serve` for minutes when the cache is stale; it should run in a background thread while the app serves cached prices. **The last one still open.**
+4. ~~Identical optimize requests served from an LRU cache~~ Done: memoized per price snapshot, keyed on the fields that reach the solver (§7).
+
+Not a gap, but worth knowing: on synthetic 500-ticker data the OSQP solver hits its iteration limit and `max_sharpe()` fails, which surfaces as a 400 naming the solver status. That is the default universe size (`DEFAULT_UNIVERSE_SIZE = 500`), so it is worth re-checking against real prices; at 200 tickers the same data solves in ~190 ms. The memoization does not change this either way — it caches successes only.
 
 **Agent-readiness** (after that)
 

@@ -6,9 +6,11 @@ ticker. Where the data came from (CSV, Parquet, a test fixture) is not this
 class's concern.
 """
 import dataclasses
+import functools
 
 import pandas as pd
 
+from wolvwealth.domain.cache import LRUCache
 from wolvwealth.domain.stats import MarketStats
 
 #: "top20" expands to the 20 largest tickers by market cap, etc.
@@ -22,15 +24,34 @@ class MarketData:
     universe: tuple
     prices: pd.DataFrame
     stats: MarketStats = None
+    #: Memoized optimizer solutions for exactly these prices. Not part of the
+    #: snapshot's identity, so it is excluded from equality and repr; a
+    #: refreshed snapshot starts empty and cannot serve stale solutions.
+    solutions: LRUCache = dataclasses.field(default_factory=LRUCache, compare=False, repr=False)
 
     @classmethod
     def build(cls, universe, prices: pd.DataFrame, stats: MarketStats = None) -> "MarketData":
         """Normalize the universe to a tuple of upper-case tickers."""
         return cls(tuple(str(t).upper() for t in universe), prices, stats)
 
+    @functools.cached_property
+    def tickers(self) -> frozenset:
+        """The universe as a set, for membership tests that would otherwise scan the tuple."""
+        return frozenset(self.universe)
+
+    @functools.cached_property
+    def latest_prices(self) -> dict:
+        """Ticker -> newest close, excluding delisted names whose history ends in NaN.
+
+        Valuing a portfolio touches this once per holding, so it is a plain
+        dict: the equivalent DataFrame lookups cost ~50 microseconds each and
+        dominated requests once the solve itself was cached.
+        """
+        return {ticker: float(price) for ticker, price in self.prices.iloc[-1].dropna().items()}
+
     def __contains__(self, ticker) -> bool:
         """Return true if the ticker is in the universe."""
-        return ticker in self.universe
+        return ticker in self.tickers
 
     def top(self, count: int) -> list:
         """Return the ``count`` largest tickers by market cap."""
@@ -48,13 +69,13 @@ class MarketData:
 
     def has_price(self, ticker: str) -> bool:
         """Return true if the ticker has a usable latest price (delisted names end in NaN)."""
-        return ticker in self.prices.columns and pd.notna(self.prices[ticker].iloc[-1])
+        return ticker in self.latest_prices
 
     def price(self, ticker: str) -> float:
         """Latest cached price of one ticker. KeyError if there is none."""
-        if not self.has_price(ticker):
+        if ticker not in self.latest_prices:
             raise KeyError(ticker)
-        return float(self.prices[ticker].iloc[-1])
+        return self.latest_prices[ticker]
 
     def value(self, holdings: dict) -> float:
         """Market value of a holdings map at the latest prices."""
@@ -92,7 +113,7 @@ class MarketData:
                 raise ValueError("universe must be list of strings.")
             if entry in UNIVERSE_ALIASES:
                 expanded.extend(self.top(UNIVERSE_ALIASES[entry]))
-            elif entry.upper() in self.universe:
+            elif entry.upper() in self.tickers:
                 expanded.append(entry.upper())
             else:
                 raise ValueError(f"Invalid symbol in universe: {entry}.")

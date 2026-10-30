@@ -142,23 +142,78 @@ def _parse_constraints(payload, request) -> None:
         raise ValidationError("Invalid constraints. min_weight must be less than max_weight.")
 
 
+def _run_solver(mu, cov_matrix, max_weight: float, min_universal_weight: float) -> dict:
+    """Maximize the Sharpe ratio under the weight bounds; return the cleaned weights."""
+    try:
+        frontier = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(min_universal_weight, 1))
+        if max_weight != 1:
+            frontier.add_constraint(lambda weights: weights <= max_weight)
+        frontier.max_sharpe()
+        return frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
+    except Exception as err:  # pylint: disable=broad-except
+        # Surface the real solver error; "Infeasible" alone is undiagnosable.
+        raise ValidationError(f"Optimization Error. Check your inputs and constraints. {err}") from err
+
+
+def max_sharpe_weights(request: OptimizationRequest, market: MarketData) -> dict:
+    """Solved weights for this request, memoized on the market snapshot.
+
+    The solve is ~90% of a request, and it depends on nothing but the prices
+    and the three fields in the key below, so agents repeating a request get
+    the stored answer. Cash, holdings and ``max_positions`` are deliberately
+    absent from the key: they only scale or truncate the weights afterwards,
+    so varying them still hits the same solve. Anything new that reaches the
+    solver must be added to the key.
+
+    Nothing is stored when the solver fails, so an infeasible request keeps
+    reporting its own error rather than a remembered one.
+    """
+    key = ("weights", tuple(request.universe), request.max_weight, request.min_universal_weight)
+
+    def compute():
+        mu, cov_matrix = market.stats_for(request.universe)
+        return _run_solver(mu, cov_matrix, request.max_weight, request.min_universal_weight)
+
+    # Copied on the way out: callers rebuild the dict as they filter it, and a
+    # cached value must survive that unchanged for the next request.
+    return dict(market.solutions.get_or_compute(key, compute))
+
+
+def _return_and_volatility(request: OptimizationRequest, market: MarketData, weights: dict) -> tuple:
+    """Annual expected return and volatility of ``weights``, memoized on the snapshot.
+
+    Both are functions of the weight vector alone, and the key determines
+    that vector in full: the three fields that drive the solve, plus
+    ``max_positions``, which truncates it. Cash and holdings scale the
+    portfolio without changing its shape, so they are absent here too.
+
+    Worth memoizing separately because slicing the covariance matrix for a
+    large universe costs milliseconds, which dominates a request whose solve
+    was already served from the cache.
+    """
+    key = (
+        "metrics",
+        tuple(request.universe),
+        request.max_weight,
+        request.min_universal_weight,
+        request.max_positions,
+    )
+
+    def compute():
+        mu, cov_matrix = market.stats_for(request.universe)
+        vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
+        return float(vector @ mu), float(np.sqrt(vector @ cov_matrix @ vector))
+
+    return market.solutions.get_or_compute(key, compute)
+
+
 def solve(request: OptimizationRequest, market: MarketData) -> dict:
     """Run the optimization and return the result dict (the API response shape)."""
     total_investment = request.cash + market.value(request.holdings)
     if total_investment == 0:
         raise ValidationError("Invalid input. Total investment value cannot be 0.")
 
-    mu, cov_matrix = market.stats_for(request.universe)
-    try:
-        frontier = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(request.min_universal_weight, 1))
-        if request.max_weight != 1:
-            frontier.add_constraint(lambda weights: weights <= request.max_weight)
-        frontier.max_sharpe()
-        weights = frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
-    except Exception as err:  # pylint: disable=broad-except
-        # Surface the real solver error; "Infeasible" alone is undiagnosable.
-        raise ValidationError(f"Optimization Error. Check your inputs and constraints. {err}") from err
-
+    weights = max_sharpe_weights(request, market)
     if request.max_positions is not None:
         top = sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[: request.max_positions]
         total_weight = sum(weight for _, weight in top)
@@ -178,10 +233,9 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     if not request.exclude_metrics:
         # Describe the portfolio actually returned, including the
         # max_positions truncation (ef.portfolio_performance() would
-        # describe the untruncated solver output instead).
-        vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
-        expected_return = float(vector @ mu)
-        volatility = float(np.sqrt(vector @ cov_matrix @ vector))
+        # describe the untruncated solver output instead). Computed here
+        # rather than above so `exclude_metrics` requests skip it entirely.
+        expected_return, volatility = _return_and_volatility(request, market, weights)
         # Degenerate history (too few rows, flat prices) gives zero volatility; report
         # the Sharpe ratio as null rather than dividing by zero.
         sharpe = round((expected_return - RISK_FREE_RATE) / volatility, 2) if volatility > 0 else None
