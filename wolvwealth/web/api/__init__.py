@@ -6,6 +6,7 @@ with 400 (validation) or 404 (not found).
 import flask
 
 from wolvwealth.domain.errors import DomainError, NotFoundError
+from wolvwealth.domain.market import UNIVERSE_ALIASES
 from wolvwealth.services import holdings_import, optimize
 from wolvwealth.web import context
 
@@ -38,10 +39,33 @@ def index():
     """Usage summary."""
     return flask.jsonify(
         {
-            "/api/": "API Usage Info",
-            "/api/optimize/": "Optimize Portfolio (POST JSON; accepts workspace/portfolio or explicit holdings)",
-            "/api/workspaces/": "List workspaces and their portfolios",
-            "/api/holdings/import/": "Bulk-load holdings into a stored portfolio (POST JSON; holdings map or csv text)",
+            "/api/": "GET: this index",
+            "/api/market/": "GET: price date, ticker universe, universe aliases",
+            "/api/optimize/": "POST: optimize a portfolio; returns target allocation, trades, metrics",
+            "/api/workspaces/": "GET: list workspaces and their portfolios",
+            "/api/holdings/import/": "POST: bulk-load holdings into a stored portfolio (holdings map or csv text)",
+            "contract": "API.md in the install directory documents every field and error.",
+            "note": "Prices come from a local cache; check as_of before acting on a trade list.",
+        }
+    )
+
+
+@blueprint.route("/market/", methods=["GET"])
+def market():
+    """Price-cache freshness and the tickers a request may name.
+
+    An agent checks ``as_of`` before trusting a trade list, and uses
+    ``tickers`` to validate symbols without a round trip per guess.
+    """
+    data = context.market()
+    return flask.jsonify(
+        {
+            "as_of": str(data.as_of),
+            "age_days": data.age_days(),
+            "universe_size": len(data.universe),
+            "tradeable_size": len(data.tradeable),
+            "universe_aliases": sorted(UNIVERSE_ALIASES),
+            "tickers": list(data.tradeable),
         }
     )
 

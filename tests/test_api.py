@@ -19,9 +19,11 @@ def test_optimize_explicit_body(client):
     )
     assert response.status_code == 200
     body = response.get_json()
-    assert set(body) == {"optimized_portfolio", "metrics"}
+    assert set(body) == {"as_of", "optimized_portfolio", "trades", "metrics"}
     for position in body["optimized_portfolio"].values():
         assert set(position) == {"shares", "value", "percent_weight"}
+    for trade in body["trades"]:
+        assert set(trade) == {"ticker", "action", "shares", "price", "value"}
     assert body["metrics"]["portfolio_value"] == 10000
 
 

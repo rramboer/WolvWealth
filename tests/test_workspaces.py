@@ -94,6 +94,16 @@ def test_browser_optimize_flow(workspace_client, repo):
     assert b"%" in response.data  # results table rendered
 
 
+def test_browser_results_show_the_trades_to_place(workspace_client, repo):
+    """The browser gets the same trade list the API hands an agent."""
+    pid = repo.get_portfolio("tester", name="main").id
+    response = workspace_client.post(
+        "/optimizer/run/", data={"portfolio_id": pid, "universe": "top20", "max_positions": "2"}
+    )
+    assert b"Trades to get there" in response.data
+    assert b"BUY" in response.data or b"SELL" in response.data
+
+
 def test_browser_optimize_error_flashes(workspace_client, repo):
     pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "max_positions": "x"})

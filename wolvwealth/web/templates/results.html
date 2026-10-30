@@ -69,6 +69,39 @@
             </p>
         </div>
 
+        {% if result.trades %}
+        <div class="rounded-lg bg-gray p-5">
+            <h2 class="text-lg font-bold text-white mb-3">Trades to get there</h2>
+            <table class="w-full text-sm text-left text-white">
+                <thead>
+                    <tr class="border-b border-[#cccccc]" style="color: gray;">
+                        <th class="py-2 pr-4">Action</th>
+                        <th class="py-2 pr-4">Ticker</th>
+                        <th class="py-2 pr-4">Shares</th>
+                        <th class="py-2 pr-4">Price</th>
+                        <th class="py-2">Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for move in result.trades %}
+                    <tr class="border-b border-gray-dark">
+                        <td class="py-2 pr-4 font-medium {{ 'text-green' if move.action == 'buy' else 'text-yellow' }}">
+                            {{ move.action | upper }}</td>
+                        <td class="py-2 pr-4 font-medium">{{ move.ticker }}</td>
+                        <td class="py-2 pr-4">{{ move.shares }}</td>
+                        <td class="py-2 pr-4">${{ "%.2f" | format(move.price) }}</td>
+                        <td class="py-2">${{ "%.2f" | format(move.value) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <p class="text-xs mt-3" style="color: gray;">
+                Sells are listed first so the cash exists before the buys. Priced at the
+                {{ result.as_of }} close from the local cache, not a live quote.
+            </p>
+        </div>
+        {% endif %}
+
         <a href="{{ url_for('views.show_workspace') }}"
             class="inline-block text-white font-medium rounded-lg text-sm px-5 py-2.5 bg-blue">&larr; Back to
             {{ workspace }}</a>

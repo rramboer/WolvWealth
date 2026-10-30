@@ -13,7 +13,7 @@ The organizing concept is the **workspace**: one person using this machine (e.g.
 | Piece | Where | Status |
 |---|---|---|
 | Server-rendered website (landing, workspace picker, workspace page with portfolio CRUD and bulk import, optimizer results) | `wolvwealth/web/views/`, `wolvwealth/web/templates/` | Working end to end |
-| JSON API (optimize, list workspaces, bulk-import holdings) | `wolvwealth/web/api/` | Working, no auth required |
+| JSON API (optimize + trade list, market freshness, list workspaces, bulk-import holdings) | `wolvwealth/web/api/`, contract in `API.md` | Working, no auth required |
 | `wolvwealth` command (serve, refresh-data, reset-db, dump-db) and `install.sh` | `wolvwealth/__main__.py`, `install.sh` | Working |
 | Market data (ticker list + ~20 years of daily adjusted closes + precomputed return/covariance statistics) | `wolvwealth/data/ticker_universe.csv` (in the package), `var/historical_prices.parquet` and `var/market_stats.parquet` + `.json` (local caches) | Loaded on first access; refreshed by `wolvwealth serve` when stale or by `wolvwealth refresh-data` |
 | Walk-forward backtest | `scripts/backtest.py` | Standalone, reuses the domain optimizer |
@@ -44,6 +44,7 @@ flowchart TB
     end
     subgraph Dom["domain/ (innermost: no Flask, SQL, files, or network)"]
         O["optimizer.py<br/>parse_request, solve, optimize"]
+        TR["trades.py<br/>plan(): holdings -> target as orders"]
         M["market.py<br/>MarketData snapshot, universe aliases"]
         ST["stats.py<br/>MarketStats: mu + covariance, slice()"]
         CA["cache.py<br/>LRUCache: per-snapshot memo"]
@@ -85,6 +86,7 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 │   │   ├── market.py              MarketData(universe, prices, stats, solutions): price(), value(), top(n), truncated(), stats_for(), expand_universe()
 │   │   ├── stats.py               MarketStats(mu, cov): compute() once per refresh, slice() per request
 │   │   ├── cache.py               LRUCache: bounded, thread-safe memo for solved weights and metrics
+│   │   ├── trades.py              plan(holdings, target, prices) -> buy/sell moves, sells first
 │   │   ├── optimizer.py           parse_request() -> OptimizationRequest; solve(); optimize()
 │   │   └── holdings_parse.py      parse_holdings(text, universe) -> ParsedHoldings (pasted lines, brokerage CSVs)
 │   ├── storage/
@@ -114,6 +116,7 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 ├── pyproject.toml                 Metadata, four runtime deps, `wolvwealth` entry point, package data, lint settings
 ├── package.json, tailwind.config.js   Dev-only: `npm run css` rebuilds the committed CSS
 ├── var/                           Local state, gitignored: wolvwealth.sqlite3, secret_key, historical_prices.parquet, market_stats.parquet/.json
+├── API.md                         The JSON contract, written to drop into an agent's context
 └── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
 ```
 
@@ -254,7 +257,11 @@ All fields are optional. Unknown fields are ignored.
 | `constraints.min_universal_weight` | Lower bound applied to **every** asset in the universe | 0 |
 | `exclude_metrics` | Omit the `metrics` block | false |
 
-Total investment must be greater than zero. The response is an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}` plus a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets}`.
+Total investment must be greater than zero. The response is `as_of` (the price date every number came from), an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}`, a `trades` list, and a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets}`. `exclude_metrics` and `exclude_trades` drop their blocks.
+
+`trades` is `domain/trades.py`: the share deltas from `initial_holdings` to the target, as `{ticker, action, shares, price, value}` with positive share counts and the direction in `action`. Sells lead, each group by descending value, so an agent executing in order frees the cash before spending it; unchanged positions and differences too small to show at four decimals produce no entry. It exists so an agent driving a broker never has to diff two allocations itself, and `price` records which close the plan assumed. The browser results page renders the same list.
+
+**The full contract is `API.md`** — every endpoint, field and error with worked examples, written to be pasted into an agent's context whole. `tests/test_api_contract.py` fails the build if it drifts from the real routes, the fields the parser reads, or the keys the API sends.
 
 ### Repeated requests
 

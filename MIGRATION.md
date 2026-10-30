@@ -34,13 +34,11 @@ A **locally runnable app** where:
 - [x] **The default request actually works on real data.** Verified against the real 1982-ticker history rather than synthetic benchmarks, which turned up two faults that each broke every request not naming a universe: cvxpy's default OSQP solver fails past ~400 tickers (pinned CLARABEL, already a cvxpy dependency, same answers to ~1e-5), and 19 of the real top 500 are delisted or renamed, giving NaN covariance that made the solver reject the problem — plus an uncaught `KeyError` (an HTTP 500) when one was held in a portfolio. Aliases and `top(n)` now skip untradeable names; naming one explicitly is a clear 400.
 - [x] **Startup never blocks on market data.** `wolvwealth serve` kicks the stale-cache refresh onto a daemon thread and serves the cached snapshot until it lands; `wolvwealth refresh-data` stays synchronous. Cache writes go through a temp file and an atomic rename, so a refresh landing while the server is up — or while an agent runs the CLI in another process — can never expose a half-written file.
 
-## Remaining, roughly in order
+- [x] **Agent-readiness of the API.** Optimize responses carry a `trades` block — the buy/sell share deltas from `initial_holdings` to the target, sells first so the cash exists before the buys, each priced at the close the plan assumed — so an agent hands orders straight to a broker MCP instead of diffing two allocations. Responses also carry `as_of`, the price date behind every number, and `GET /api/market/` reports freshness and the tradeable ticker list so symbols can be checked without a round trip per guess. `API.md` is the whole contract (every endpoint, field, and error, with worked examples) written to be pasted into an agent's context; `tests/test_api_contract.py` fails if it drifts from the routes, parsed fields, or response keys. The browser results page shows the same trade list.
 
-Priority call: finish the app for **humans running it manually** first; tailoring it for agents comes after that.
+## Remaining
 
-1. **Agent-readiness of the API** (deliberately last — on the back burner until the app is done for manual human use).
-   - Consider a `trades` block in the optimize response (buy/sell share deltas vs. `initial_holdings`) so an agent can feed the broker MCP directly instead of diffing allocations itself.
-   - Document the API contract well enough that it can be dropped into an agent's context (or exposed via a thin MCP wrapper of our own) without reading the code.
+Nothing. Every item above is done — see "Next" in README.md for what is merely *possible* from here.
 
 ## Explicitly out of scope
 

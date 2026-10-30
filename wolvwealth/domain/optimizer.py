@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from pypfopt.efficient_frontier import EfficientFrontier
 
+from wolvwealth.domain import trades
 from wolvwealth.domain.errors import ValidationError
 from wolvwealth.domain.market import MarketData
 
@@ -40,6 +41,7 @@ class OptimizationRequest:
     max_positions: int = None
     min_universal_weight: float = 0.0
     exclude_metrics: bool = False
+    exclude_trades: bool = False
 
 
 def parse_request(payload, market: MarketData) -> OptimizationRequest:
@@ -53,7 +55,7 @@ def parse_request(payload, market: MarketData) -> OptimizationRequest:
     _parse_cash(payload, request)
     _parse_universe(payload, request, market)
     _parse_holdings(payload, request, market)
-    _parse_exclude_metrics(payload, request)
+    _parse_output_flags(payload, request)
     _parse_constraints(payload, request)
     return request
 
@@ -113,12 +115,13 @@ def _parse_holdings(payload, request, market) -> None:
     request.holdings = cleaned
 
 
-def _parse_exclude_metrics(payload, request) -> None:
-    if "exclude_metrics" not in payload:
-        return
-    if not isinstance(payload["exclude_metrics"], bool):
-        raise ValidationError("Invalid exclude_metrics. exclude_metrics must be a boolean.")
-    request.exclude_metrics = payload["exclude_metrics"]
+def _parse_output_flags(payload, request) -> None:
+    for field in ("exclude_metrics", "exclude_trades"):
+        if field not in payload:
+            continue
+        if not isinstance(payload[field], bool):
+            raise ValidationError(f"Invalid {field}. {field} must be a boolean.")
+        setattr(request, field, payload[field])
 
 
 def _parse_constraints(payload, request) -> None:
@@ -238,16 +241,24 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
         weights = {asset: weight / total_weight for asset, weight in top}
     weights = {asset: weight for asset, weight in weights.items() if weight != 0}
 
-    result = {
-        "optimized_portfolio": {
-            asset: {
-                "shares": round(weight * total_investment / market.price(asset), 4),
-                "value": round(weight * total_investment, 2),
-                "percent_weight": round(weight * 100, 2),
-            }
-            for asset, weight in weights.items()
+    portfolio = {
+        asset: {
+            "shares": round(weight * total_investment / market.price(asset), 4),
+            "value": round(weight * total_investment, 2),
+            "percent_weight": round(weight * 100, 2),
         }
+        for asset, weight in weights.items()
     }
+    # as_of is the date of the prices every number here was computed from.
+    # An agent about to place real orders needs it to decide whether the plan
+    # is fresh enough to act on; without it the response looks like a quote.
+    result = {"as_of": str(market.as_of), "optimized_portfolio": portfolio}
+    if not request.exclude_trades:
+        result["trades"] = trades.plan(
+            request.holdings,
+            {asset: row["shares"] for asset, row in portfolio.items()},
+            market.latest_prices,
+        )
     if not request.exclude_metrics:
         # Describe the portfolio actually returned, including the
         # max_positions truncation (ef.portfolio_performance() would
