@@ -4,8 +4,8 @@
   "description": "Tailwind CSS build for the WolvWealth website",
   "private": true,
   "scripts": {
-    "css": "tailwindcss -o wolvwealth/static/css/output.css --minify",
-    "css:watch": "tailwindcss -o wolvwealth/static/css/output.css --watch"
+    "css": "tailwindcss -o wolvwealth/web/static/css/output.css --minify",
+    "css:watch": "tailwindcss -o wolvwealth/web/static/css/output.css --watch"
   },
   "devDependencies": {
     "tailwindcss": "^3.3.5"

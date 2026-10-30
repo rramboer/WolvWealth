@@ -155,7 +155,8 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 ## Security notes
 
 - This app has **no authentication on purpose**. Workspaces are an organizational boundary, not a security one: anyone who can reach the app can open, modify, or delete any workspace. That is the correct trade-off for a single household computer on localhost — and the reason you must never bind it to an untrusted network.
-- The session secret is generated per install into `var/secret_key` and the database lives in `var/`; both are gitignored. Never commit anything from `var/`, and never commit a real holdings dump in a test or fixture if you wouldn't want it public.
+- **Localhost is reachable from the browser, so cross-site requests are refused** (`web/security.py`). Any web page can *send* requests to `http://localhost:8000` even though it cannot read the answers, and a DNS-rebound domain could read them too. Every request is checked: the Host header must name this machine, and requests a browser marks cross-site (`Sec-Fetch-Site`, `Origin`) get a 403 — except plain link-click navigations, which are harmless GETs. Agents, curl and the app's own pages send nothing that trips this. If you add a route, it is covered automatically; if you add a GET that mutates state, you have broken the model — mutations must be POSTs.
+- The session secret is generated per install into `var/secret_key` and the database lives in `var/`; both are gitignored (a historical copy of each was tracked until late 2026 — the key only signs the workspace-name cookie on localhost, so it was removed rather than rotated out of history). Never commit anything from `var/`, and never commit a real holdings dump in a test or fixture if you wouldn't want it public.
 
 ## Questions
 

@@ -146,6 +146,8 @@ Responses include a `trades` block — the buy/sell share deltas from what you h
 
 There is deliberately no authentication. This is a localhost tool for a machine whose users trust each other — workspaces keep people's portfolios tidy and separate, nothing more. Do not bind it to an interface strangers can reach.
 
+Localhost still gets one real protection: web pages you happen to have open can send requests at `http://localhost:8000`, so the app refuses anything a browser marks as coming from another site, and refuses requests addressed to a hostname that is not this machine (DNS rebinding). Your agent, your terminal, and the app's own pages are unaffected.
+
 ## Scope
 
 The app is where it set out to be: multiple people on one device each keep their portfolios in a local workspace, optimize them on that machine, and an agent can drive the whole loop through the local API and place the trades through a broker MCP. ARCHITECTURE.md has the design; `git log` has how it got here.

@@ -105,6 +105,7 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 │   ├── web/
 │   │   ├── __init__.py            create_app(services) -> Flask
 │   │   ├── context.py             services(), repo(), market(), current_workspace(); per-request connection
+│   │   ├── security.py            refuse cross-site requests and non-loopback Host headers (DNS rebinding)
 │   │   ├── api/__init__.py        Blueprint "api" at /api: /, /workspaces/, /optimize/, /holdings/import/; DomainError -> JSON
 │   │   ├── views/                 Blueprint "views": index, workspaces, portfolios (incl. import), optimizer
 │   │   ├── templates/             Jinja, all extending base.html

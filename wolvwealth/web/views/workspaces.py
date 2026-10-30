@@ -41,9 +41,9 @@ def workspaces_enter():
     return flask.redirect(flask.url_for("views.show_workspace"))
 
 
-@blueprint.route("/workspaces/leave/", methods=["GET", "POST"])
+@blueprint.route("/workspaces/leave/", methods=["POST"])
 def workspaces_leave():
-    """Close the open workspace."""
+    """Close the open workspace. POST-only: no GET in this app mutates anything."""
     flask.session.pop("workspace", None)
     return flask.redirect(flask.url_for("views.show_workspaces"))
 

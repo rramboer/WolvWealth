@@ -5,6 +5,7 @@ pasted into an agent's context whole: nothing here requires reading the source.
 
 - **Base URL:** `http://localhost:8000` (`wolvwealth serve`, or `--port N`)
 - **Auth:** none. The server binds `127.0.0.1` only and is never meant to be exposed.
+- **Cross-site requests are refused (403).** Requests must be addressed to `localhost`/`127.0.0.1`/`[::1]`, and requests a browser marks as cross-site (`Sec-Fetch-Site: cross-site`, or a non-loopback `Origin` on a POST) are rejected. Plain HTTP clients send none of those headers, so agents and curl are unaffected; this only shuts out other websites driving the API from inside someone's browser.
 - **Content type:** request and response bodies are JSON. `POST` bodies must be a JSON object.
 - **Offline by design.** Prices come from a local cache refreshed on a schedule, *not* live
   quotes. Every optimize response carries `as_of`, the date those prices are from. Check it

@@ -7,7 +7,7 @@ import flask
 
 from wolvwealth.services.container import Services
 from wolvwealth.storage.secrets import load_or_create_secret_key
-from wolvwealth.web import context
+from wolvwealth.web import context, security
 
 
 def create_app(services: Services = None) -> flask.Flask:
@@ -17,6 +17,7 @@ def create_app(services: Services = None) -> flask.Flask:
     app.config["SECRET_KEY"] = load_or_create_secret_key(services.settings.secret_key_path)
     app.config["SESSION_COOKIE_NAME"] = "wolvwealth"
     app.extensions["wolvwealth"] = services
+    security.install(app)  # localhost is reachable by any page in the browser; see web/security.py
 
     from wolvwealth.web.api import blueprint as api_blueprint  # pylint: disable=import-outside-toplevel
     from wolvwealth.web.views import blueprint as views_blueprint  # pylint: disable=import-outside-toplevel

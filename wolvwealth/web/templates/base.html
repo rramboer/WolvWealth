@@ -42,8 +42,11 @@
                                 class="block py-2 px-3 text-white rounded sm:p-0">{{ workspace }}</a>
                         </li>
                         <li>
-                            <a href="{{ url_for('views.workspaces_leave') }}"
-                                class="block py-2 px-3 text-white rounded sm:p-0">Switch Workspace</a>
+                            <form action="{{ url_for('views.workspaces_leave') }}" method="post">
+                                <button type="submit"
+                                    class="block py-2 px-3 text-white rounded sm:p-0 cursor-pointer">Switch
+                                    Workspace</button>
+                            </form>
                         </li>
                         {% else %}
                         <li>

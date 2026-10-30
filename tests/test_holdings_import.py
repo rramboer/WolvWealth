@@ -125,7 +125,7 @@ def test_import_skip_unknown_checkbox(workspace_client, repo):
 
 def test_import_scoped_to_workspace(workspace_client, repo):
     pid = repo.get_portfolio("tester", name="main").id
-    workspace_client.get("/workspaces/leave/")
+    workspace_client.post("/workspaces/leave/")
     workspace_client.post("/workspaces/create/", data={"name": "intruder"})
     workspace_client.post("/portfolios/import/", data={"portfolio_id": pid, "text": "BBB 1", "mode": "replace"})
     assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10}

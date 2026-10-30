@@ -32,7 +32,7 @@ def test_duplicate_workspace_rejected(client):
 def test_enter_and_leave_workspace(client):
     assert client.post("/workspaces/enter/", data={"name": "demo"}).status_code == 302
     assert client.get("/workspace/").status_code == 200
-    client.get("/workspaces/leave/")
+    client.post("/workspaces/leave/")
     assert client.get("/workspace/").status_code == 302
 
 
@@ -76,7 +76,7 @@ def test_set_cash(workspace_client, repo):
 
 def test_portfolio_delete_scoped_to_workspace(workspace_client, repo):
     pid = repo.get_portfolio("tester", name="main").id
-    workspace_client.get("/workspaces/leave/")
+    workspace_client.post("/workspaces/leave/")
     workspace_client.post("/workspaces/create/", data={"name": "intruder"})
     workspace_client.post("/portfolios/delete/", data={"portfolio_id": pid})
     assert repo.get_portfolio("tester", name="main") is not None
