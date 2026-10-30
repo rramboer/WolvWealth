@@ -22,6 +22,7 @@ Special rows:
   are skipped and listed in ``ignored``.
 - Blank lines and lines starting with ``#`` are skipped silently.
 """
+
 import csv
 import dataclasses
 import io

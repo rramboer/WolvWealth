@@ -1,4 +1,5 @@
 """Tests for bulk holdings import: the parser, the browser form, and the JSON API."""
+
 import io
 
 from wolvwealth.domain.holdings_parse import parse_holdings, parse_number

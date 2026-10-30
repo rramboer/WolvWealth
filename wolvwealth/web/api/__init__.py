@@ -3,6 +3,7 @@
 DomainError subclasses become ``{"error": {"message", "status_code", "payload"?}}``
 with 400 (validation) or 404 (not found).
 """
+
 import flask
 
 from wolvwealth.domain.errors import DomainError, NotFoundError

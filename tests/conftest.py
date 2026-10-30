@@ -1,4 +1,5 @@
 """Shared fixtures: a Services object on a temp directory, a Flask client, a synthetic market."""
+
 import numpy as np
 import pandas as pd
 import pytest

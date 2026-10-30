@@ -1,4 +1,5 @@
 """Per-request access to services and a database connection."""
+
 import flask
 
 from wolvwealth.services.container import Services

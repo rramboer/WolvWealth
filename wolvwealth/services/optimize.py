@@ -1,4 +1,5 @@
 """Use case: optimize a portfolio, given either explicit inputs or a stored portfolio reference."""
+
 from wolvwealth.domain import optimizer
 from wolvwealth.domain.errors import NotFoundError, ValidationError
 from wolvwealth.domain.market import MarketData

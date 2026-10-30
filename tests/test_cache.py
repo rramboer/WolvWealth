@@ -1,4 +1,5 @@
 """Unit tests for the bounded LRU memo cache."""
+
 from wolvwealth.domain.cache import MISS, LRUCache
 
 

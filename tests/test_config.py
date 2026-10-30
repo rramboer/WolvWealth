@@ -1,4 +1,5 @@
 """Settings: path fields are usable however they were supplied."""
+
 import pathlib
 
 from wolvwealth.config import Settings

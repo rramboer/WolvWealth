@@ -4,6 +4,7 @@ Shared by the browser form (pasted text or an uploaded file) and the JSON
 API (a holdings map or csv text). All-or-nothing: any problem raises
 ValidationError carrying every issue in ``details`` and nothing is written.
 """
+
 import dataclasses
 
 from wolvwealth.domain import holdings_parse

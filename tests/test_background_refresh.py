@@ -1,4 +1,5 @@
 """The startup refresh runs off the request path, and cache writes are atomic."""
+
 import dataclasses
 import threading
 

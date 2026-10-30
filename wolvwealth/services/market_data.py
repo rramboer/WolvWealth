@@ -1,4 +1,5 @@
 """MarketDataService: the process-wide price snapshot and how it gets refreshed."""
+
 import threading
 from datetime import timedelta
 

@@ -1,4 +1,5 @@
 """Optimize one saved portfolio from the browser and render the result."""
+
 import flask
 
 from wolvwealth.domain.errors import DomainError

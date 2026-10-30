@@ -6,6 +6,7 @@ any sub-universe are a slice of the full-universe stats. That is what lets
 them be computed once per data refresh and sliced per optimize request
 instead of recomputed from prices every time.
 """
+
 import dataclasses
 
 import pandas as pd

@@ -69,7 +69,7 @@ jobs:
       - name: black
         run: python -m black --check --line-length 120 wolvwealth scripts tests
       - name: pycodestyle
-        run: python -m pycodestyle --max-line-length 120 wolvwealth scripts tests
+        run: python -m pycodestyle wolvwealth scripts tests  # settings in setup.cfg
       - name: pydocstyle
         run: python -m pydocstyle wolvwealth
       - name: pylint

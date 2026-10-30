@@ -7,6 +7,7 @@ Works from any directory; data files are resolved from the install location.
     wolvwealth reset-db         erase every workspace and start from the demo seed
     wolvwealth dump-db          print all workspaces, portfolios, and holdings
 """
+
 import argparse
 import os
 import sys

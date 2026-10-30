@@ -1,4 +1,5 @@
 """Unit tests for the domain optimizer (plain dict in, plain dict out, no app needed)."""
+
 import numpy as np
 import pandas as pd
 import pytest

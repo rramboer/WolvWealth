@@ -1,4 +1,5 @@
 """Landing page."""
+
 import flask
 
 from wolvwealth.web import context

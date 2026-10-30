@@ -109,7 +109,7 @@ Settings live in `pyproject.toml`. The tools come with the `dev` extra (`./insta
 
 ```bash
 black --line-length 120 wolvwealth scripts tests
-pycodestyle --max-line-length 120 wolvwealth scripts tests
+pycodestyle wolvwealth scripts tests
 pydocstyle wolvwealth
 pylint wolvwealth scripts
 ```

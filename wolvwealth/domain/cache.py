@@ -8,6 +8,7 @@ point of the design: there is no expiry or invalidation logic to get wrong,
 and no way to serve a portfolio computed from prices that are no longer
 current.
 """
+
 import collections
 import threading
 

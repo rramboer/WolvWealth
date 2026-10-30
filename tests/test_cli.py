@@ -1,4 +1,5 @@
 """Tests for the `wolvwealth` command line (serve, reset-db, dump-db, refresh-data parsing)."""
+
 import pytest
 
 import wolvwealth.__main__ as cli

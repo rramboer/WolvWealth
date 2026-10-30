@@ -1,4 +1,5 @@
 """Memoization of the max-Sharpe solve: what reuses a solution, what must not."""
+
 import numpy as np
 import pytest
 

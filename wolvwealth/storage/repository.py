@@ -4,6 +4,7 @@ Takes an open connection; the caller owns the transaction. Every portfolio
 query is scoped by workspace so a guessed id can never reach another
 workspace's data (tidiness, not security: there are no passwords).
 """
+
 from wolvwealth.domain.models import Portfolio, Workspace
 
 

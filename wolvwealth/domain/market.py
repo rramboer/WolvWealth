@@ -5,6 +5,7 @@ largest names. Prices are a DataFrame indexed by date with one column per
 ticker. Where the data came from (CSV, Parquet, a test fixture) is not this
 class's concern.
 """
+
 import dataclasses
 import functools
 
@@ -131,8 +132,7 @@ class MarketData:
                 expanded.append(entry.upper())
             elif entry.upper() in self.tickers:
                 raise ValueError(
-                    f"No current price for {entry.upper()}: delisted, renamed, "
-                    "or missed by the last price refresh."
+                    f"No current price for {entry.upper()}: delisted, renamed, " "or missed by the last price refresh."
                 )
             else:
                 raise ValueError(f"Invalid symbol in universe: {entry}.")

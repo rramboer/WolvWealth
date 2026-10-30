@@ -1,4 +1,5 @@
 """Entities: workspaces and portfolios, plus their naming rule."""
+
 import dataclasses
 import re
 

@@ -1,4 +1,5 @@
 """The workspace page: portfolios, holdings, cash, and bulk import."""
+
 import flask
 
 from wolvwealth.domain.errors import DomainError

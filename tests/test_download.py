@@ -1,4 +1,5 @@
 """Downloading: retries shrink their batches, and a short universe is reported."""
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -98,9 +99,7 @@ def test_incremental_refresh_still_guards_against_mass_failure(tmp_path):
 
     def mostly_empty(tickers, _start, **_kwargs):
         dates = pd.bdate_range(last + pd.Timedelta(days=1), periods=2)
-        return pd.DataFrame(
-            {t: ([1.0, 2.0] if t == tickers[0] else [np.nan, np.nan]) for t in tickers}, index=dates
-        )
+        return pd.DataFrame({t: ([1.0, 2.0] if t == tickers[0] else [np.nan, np.nan]) for t in tickers}, index=dates)
 
     service.downloader = mostly_empty
     with pytest.raises(RuntimeError, match="rate limiting"):

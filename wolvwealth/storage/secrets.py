@@ -1,4 +1,5 @@
 """The per-install secret that signs the session cookie."""
+
 import pathlib
 import secrets
 

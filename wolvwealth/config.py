@@ -4,6 +4,7 @@ Everything is a plain dataclass built from the environment by
 ``Settings.from_env()``. Nothing here touches the filesystem or network; the
 storage layer creates directories when it first needs them.
 """
+
 import dataclasses
 import os
 import pathlib

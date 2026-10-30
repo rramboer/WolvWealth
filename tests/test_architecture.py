@@ -1,10 +1,11 @@
 """Enforce the dependency rule: each layer imports only from layers inside it.
 
-    domain            -> (nothing in wolvwealth outside domain)
-    storage, market   -> domain
-    services          -> domain, storage, market, config
-    web, __main__     -> everything above
+domain            -> (nothing in wolvwealth outside domain)
+storage, market   -> domain
+services          -> domain, storage, market, config
+web, __main__     -> everything above
 """
+
 import ast
 import pathlib
 

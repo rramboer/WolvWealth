@@ -3,6 +3,7 @@
 Build it once per process with ``Services.build()``. Tests build one against
 a temp directory and hand it to ``create_app``.
 """
+
 import dataclasses
 
 from wolvwealth.config import Settings

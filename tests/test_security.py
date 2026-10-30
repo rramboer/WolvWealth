@@ -1,4 +1,5 @@
 """Cross-site and DNS-rebinding protection: who gets refused, who must not be."""
+
 import pytest
 
 OPTIMIZE = {"initial_cash": 1000, "universe": ["AAA", "BBB"]}
@@ -35,9 +36,7 @@ def test_cross_site_form_post_to_a_view_is_refused(client):
 
 def test_cross_site_fetch_get_is_refused(client):
     """fetch() in no-cors mode is a GET without navigation; nothing legitimate looks like this."""
-    response = client.get(
-        "/api/market/", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}
-    )
+    response = client.get("/api/market/", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"})
     assert response.status_code == 403
 
 

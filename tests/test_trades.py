@@ -1,4 +1,5 @@
 """The trades block: what an agent actually sends to a broker."""
+
 import pytest
 
 from wolvwealth.domain import optimizer, trades

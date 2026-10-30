@@ -6,6 +6,7 @@ Reuses the app's optimizer (no duplicated maths). At each step the market
 snapshot is truncated to the current date, so every solve only sees data
 available at that time (no lookahead). Nothing global is mutated.
 """
+
 import datetime
 import sys
 

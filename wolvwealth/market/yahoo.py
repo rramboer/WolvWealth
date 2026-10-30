@@ -10,6 +10,7 @@ is no way to tell from here: Yahoo returns the same nothing for a symbol
 that was acquired as for one it is refusing to serve. Callers should report
 the count rather than quietly treat a short universe as the whole market.
 """
+
 import time
 from datetime import datetime
 
@@ -45,7 +46,7 @@ def download_prices(tickers: list, start_date: str, end_date: str = None, sleep=
     for i in range(0, len(tickers), CHUNK_SIZE):
         if i:
             sleep(CHUNK_PAUSE_SECONDS)
-        frames.append(_download_chunk(tickers[i:i + CHUNK_SIZE], start_date, end_date))
+        frames.append(_download_chunk(tickers[i : i + CHUNK_SIZE], start_date, end_date))
     data = pd.concat(frames, axis=1).reindex(columns=list(tickers))
 
     for attempt, chunk_size in enumerate(RETRY_CHUNK_SIZES):
@@ -54,7 +55,7 @@ def download_prices(tickers: list, start_date: str, end_date: str = None, sleep=
             break
         sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
         for i in range(0, len(missing), chunk_size):
-            chunk = missing[i:i + chunk_size]
+            chunk = missing[i : i + chunk_size]
             retried = _download_chunk(chunk, start_date, end_date)
             for ticker in retried.columns.intersection(chunk):
                 data[ticker] = retried[ticker]

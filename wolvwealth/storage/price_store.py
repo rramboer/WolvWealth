@@ -12,6 +12,7 @@ can run in the background while the web app serves requests and while an
 agent invokes the CLI from another process, and none of them may ever read a
 half-written price history.
 """
+
 import csv
 import json
 import os

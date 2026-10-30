@@ -3,6 +3,7 @@
 These check the things that silently rot: an endpoint renamed, a request
 field documented but not parsed, a response key documented but never sent.
 """
+
 import pathlib
 import re
 
@@ -50,9 +51,9 @@ def test_every_api_endpoint_is_documented(app):
 )
 def test_documented_request_fields_are_actually_parsed(field):
     """Every documented optimize input must appear in the parser."""
-    source = (
-        pathlib.Path(__file__).resolve().parent.parent / "wolvwealth" / "domain" / "optimizer.py"
-    ).read_text(encoding="utf-8")
+    source = (pathlib.Path(__file__).resolve().parent.parent / "wolvwealth" / "domain" / "optimizer.py").read_text(
+        encoding="utf-8"
+    )
     assert f'"{field}"' in source, f"the parser must read every documented field: {field}"
     assert field in DOCUMENTED, f"API.md never documents {field}"
 

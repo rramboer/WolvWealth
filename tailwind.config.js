@@ -19,9 +19,8 @@ module.exports = {
       mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
     },
     extend: {
-      borderRadius: {
-        '4xl': '2rem',
-      },
+      // `colors` above replaces Tailwind's whole palette, so the utilities the
+      // templates still need from the default set have to be re-declared here.
       backgroundColor: {
         'transparent': 'transparent',
       },

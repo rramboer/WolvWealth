@@ -5,6 +5,7 @@ app (so ``flask --app wolvwealth run`` works) and ``wolvwealth serve`` is the
 everyday way to run it. Layers, innermost first: domain -> storage, market ->
 services -> web, CLI. Each depends only on the layers inside it.
 """
+
 from wolvwealth.web import create_app
 
 __all__ = ["create_app"]

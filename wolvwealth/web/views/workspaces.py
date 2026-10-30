@@ -1,4 +1,5 @@
 """Workspace picker and lifecycle. The session cookie holds the open workspace's name."""
+
 import flask
 
 from wolvwealth.domain.models import NAME_RULE, valid_name

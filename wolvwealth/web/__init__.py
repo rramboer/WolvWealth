@@ -3,6 +3,7 @@
 Thin adapters only. Views and API routes parse the request, call a service,
 and render or serialize the answer. Nothing here does SQL or maths.
 """
+
 import flask
 
 from wolvwealth.services.container import Services

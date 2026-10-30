@@ -1,4 +1,5 @@
 """Tests for the walk-forward backtest script (scripts/backtest.py)."""
+
 import datetime
 import importlib.util
 import pathlib
@@ -24,9 +25,7 @@ def test_run_backtest_walks_forward(market):
     assert values[dates[0]] == 10000
     assert all(v > 0 for v in values.values())
     # dates step forward by at least the frequency
-    gaps = [
-        (datetime.date.fromisoformat(b) - datetime.date.fromisoformat(a)).days for a, b in zip(dates, dates[1:])
-    ]
+    gaps = [(datetime.date.fromisoformat(b) - datetime.date.fromisoformat(a)).days for a, b in zip(dates, dates[1:])]
     assert all(gap >= 91 for gap in gaps)
 
 

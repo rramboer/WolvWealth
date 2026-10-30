@@ -1,4 +1,5 @@
 """PriceStore on-disk behavior: Parquet round trips, legacy CSV conversion, the stats cache."""
+
 import json
 
 import pandas as pd

@@ -4,6 +4,7 @@ Plain dict in (the JSON API body, or an equivalent built by a view or script),
 plain dict out. The only inputs are the request and a MarketData snapshot, so
 the same code runs in the web app, the CLI, tests, and the backtest.
 """
+
 import dataclasses
 
 import numpy as np

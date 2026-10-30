@@ -1,4 +1,5 @@
 """The precomputed-statistics lifecycle: built once per data refresh, sliced per request."""
+
 import json
 
 import numpy as np

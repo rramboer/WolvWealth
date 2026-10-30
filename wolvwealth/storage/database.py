@@ -1,4 +1,5 @@
 """SQLite connection handling and schema creation."""
+
 import contextlib
 import pathlib
 import sqlite3

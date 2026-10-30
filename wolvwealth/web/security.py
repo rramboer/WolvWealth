@@ -23,6 +23,7 @@ Agents, curl and the app's own pages are untouched: tools send none of these
 headers, and the app's pages are same-origin by definition. Refusals are the
 API's usual JSON error shape with status 403.
 """
+
 import urllib.parse
 
 import flask

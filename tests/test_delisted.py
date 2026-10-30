@@ -4,6 +4,7 @@ Real data is full of them (acquisitions, renames). They used to reach the
 solver, where their all-NaN covariance made it reject the entire problem,
 and reach `market.value()`, where they raised an uncaught KeyError.
 """
+
 import numpy as np
 import pytest
 
