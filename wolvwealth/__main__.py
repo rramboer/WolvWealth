@@ -42,14 +42,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_serve(args, services: Services) -> int:
-    """Load prices (refreshing stale ones), then run Flask on localhost only (no auth, so never elsewhere)."""
+    """Load prices, start a refresh if they are stale, then run Flask on localhost only (no auth)."""
     from wolvwealth.web import create_app  # pylint: disable=import-outside-toplevel
 
     in_reloader_child = bool(os.environ.get("WERKZEUG_RUN_MAIN"))
     if not in_reloader_child:
         services.market.data  # pylint: disable=pointless-statement  # load (or build) the cache up front
         if services.settings.auto_refresh:
-            services.market.auto_refresh_if_stale(services.settings.auto_refresh_max_age_days)
+            # In the background: a stale refresh is minutes of downloading and
+            # recomputing, and the cached prices are good enough to serve
+            # until it lands. `wolvwealth refresh-data` stays synchronous.
+            services.market.start_background_refresh(services.settings.auto_refresh_max_age_days)
     app = create_app(services)
     url = f"http://localhost:{args.port}/"
     print(f"WolvWealth is running at {url}  (Ctrl-C to stop)")

@@ -6,15 +6,32 @@ install is converted in place on first load. The statistics cache is a pair
 of files: the matrix itself, and a small JSON sidecar recording which prices
 it was computed from. The sidecar is written last, so a crash mid-save leaves
 no sidecar and the cache reads as absent rather than stale.
+
+Every write lands through a temporary file and an atomic rename. A refresh
+can run in the background while the web app serves requests and while an
+agent invokes the CLI from another process, and none of them may ever read a
+half-written price history.
 """
 import csv
 import json
+import os
 import pathlib
 
 import pandas as pd
 
 #: Column holding mu in the stats file; lowercase so it cannot collide with a ticker.
 EXPECTED_RETURN_COLUMN = "expected_return"
+
+
+def _replace(path: pathlib.Path, write) -> None:
+    """Build the file beside its destination, then move it into place atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.partial")
+    try:
+        write(temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class PriceStore:
@@ -58,8 +75,7 @@ class PriceStore:
 
     def save_prices(self, prices: pd.DataFrame) -> None:
         """Overwrite the cache."""
-        self.prices_path.parent.mkdir(parents=True, exist_ok=True)
-        prices.to_parquet(self.prices_path, index=True)
+        _replace(self.prices_path, lambda path: prices.to_parquet(path, index=True))
 
     def load_stats(self):
         """Return ``(meta, mu, cov)`` from the statistics cache, or None if it is absent."""
@@ -71,8 +87,8 @@ class PriceStore:
 
     def save_stats(self, mu: pd.Series, cov: pd.DataFrame, meta: dict) -> None:
         """Overwrite the statistics cache; ``meta`` names the prices it was computed from."""
-        self.prices_path.parent.mkdir(parents=True, exist_ok=True)
         frame = cov.copy()
         frame[EXPECTED_RETURN_COLUMN] = mu
-        frame.to_parquet(self.stats_path, index=True)
-        self.stats_meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        # Sidecar last: until it lands, load_stats() reports the cache as absent.
+        _replace(self.stats_path, lambda path: frame.to_parquet(path, index=True))
+        _replace(self.stats_meta_path, lambda path: path.write_text(json.dumps(meta), encoding="utf-8"))

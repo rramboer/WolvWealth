@@ -126,14 +126,15 @@ flowchart TD
     A["wolvwealth serve"] --> B["Services.build(Settings.from_env())<br/>(no I/O yet)"]
     B --> C["services.market.data<br/>first access: PriceStore.load_universe(); if no cache -> migrate legacy copy or download 2006->today"]
     C --> D{"auto_refresh and age > 7 days?"}
-    D -- yes --> E["MarketDataService.refresh()<br/>incremental; failure is logged, not fatal"]
+    D -- yes --> E["start_background_refresh():<br/>daemon thread downloads + recomputes,<br/>swaps in a new snapshot when done"]
     D -- no --> F
-    E --> F["create_app(services)<br/>secret key read/created, blueprints registered"]
+    E -.->|does not block| F["create_app(services)<br/>secret key read/created, blueprints registered"]
+    D --> F
     F --> G["app.run(127.0.0.1, port)<br/>browser tab opened"]
     H["flask --app wolvwealth run"] --> I["create_app() with default Services<br/>prices load lazily on the first request that needs them"]
 ```
 
-`import wolvwealth` does nothing but define things. `Services.build()` wires collaborators without touching disk. The database file is created from `storage/sql/` the first time a connection is opened; the price cache is created the first time `services.market.data` is read. Only `wolvwealth serve` refreshes prices at startup.
+`import wolvwealth` does nothing but define things. `Services.build()` wires collaborators without touching disk. The database file is created from `storage/sql/` the first time a connection is opened; the price cache is created the first time `services.market.data` is read. Only `wolvwealth serve` refreshes prices at startup, and it does so on a daemon thread: a stale refresh is minutes of downloading plus a covariance recompute, and the cached prices are good enough to serve until it lands. Requests read whichever snapshot is current when they start; swapping one in is a single attribute assignment, so no request ever sees a half-built one. `wolvwealth refresh-data` stays synchronous, because there the refresh *is* the command.
 
 ## 5. Workflow: workspaces
 
@@ -413,10 +414,17 @@ The goal (README): each of us runs this locally against our own portfolios, with
 
 1. ~~`mean_historical_return` and `exp_cov` recomputed on every optimize request~~ Done: computed once per data refresh, persisted in `var/market_stats.parquet`, sliced per request by `MarketData.stats_for()` (§8).
 2. ~~CSV cache takes several seconds to parse at startup~~ Done: prices and stats are Parquet; old CSV caches are converted on first load.
-3. The startup refresh blocks `wolvwealth serve` for minutes when the cache is stale; it should run in a background thread while the app serves cached prices. **The last one still open.**
+3. ~~The startup refresh blocks `wolvwealth serve`~~ Done: `start_background_refresh()` runs it on a daemon thread while the app serves the cached snapshot (§4). Cache writes go through a temporary file and an atomic rename, so a refresh landing mid-request -- or while an agent runs the CLI from another process -- can never expose a half-written file.
 4. ~~Identical optimize requests served from an LRU cache~~ Done: memoized per price snapshot, keyed on the fields that reach the solver (§7).
 
-Not a gap, but worth knowing: on synthetic 500-ticker data the OSQP solver hits its iteration limit and `max_sharpe()` fails, which surfaces as a 400 naming the solver status. That is the default universe size (`DEFAULT_UNIVERSE_SIZE = 500`), so it is worth re-checking against real prices; at 200 tickers the same data solves in ~190 ms. The memoization does not change this either way — it caches successes only.
+### The default request used to fail on real data
+
+Checked against the real 1982-ticker history (2006 to 2026), not the synthetic benchmark. The default universe size of 500 was never the problem; two independent faults were, and either one alone broke every request that did not name a universe:
+
+1. **The solver.** cvxpy defaulted to OSQP, a first-order method that hits its iteration limit and fails outright past roughly 400 tickers — 400 and 500 both failed on real prices, and 300 took 33 s on synthetic data. `SOLVER = "CLARABEL"` (interior-point, already a required cvxpy dependency) solves every size in a fraction of the time and agrees with OSQP to ~1e-5, far below `WEIGHT_THRESHOLD`, so output is unchanged wherever OSQP converged at all.
+2. **Delisted tickers.** 19 of the real top 500 (`PXD`, `SPLK`, `ANSS`, `WBD`, …) were acquired or renamed: still in the ticker list, no current price. Their exponentially weighted covariance with everything else is NaN — exactly the 18,639 NaN cells observed — which made cvxpy reject the whole problem, and one held in a portfolio raised an uncaught `KeyError` out of `market.value()`, a 500 from an API whose contract promises JSON errors. `MarketData.tradeable` now filters them out of `top(n)` and the aliases, and naming one explicitly in `universe` or `initial_holdings` is a 400 saying it looks delisted.
+
+On real data the default request now solves in 0.27 s cold and 0.18 ms repeated; over HTTP, 348 ms then 6 ms.
 
 **Agent-readiness** (after that)
 

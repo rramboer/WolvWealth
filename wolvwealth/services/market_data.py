@@ -1,4 +1,5 @@
 """MarketDataService: the process-wide price snapshot and how it gets refreshed."""
+import threading
 from datetime import timedelta
 
 import pandas as pd
@@ -31,6 +32,9 @@ class MarketDataService:
         self.log = log
         self.stats_universe_size = stats_universe_size
         self._data = None
+        #: Held for the duration of a background refresh so a second trigger
+        #: does not start a duplicate download.
+        self._refresh_lock = threading.Lock()
 
     @property
     def data(self) -> MarketData:
@@ -132,18 +136,60 @@ class MarketDataService:
         self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices, columns))
         return True
 
-    def auto_refresh_if_stale(self, max_age_days: int) -> bool:
-        """Incremental refresh when the cache is older than ``max_age_days``. Never raises."""
+    def _stale_by(self, max_age_days: int) -> int:
+        """Return the cache's age in days if it is past ``max_age_days``, else 0."""
         age = self.age_days()
-        if age <= max_age_days:
-            return False
-        self.log(
-            f"wolvwealth: cached prices are {age} days old, refreshing (set WOLVWEALTH_NO_AUTO_REFRESH=1 to skip)..."
-        )
+        return age if age > max_age_days else 0
+
+    def _refresh_quietly(self) -> bool:
+        """Refresh, reporting the outcome. Never raises: market data must not break startup."""
         try:
             self.refresh()
-        except Exception as err:  # pylint: disable=broad-except  # never make startup fail over market data
+        except Exception as err:  # pylint: disable=broad-except
             self.log(f"wolvwealth: price refresh failed ({err}); continuing with cached prices")
             return False
         self.log(f"wolvwealth: prices now end {self.data.as_of}")
         return True
+
+    def auto_refresh_if_stale(self, max_age_days: int) -> bool:
+        """Incremental refresh when the cache is older than ``max_age_days``. Never raises."""
+        age = self._stale_by(max_age_days)
+        if not age:
+            return False
+        self.log(
+            f"wolvwealth: cached prices are {age} days old, refreshing (set WOLVWEALTH_NO_AUTO_REFRESH=1 to skip)..."
+        )
+        return self._refresh_quietly()
+
+    def start_background_refresh(self, max_age_days: int):
+        """Refresh in a daemon thread if the cache is stale; return the thread, or None.
+
+        A stale refresh downloads months of prices and then recomputes the
+        covariance, which together ran into minutes of dead air before the
+        server would accept its first request. Callers serve the snapshot
+        already loaded and the thread swaps in a newer one when it is ready:
+        rebinding ``self._data`` is a single assignment, so a request holds
+        either the old snapshot or the new one, never a half-built mix.
+
+        Returns None when the cache is fresh or a refresh is already running.
+        The thread is a daemon so Ctrl-C never waits on a download.
+        """
+        age = self._stale_by(max_age_days)
+        if not age:
+            return None
+        if not self._refresh_lock.acquire(blocking=False):
+            return None
+        self.log(
+            f"wolvwealth: cached prices are {age} days old, refreshing in the background "
+            "(set WOLVWEALTH_NO_AUTO_REFRESH=1 to skip); serving cached prices meanwhile..."
+        )
+
+        def run():
+            try:
+                self._refresh_quietly()
+            finally:
+                self._refresh_lock.release()
+
+        thread = threading.Thread(target=run, name="wolvwealth-refresh", daemon=True)
+        thread.start()
+        return thread
