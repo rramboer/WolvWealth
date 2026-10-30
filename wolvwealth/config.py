@@ -28,6 +28,11 @@ class Settings:
     auto_refresh: bool = True
     #: Earliest date in the price history.
     price_history_start: str = "2006-01-01"
+    #: How many of the largest tradeable tickers the precomputed covariance
+    #: covers. Every universe alias stops at top500, so 500 serves them all
+    #: and the default universe. Raising it helps portfolios holding smaller
+    #: names, at a quadratic cost in refresh time.
+    stats_universe_size: int = 500
 
     @property
     def database_path(self) -> pathlib.Path:

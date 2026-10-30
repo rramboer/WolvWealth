@@ -16,12 +16,20 @@ class MarketDataService:
     #: previously live tickers came back empty (almost always rate limiting).
     MAX_WENT_DARK_FRACTION = 0.15
 
-    def __init__(self, store: PriceStore, history_start: str, downloader=yahoo.download_prices, log=print) -> None:
+    def __init__(
+        self,
+        store: PriceStore,
+        history_start: str,
+        downloader=yahoo.download_prices,
+        log=print,
+        stats_universe_size: int = 500,
+    ) -> None:
         """Wire the store and the download function (injectable for tests)."""
         self.store = store
         self.history_start = history_start
         self.downloader = downloader
         self.log = log
+        self.stats_universe_size = stats_universe_size
         self._data = None
 
     @property
@@ -44,30 +52,46 @@ class MarketDataService:
                 self.log("wolvwealth: no price history cache, downloading 2006 -> today (this takes a while)...")
                 self.store.save_prices(self.downloader(universe, self.history_start))
         prices = self.store.load_prices()
-        return MarketData.build(universe, prices, self._load_or_compute_stats(prices))
+        return MarketData.build(universe, prices, self._load_or_compute_stats(universe, prices))
+
+    def _stats_columns(self, universe, prices) -> list:
+        """Tickers the precomputed statistics cover: the largest tradeable names.
+
+        Covering the whole ticker list would be quadratic work for names no
+        default request touches -- ``exp_cov`` loops over every pair, so all
+        1982 tickers take ~17 minutes against ~1 minute for 500. Every
+        universe alias tops out at ``top500``, so this covers them all plus
+        the default universe; anything else falls back to computing its own
+        statistics in ``MarketData.stats_for``.
+        """
+        return MarketData.build(universe, prices).top(self.stats_universe_size)
 
     @staticmethod
-    def _stats_meta(prices) -> dict:
+    def _stats_meta(prices, columns) -> dict:
         """Return what the statistics cache must match to be served against ``prices``."""
-        return {"as_of": str(prices.index[-1].date()), "price_rows": len(prices)}
+        return {"as_of": str(prices.index[-1].date()), "price_rows": len(prices), "tickers": len(columns)}
 
-    def _load_or_compute_stats(self, prices) -> MarketStats:
+    def _load_or_compute_stats(self, universe, prices) -> MarketStats:
         """Return the cached statistics if they were computed from ``prices``; rebuild them otherwise."""
+        columns = self._stats_columns(universe, prices)
         try:
             cached = self.store.load_stats()
         except Exception:  # pylint: disable=broad-except  # a corrupt cache is never fatal; rebuild below
             cached = None
         if cached is not None:
             meta, mu, cov = cached
-            if meta == self._stats_meta(prices) and list(cov.columns) == list(prices.columns):
+            if meta == self._stats_meta(prices, columns) and list(cov.columns) == columns:
                 return MarketStats(mu, cov)
-        return self._compute_and_save_stats(prices)
+        return self._compute_and_save_stats(prices, columns)
 
-    def _compute_and_save_stats(self, prices) -> MarketStats:
-        """Precompute the optimizer's statistics over the full universe and persist them."""
-        self.log("wolvwealth: precomputing return/covariance statistics (happens once per data refresh)...")
-        stats = MarketStats.compute(prices)
-        self.store.save_stats(stats.mu, stats.cov, self._stats_meta(prices))
+    def _compute_and_save_stats(self, prices, columns) -> MarketStats:
+        """Precompute the optimizer's statistics over ``columns`` and persist them."""
+        self.log(
+            f"wolvwealth: precomputing return/covariance statistics for {len(columns)} tickers "
+            "(happens once per data refresh)..."
+        )
+        stats = MarketStats.compute(prices[columns])
+        self.store.save_stats(stats.mu, stats.cov, self._stats_meta(prices, columns))
         return stats
 
     def age_days(self) -> int:
@@ -83,7 +107,9 @@ class MarketDataService:
         if full:
             prices = self.downloader(list(self.data.universe), self.history_start)
             self.store.save_prices(prices)
-            self._data = MarketData.build(self.data.universe, prices, self._compute_and_save_stats(prices))
+            universe = self.data.universe
+            columns = self._stats_columns(universe, prices)
+            self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
             return True
         current = self.data
         start = (current.prices.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -102,7 +128,8 @@ class MarketDataService:
             )
         prices = pd.concat([current.prices, fresh])
         self.store.save_prices(prices)
-        self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices))
+        columns = self._stats_columns(current.universe, prices)
+        self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices, columns))
         return True
 
     def auto_refresh_if_stale(self, max_age_days: int) -> bool:

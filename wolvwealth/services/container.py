@@ -30,7 +30,12 @@ class Services:
             settings=settings,
             database=Database(settings.database_path),
             price_store=store,
-            market=MarketDataService(store, settings.price_history_start, log=log),
+            market=MarketDataService(
+                store,
+                settings.price_history_start,
+                log=log,
+                stats_universe_size=settings.stats_universe_size,
+            ),
         )
 
     @staticmethod

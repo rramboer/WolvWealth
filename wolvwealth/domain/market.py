@@ -53,9 +53,21 @@ class MarketData:
         """Return true if the ticker is in the universe."""
         return ticker in self.tickers
 
+    @functools.cached_property
+    def tradeable(self) -> tuple:
+        """The universe in market-cap order, minus names with no current price.
+
+        Tickers that were acquired, renamed or delisted keep their place in
+        the ticker list but their prices stop, which makes their
+        exponentially weighted covariance with everything else NaN and makes
+        the solver reject the whole problem. They are also, by definition,
+        not buyable, so no allocation should ever name one.
+        """
+        return tuple(ticker for ticker in self.universe if ticker in self.latest_prices)
+
     def top(self, count: int) -> list:
-        """Return the ``count`` largest tickers by market cap."""
-        return list(self.universe[:count])
+        """Return the ``count`` largest tradeable tickers by market cap."""
+        return list(self.tradeable[:count])
 
     @property
     def as_of(self):
@@ -102,10 +114,12 @@ class MarketData:
         return MarketStats.compute(self.prices[tickers]).slice(tickers)
 
     def expand_universe(self, entries) -> list:
-        """Expand aliases and tickers into a deduplicated ticker list.
+        """Expand aliases and tickers into a deduplicated, tradeable ticker list.
 
         Raises ValueError naming the first entry that is neither an alias nor
-        a ticker in the universe.
+        a ticker in the universe, or that names a ticker with no current
+        price. Aliases skip untradeable names rather than failing, so
+        ``top500`` is the 500 largest names that can actually be bought.
         """
         expanded = []
         for entry in entries:
@@ -113,8 +127,10 @@ class MarketData:
                 raise ValueError("universe must be list of strings.")
             if entry in UNIVERSE_ALIASES:
                 expanded.extend(self.top(UNIVERSE_ALIASES[entry]))
-            elif entry.upper() in self.tickers:
+            elif entry.upper() in self.latest_prices:
                 expanded.append(entry.upper())
+            elif entry.upper() in self.tickers:
+                raise ValueError(f"No current price for {entry.upper()}; it looks delisted or renamed.")
             else:
                 raise ValueError(f"Invalid symbol in universe: {entry}.")
         return list(dict.fromkeys(expanded))

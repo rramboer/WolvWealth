@@ -31,7 +31,7 @@ def test_first_load_computes_and_persists_stats(tmp_path):
     data = service.data
     assert data.stats is not None and data.stats.covers(data.universe)
     meta, mu, cov = store.load_stats()
-    assert meta == {"as_of": str(data.as_of), "price_rows": len(data.prices)}
+    assert meta == {"as_of": str(data.as_of), "price_rows": len(data.prices), "tickers": len(data.universe)}
     expected = MarketStats.compute(data.prices)
     assert np.allclose(mu, expected.mu) and np.allclose(cov, expected.cov)
 
@@ -66,8 +66,9 @@ def test_refresh_recomputes_stats_for_the_new_rows(tmp_path):
     service.downloader = downloader
     assert service.refresh()
     meta, _mu, cov = store.load_stats()
-    assert meta == {"as_of": str(service.data.as_of), "price_rows": len(service.data.prices)}
-    assert list(cov.columns) == list(service.data.prices.columns)
+    data = service.data
+    assert meta == {"as_of": str(data.as_of), "price_rows": len(data.prices), "tickers": len(data.universe)}
+    assert list(cov.columns) == list(data.prices.columns)
 
 
 def test_stats_for_slices_equal_direct_computation(market):

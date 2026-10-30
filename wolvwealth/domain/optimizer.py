@@ -19,6 +19,14 @@ RISK_FREE_RATE = 0.02
 DEFAULT_UNIVERSE_SIZE = 500
 #: Weights below this are treated as zero after solving.
 WEIGHT_THRESHOLD = 0.0005
+#: Convex solver for the max-Sharpe program. cvxpy would otherwise pick OSQP,
+#: a first-order method that hits its iteration limit and fails outright on
+#: real price data once the universe passes ~400 tickers -- including the
+#: default universe of 500. CLARABEL is an interior-point method that solves
+#: the same problems in a fraction of the time and agrees with OSQP to ~1e-5
+#: (far below WEIGHT_THRESHOLD) wherever OSQP does converge. It ships as a
+#: required dependency of cvxpy, so it is always available.
+SOLVER = "CLARABEL"
 
 
 @dataclasses.dataclass
@@ -87,6 +95,14 @@ def _parse_holdings(payload, request, market) -> None:
             raise ValidationError("Invalid initial_holdings. initial_holdings must be list of strings.")
         if ticker.upper() not in market:
             raise ValidationError(f"Invalid symbol in initial_holdings: {ticker}.")
+        if not market.has_price(ticker.upper()):
+            # Without a current price the position cannot be valued, and
+            # valuing it anyway (last known price, or zero) would quietly put
+            # a wrong number on someone's money. Say so instead.
+            raise ValidationError(
+                f"No current price for {ticker.upper()} in initial_holdings; "
+                "it looks delisted or renamed. Remove it and try again."
+            )
         if not isinstance(shares, (int, float)) or isinstance(shares, bool):
             raise ValidationError(
                 "Invalid initial_holdings. initial_holdings must be a dictionary of strings to numbers."
@@ -145,7 +161,9 @@ def _parse_constraints(payload, request) -> None:
 def _run_solver(mu, cov_matrix, max_weight: float, min_universal_weight: float) -> dict:
     """Maximize the Sharpe ratio under the weight bounds; return the cleaned weights."""
     try:
-        frontier = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(min_universal_weight, 1))
+        frontier = EfficientFrontier(
+            mu, cov_matrix, verbose=False, weight_bounds=(min_universal_weight, 1), solver=SOLVER
+        )
         if max_weight != 1:
             frontier.add_constraint(lambda weights: weights <= max_weight)
         frontier.max_sharpe()
