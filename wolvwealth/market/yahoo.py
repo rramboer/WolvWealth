@@ -3,8 +3,12 @@
 Yahoo rate-limits bulk downloads of the ~2,000-ticker universe, and a
 rate-limited ticker comes back as an all-NaN column rather than an
 exception. So: download in chunks with pauses, then re-request the all-NaN
-stragglers with backoff. Whatever is still empty afterwards is treated as
-genuinely delisted.
+stragglers with backoff, in smaller batches each pass.
+
+Whatever is still empty is *either* delisted or still throttled, and there
+is no way to tell from here: Yahoo returns the same nothing for a symbol
+that was acquired as for one it is refusing to serve. Callers should report
+the count rather than quietly treat a short universe as the whole market.
 """
 import time
 from datetime import datetime
@@ -14,8 +18,14 @@ import yfinance as yf
 
 CHUNK_SIZE = 100
 CHUNK_PAUSE_SECONDS = 2
-RETRY_PASSES = 4
 RETRY_BACKOFF_SECONDS = 30
+#: One retry pass per entry, asking in smaller batches each time. A full
+#: 1982-ticker download leaves a few hundred empty columns; re-requesting 60
+#: of them recovered 11, so a meaningful share are throttling rather than
+#: delistings and are worth chasing. Shrinking the batch is a heuristic: a
+#: shorter request is cheaper for Yahoo to answer and costs us less when it
+#: is refused.
+RETRY_CHUNK_SIZES = (100, 25, 5)
 
 
 def _download_chunk(tickers: list, start_date: str, end_date: str) -> pd.DataFrame:
@@ -38,18 +48,30 @@ def download_prices(tickers: list, start_date: str, end_date: str = None, sleep=
         frames.append(_download_chunk(tickers[i:i + CHUNK_SIZE], start_date, end_date))
     data = pd.concat(frames, axis=1).reindex(columns=list(tickers))
 
-    for attempt in range(RETRY_PASSES):
+    for attempt, chunk_size in enumerate(RETRY_CHUNK_SIZES):
         missing = [t for t in tickers if data[t].isna().all()]
         if not missing:
             break
         sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
-        for i in range(0, len(missing), CHUNK_SIZE):
-            chunk = missing[i:i + CHUNK_SIZE]
+        for i in range(0, len(missing), chunk_size):
+            chunk = missing[i:i + chunk_size]
             retried = _download_chunk(chunk, start_date, end_date)
             for ticker in retried.columns.intersection(chunk):
                 data[ticker] = retried[ticker]
             sleep(CHUNK_PAUSE_SECONDS)
     return data
+
+
+def empty_tickers(prices: pd.DataFrame, tickers=None) -> list:
+    """Tickers that came back with no data at all.
+
+    Either they stopped trading (Yahoo serves nothing for a symbol once it is
+    gone, not even its history) or the request was throttled. The caller
+    cannot tell which, so it should say how many rather than pretend the
+    universe is complete.
+    """
+    wanted = list(prices.columns if tickers is None else tickers)
+    return [t for t in wanted if t in prices.columns and prices[t].isna().all()]
 
 
 def market_cap(ticker: str) -> float:

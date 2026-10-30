@@ -226,5 +226,8 @@ Messages name the offending field or symbol and are safe to surface verbatim. Tw
 when working from a real brokerage export:
 
 - `Invalid symbol in universe: XYZ.` — not in the ticker list at all.
-- `No current price for PXD; it looks delisted or renamed.` — in the list, but it stopped
-  trading (acquired, renamed). Drop it, or map it to its successor symbol.
+- `No current price for PXD: delisted, renamed, or missed by the last price refresh.` — the
+  symbol is in the ticker list but has no price at the end of the cached history. Usually it
+  stopped trading (acquired, renamed), so map it to its successor symbol or drop it. It can
+  also mean the last download was rate-limited for that symbol, which a
+  `wolvwealth refresh-data --full` fixes.

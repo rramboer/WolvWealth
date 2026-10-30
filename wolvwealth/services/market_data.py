@@ -54,9 +54,27 @@ class MarketDataService:
                 self.log(f"wolvwealth: migrated price history into {self.store.prices_path}")
             else:
                 self.log("wolvwealth: no price history cache, downloading 2006 -> today (this takes a while)...")
-                self.store.save_prices(self.downloader(universe, self.history_start))
+                self.store.save_prices(self._download(universe, self.history_start))
         prices = self.store.load_prices()
         return MarketData.build(universe, prices, self._load_or_compute_stats(universe, prices))
+
+    def _download(self, tickers, start_date):
+        """Download prices and say how much of the universe came back empty.
+
+        A full download routinely loses a few hundred tickers to throttling,
+        and an empty column is indistinguishable from a delisting. Silence
+        here would mean quietly optimizing over a fraction of the universe
+        the user believes they have, so the shortfall is always reported.
+        """
+        prices = self.downloader(list(tickers), start_date)
+        empty = yahoo.empty_tickers(prices, tickers)
+        if empty:
+            self.log(
+                f"wolvwealth: {len(empty)} of {len(list(tickers))} tickers returned no data "
+                "(delisted, or Yahoo throttled us). They are excluded from allocations; "
+                "run `wolvwealth refresh-data --full` later to pick up any that were only throttled."
+            )
+        return prices
 
     def _stats_columns(self, universe, prices) -> list:
         """Tickers the precomputed statistics cover: the largest tradeable names.
@@ -109,7 +127,7 @@ class MarketDataService:
         pick up corrected adjusted closes after splits and dividends.
         """
         if full:
-            prices = self.downloader(list(self.data.universe), self.history_start)
+            prices = self._download(self.data.universe, self.history_start)
             self.store.save_prices(prices)
             universe = self.data.universe
             columns = self._stats_columns(universe, prices)

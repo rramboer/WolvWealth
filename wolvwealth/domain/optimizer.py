@@ -102,8 +102,8 @@ def _parse_holdings(payload, request, market) -> None:
             # valuing it anyway (last known price, or zero) would quietly put
             # a wrong number on someone's money. Say so instead.
             raise ValidationError(
-                f"No current price for {ticker.upper()} in initial_holdings; "
-                "it looks delisted or renamed. Remove it and try again."
+                f"No current price for {ticker.upper()} in initial_holdings: delisted, renamed, "
+                "or missed by the last price refresh. Remove it, or run `wolvwealth refresh-data --full`."
             )
         if not isinstance(shares, (int, float)) or isinstance(shares, bool):
             raise ValidationError(

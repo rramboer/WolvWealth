@@ -15,8 +15,6 @@ Two reasons we abandoned the cloud model:
 
 This is also why the Python packages are installed into the **global interpreter** (no venv): the optimizer and its API must be runnable from anywhere on the device — by you at a shell, or by an agent spawned from any working directory — without activating an environment first.
 
-The remaining work to fully get there is tracked in **[MIGRATION.md](MIGRATION.md)**.
-
 ## How it works now: workspaces
 
 The accounts system is gone. In its place are **local workspaces** — one per person using the machine, no passwords. Each workspace holds any number of named portfolios, and each portfolio is a cash balance plus your share counts per ticker.
@@ -138,7 +136,7 @@ Response shape (abbreviated, numbers illustrative):
 Two things to understand before trusting the numbers:
 
 - **Your holdings are valued and then fully reallocated.** The optimizer does not try to keep what you own. The browser flow adds your held tickers to the universe so keeping them is possible; a held ticker missing from the result means "sell it all".
-- **Prices come from the local cache, not live quotes.** Share counts and dollar values use the last row of the local price cache (`var/historical_prices.parquet`). The startup auto-refresh keeps it within about a week of today; the pages show the price date.
+- **Prices come from the local cache, not live quotes.** Share counts and dollar values use the last row of `var/historical_prices.parquet`; the pages and the API's `as_of` show which date that is. The startup refresh keeps it within about a week of today, in the background. [ARCHITECTURE.md §8](ARCHITECTURE.md#8-workflow-market-data) has the details.
 
 The full request and response contract is **[API.md](API.md)**, written so it can be handed to an agent as-is; [ARCHITECTURE.md §7](ARCHITECTURE.md#7-workflow-optimize-a-portfolio-the-core-feature) covers how it is built.
 
@@ -148,10 +146,18 @@ Responses include a `trades` block — the buy/sell share deltas from what you h
 
 There is deliberately no authentication. This is a localhost tool for a machine whose users trust each other — workspaces keep people's portfolios tidy and separate, nothing more. Do not bind it to an interface strangers can reach.
 
-## Roadmap
+## Scope
 
-The end state: a locally runnable app where multiple people on one device each keep their own portfolios in a workspace, optimize them on that machine, and optionally have an AI agent run the optimizer and place the resulting trades through a broker MCP (e.g. Robinhood). The full plan, with what's done and what's left in order, lives in **[MIGRATION.md](MIGRATION.md)**.
+The app is where it set out to be: multiple people on one device each keep their portfolios in a local workspace, optimize them on that machine, and an agent can drive the whole loop through the local API and place the trades through a broker MCP. ARCHITECTURE.md has the design; `git log` has how it got here.
+
+Deliberately **not** in scope, now or later:
+
+- **Hosted deployment, accounts, authentication, billing.** If this is ever network-exposed again, that is a different project.
+- **Live quotes per request.** Prices come from the local cache; `as_of` tells you how old they are and the refresh command controls that.
+- **Trade execution.** WolvWealth produces target allocations and trade lists. Placing orders is the job of the agent and its broker MCP, never of this app.
 
 ## Disclaimer
 
 The calculations and information in this project are for educational purposes only and are not investment advice. Mean-variance optimization over historical returns is a model, not a forecast. Past performance does not guarantee future results.
+
+Two specific limitations worth knowing: prices are a local cache, so every allocation is priced at `as_of` rather than a live quote; and the cache holds only companies still listed when it was downloaded, so backtest results are survivorship-biased and flatter than reality.

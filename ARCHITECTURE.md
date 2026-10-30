@@ -1,6 +1,6 @@
 # WolvWealth architecture
 
-This is the map of the code as it is today. It is written for someone who wants to change or extend the app: what the layers are, which direction dependencies point, how a request flows through, and where a new feature plugs in. The project goals and status are in [README.md](README.md); the ordered to-do list is in [MIGRATION.md](MIGRATION.md).
+This is the map of the code as it is today. It is written for someone who wants to change or extend the app: what the layers are, which direction dependencies point, how a request flows through, and where a new feature plugs in. The project goals and scope are in [README.md](README.md); the JSON contract is in [API.md](API.md).
 
 > **October 2026:** the old online-auth system (accounts, passwords, API keys, paid tiers, admin endpoints) has been removed and replaced with local **workspaces**, and the package has been restructured into layers. If you remember `ApplicationState`, `wolvwealth/api/`, or `wolvwealth/views/`, they are gone; the equivalents are mapped in §3.
 
@@ -117,10 +117,9 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 ├── package.json, tailwind.config.js   Dev-only: `npm run css` rebuilds the committed CSS
 ├── var/                           Local state, gitignored: wolvwealth.sqlite3, secret_key, historical_prices.parquet, market_stats.parquet/.json
 ├── API.md                         The JSON contract, written to drop into an agent's context
-└── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
+└── README.md, CONTRIBUTING.md, ARCHITECTURE.md
 ```
 
-Where the old names went: `ApplicationState` → `MarketData` (the snapshot) + `MarketDataService` (loading/refresh) + `market/yahoo.py` (networking); `api/optimize.py`'s `Optimization` class → `domain/optimizer.py` functions; `InvalidUsage` → `domain/errors.py`; `portfolios.py` + `model.py` → `storage/repository.py` + `storage/database.py`; `views/` → `web/views/`; `api/` → `web/api/`.
 
 ## 4. Process startup
 
@@ -340,9 +339,24 @@ Things to know:
 - To change the universe, edit `wolvwealth/data/ticker_universe.csv` (descending market cap) and run `wolvwealth refresh-data --full`. The old live-market-cap sorting helpers were removed.
 - `yfinance` is `>=1.7`. Yahoo changes its endpoints often; if downloads start failing wholesale, bump yfinance first.
 
+### Dead tickers, and why the ticker list is not pruned
+
+A full download of the 1982-ticker universe comes back with a few hundred columns that are entirely empty — 406 in the run this was measured on. It is tempting to read that as "406 companies have delisted, let's delete them from `ticker_universe.csv`". **Do not.** Yahoo returns the same nothing in two very different cases:
+
+- **Genuinely gone.** Acquired, taken private, or renamed (`PXD` into Exxon, `SPLK` into Cisco, `WBA` taken private). Yahoo serves nothing for the symbol *at all*, not even the history it had while trading.
+- **Throttled.** The request was simply refused, and the data is there if you ask again.
+
+Nothing in the response distinguishes them. Sampling 30 of those 406 against Yahoo one at a time, **22 were genuinely gone and 8 (`WYNN`, `CAKE`, `TLRY`, `AMC`, `LUMN`, `UHS`, `XRAY`, `GEO`) were live companies whose download had failed** — and re-requesting 60 of them recovered 11. Pruning on that evidence would permanently delete roughly a hundred live companies from the investable universe because one download got rate-limited.
+
+So the list stays as-is and the app handles the problem dynamically instead: `MarketData.tradeable` recomputes which tickers have a current price on every snapshot, `download_prices` retries stragglers in shrinking batches, and `MarketDataService` logs how many never arrived rather than passing off a short universe as the whole market. A ticker that was only throttled reappears by itself on the next `--full` refresh.
+
+One consequence worth knowing when reading backtest output: because Yahoo will not serve history for a delisted symbol, the cache contains **only companies that survived to the download date**. Walk-forward results are therefore survivorship-biased and flatter than reality. `truncated()` does the right thing with the data it has — a company whose prices stop in 2024 is correctly tradeable at a 2019 backtest date — but companies that died before the download are missing entirely.
+
 ## 9. Workflow: backtest (`scripts/backtest.py`)
 
 A standalone script, `python3 scripts/backtest.py`. It builds `Services`, takes the `MarketData`, and walks forward in time calling `domain.optimizer.optimize()` on `market.truncated(date)`, so every solve only sees data available at that time (no lookahead) and nothing global is mutated.
+
+Read the output knowing it is **survivorship-biased**: the price cache can only contain companies still listed when it was downloaded (see "Dead tickers" in §8), so the backtest never picks a company that failed. Returns come out flatter than a real portfolio run from the same start date would have been.
 
 ```mermaid
 flowchart TD
@@ -413,23 +427,25 @@ The layering exists so that a new capability is a small, local change. The recip
 
 Examples of bolt-ons that fit this shape without touching existing modules: a `trades` service that diffs an optimization result against a portfolio's holdings into buy/sell share deltas; an alternative `PriceStore` (e.g. SQLite-backed) swapped in via `Services.build`; a rebalancing-schedule command; a second price provider under `market/`.
 
-## 13. Known gaps between here and the goal
+## 13. Performance, and what is known to be imperfect
 
-The goal (README): each of us runs this locally against our own portfolios, with the local API usable as a tool surface for AI agents. The ordered plan is in MIGRATION.md. Open items by how much they block the goal:
+An optimize request used to recompute the covariance of up to 500 tickers, parse a CSV at startup, and block `serve` for minutes on a stale cache. All of that is gone, because agents re-send the same request constantly and each round trip is someone's money:
 
-**Performance** (the structure above was built to make these local changes)
+| Was | Now |
+|---|---|
+| `mean_historical_return` + `exp_cov` per request | Once per data refresh, persisted in `var/market_stats.parquet`, sliced per request (§8) |
+| CSV price cache parsed at startup | Parquet, with old CSV caches converted on first load (§8) |
+| Stale refresh blocked `serve` for minutes | Daemon thread, serving cached prices until it lands; writes are atomic (§4) |
+| Identical requests re-solved | Memoized on the price snapshot, keyed on what reaches the solver (§7) |
 
-1. ~~`mean_historical_return` and `exp_cov` recomputed on every optimize request~~ Done: computed once per data refresh, persisted in `var/market_stats.parquet`, sliced per request by `MarketData.stats_for()` (§8).
-2. ~~CSV cache takes several seconds to parse at startup~~ Done: prices and stats are Parquet; old CSV caches are converted on first load.
-3. ~~The startup refresh blocks `wolvwealth serve`~~ Done: `start_background_refresh()` runs it on a daemon thread while the app serves the cached snapshot (§4). Cache writes go through a temporary file and an atomic rename, so a refresh landing mid-request -- or while an agent runs the CLI from another process -- can never expose a half-written file.
-4. ~~Identical optimize requests served from an LRU cache~~ Done: memoized per price snapshot, keyed on the fields that reach the solver (§7).
+On the real 1982-ticker history, a 200-ticker request with 500 holdings is ~190 ms cold and 0.40 ms repeated; over HTTP, 348 ms then 6 ms.
 
 ### The default request used to fail on real data
 
 Checked against the real 1982-ticker history (2006 to 2026), not the synthetic benchmark. The default universe size of 500 was never the problem; two independent faults were, and either one alone broke every request that did not name a universe:
 
 1. **The solver.** cvxpy defaulted to OSQP, a first-order method that hits its iteration limit and fails outright past roughly 400 tickers — 400 and 500 both failed on real prices, and 300 took 33 s on synthetic data. `SOLVER = "CLARABEL"` (interior-point, already a required cvxpy dependency) solves every size in a fraction of the time and agrees with OSQP to ~1e-5, far below `WEIGHT_THRESHOLD`, so output is unchanged wherever OSQP converged at all.
-2. **Delisted tickers.** 19 of the real top 500 (`PXD`, `SPLK`, `ANSS`, `WBD`, …) were acquired or renamed: still in the ticker list, no current price. Their exponentially weighted covariance with everything else is NaN — exactly the 18,639 NaN cells observed — which made cvxpy reject the whole problem, and one held in a portfolio raised an uncaught `KeyError` out of `market.value()`, a 500 from an API whose contract promises JSON errors. `MarketData.tradeable` now filters them out of `top(n)` and the aliases, and naming one explicitly in `universe` or `initial_holdings` is a 400 saying it looks delisted.
+2. **Tickers with no current price.** 19 of the real top 500 (`PXD`, `SPLK`, `ANSS`, `WBD`, …) are in the ticker list but have no price at the end of the history — some genuinely delisted, some only throttled during the download, and the data cannot tell you which (see "Dead tickers" in §8). Their exponentially weighted covariance with everything else is NaN — exactly the 18,639 NaN cells observed — which made cvxpy reject the whole problem, and one held in a portfolio raised an uncaught `KeyError` out of `market.value()`, a 500 from an API whose contract promises JSON errors. `MarketData.tradeable` now filters them out of `top(n)` and the aliases, and naming one explicitly in `universe` or `initial_holdings` is a 400. The fix is the same either way: a ticker with no current price cannot be valued, so it must not be allocated to.
 
 On real data the default request now solves in 0.27 s cold and 0.18 ms repeated; over HTTP, 348 ms then 6 ms.
 

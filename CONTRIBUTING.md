@@ -2,7 +2,7 @@
 
 This is a small project maintained by a few friends. The point of this file is to make sure each of us can clone the repo, get it running on our own machine in a few minutes, and make changes without stepping on each other.
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code in a while. It describes how the pieces fit together and lists the known gaps. In particular: **the old login/accounts/API-key system is gone** — the app now uses passwordless local workspaces, and the JSON API needs no auth header. If you are picking up migration work (the move to the fully local, agent-friendly setup), the ordered task list is in [MIGRATION.md](MIGRATION.md).
+Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code in a while. It describes how the pieces fit together and lists the known gaps. In particular: **the old login/accounts/API-key system is gone** — the app now uses passwordless local workspaces, and the JSON API needs no auth header.
 
 ## Prerequisites
 
@@ -70,12 +70,21 @@ There is no "prod" mode: `wolvwealth serve` binds to 127.0.0.1 and that is the o
 
 ### Market data is a Parquet cache in var/
 
-Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `var/historical_prices.parquet`, read through `storage/price_store.py` and held in memory as a `MarketData` snapshot by `services/market_data.py`. The cache is created on first access: converted from a CSV cache left by an older install if one is still on disk (`var/historical_prices.csv`, or the in-repo `historical_prices.csv` from when the file was committed), otherwise downloaded in full. Alongside it live `var/market_stats.parquet` + `.json`: the optimizer's expected-return and covariance statistics, precomputed once per data refresh and sliced per optimize request (see ARCHITECTURE.md §8); they are rebuilt automatically whenever they do not match the loaded prices. Refreshing is scripted and automatic:
+Prices are not fetched live. Share counts and the valuations on the workspace page use the
+last row of `var/historical_prices.parquet`, held in memory as a `MarketData` snapshot.
+**[ARCHITECTURE.md §8](ARCHITECTURE.md#8-workflow-market-data) describes the caches, how they
+are built, and how the precomputed statistics stay in step with the prices.** What matters
+when you are changing code:
 
-- **Automatic:** `wolvwealth serve` starts a background refresh if the newest cached row is more than `auto_refresh_max_age_days` (7) days old. It does not block startup: the app serves the cached snapshot and swaps in the new one when the download and covariance recompute finish. Failures are non-fatal (it keeps serving cached prices). `WOLVWEALTH_NO_AUTO_REFRESH=1` disables it (offline use, scripts that manage data themselves). `create_app()` itself never refreshes.
-- **On demand:** `wolvwealth refresh-data` (incremental append) or `wolvwealth refresh-data --full` (complete 2006-to-today re-download).
-
-Run `--full` occasionally, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so `market/yahoo.py` works in chunks with pauses and retries; the incremental path refuses to write the cache if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes, longer if Yahoo is throttling. To change the universe, edit `wolvwealth/data/ticker_universe.csv` (keep it sorted by market cap, largest first) and run `--full`.
+- `wolvwealth serve` refreshes in the background when the cache is more than
+  `auto_refresh_max_age_days` (7) days old, so startup never blocks on it, and failures are
+  non-fatal. `WOLVWEALTH_NO_AUTO_REFRESH=1` disables it. `create_app()` itself never refreshes.
+- `wolvwealth refresh-data` appends; `--full` re-downloads everything. Run `--full`
+  occasionally, because the append path never corrects earlier closes after splits and
+  dividends. Expect several minutes, longer when Yahoo throttles.
+- To change the universe, edit `wolvwealth/data/ticker_universe.csv` (sorted by market cap,
+  largest first) and run `--full`. Tickers that stop trading are handled automatically; see
+  "Dead tickers" in ARCHITECTURE.md §8 before pruning anything from that file.
 
 ### Importing the package has no side effects; building Services does
 

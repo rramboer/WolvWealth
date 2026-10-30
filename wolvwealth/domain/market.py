@@ -130,7 +130,10 @@ class MarketData:
             elif entry.upper() in self.latest_prices:
                 expanded.append(entry.upper())
             elif entry.upper() in self.tickers:
-                raise ValueError(f"No current price for {entry.upper()}; it looks delisted or renamed.")
+                raise ValueError(
+                    f"No current price for {entry.upper()}: delisted, renamed, "
+                    "or missed by the last price refresh."
+                )
             else:
                 raise ValueError(f"Invalid symbol in universe: {entry}.")
         return list(dict.fromkeys(expanded))

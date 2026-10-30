@@ -34,6 +34,19 @@ class Settings:
     #: names, at a quadratic cost in refresh time.
     stats_universe_size: int = 500
 
+    def __post_init__(self) -> None:
+        """Accept strings for the path fields; every reader expects a Path.
+
+        ``Settings(var_dir="/tmp/scratch")`` is the obvious thing to write and
+        used to be accepted silently, then fail much later with a bare
+        ``TypeError: unsupported operand type(s) for /`` from whichever
+        property first tried to join onto it.
+        """
+        for field in ("var_dir", "ticker_universe_path"):
+            value = getattr(self, field)
+            if not isinstance(value, pathlib.Path):
+                object.__setattr__(self, field, pathlib.Path(value))
+
     @property
     def database_path(self) -> pathlib.Path:
         """Path of the SQLite file holding workspaces, portfolios, and holdings."""
