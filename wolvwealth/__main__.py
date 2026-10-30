@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--no-browser", action="store_true", help="Do not open a browser tab")
     serve.add_argument("--dev", action="store_true", help="Flask debug mode: auto-reload on code changes")
 
-    refresh = sub.add_parser("refresh-data", help="Pull market prices up to today into var/historical_prices.csv")
+    refresh = sub.add_parser("refresh-data", help="Pull market prices up to today into var/historical_prices.parquet")
     refresh.add_argument(
         "--full",
         action="store_true",
@@ -64,7 +64,7 @@ def cmd_refresh_data(args, services: Services) -> int:
     market = services.market
     print(f"Universe: {len(market.data.universe)} tickers. Cached prices end {market.data.as_of}.")
     if args.full:
-        print("Full re-download, 2006 -> today. This takes a while and rewrites historical_prices.csv ...")
+        print("Full re-download, 2006 -> today. This takes a while and rewrites the price cache ...")
     if market.refresh(full=args.full):
         print(f"Done. Prices now end {market.data.as_of}.")
     else:

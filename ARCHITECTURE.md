@@ -15,7 +15,7 @@ The organizing concept is the **workspace**: one person using this machine (e.g.
 | Server-rendered website (landing, workspace picker, workspace page with portfolio CRUD and bulk import, optimizer results) | `wolvwealth/web/views/`, `wolvwealth/web/templates/` | Working end to end |
 | JSON API (optimize, list workspaces, bulk-import holdings) | `wolvwealth/web/api/` | Working, no auth required |
 | `wolvwealth` command (serve, refresh-data, reset-db, dump-db) and `install.sh` | `wolvwealth/__main__.py`, `install.sh` | Working |
-| Market data (ticker list + ~20 years of daily adjusted closes) | `wolvwealth/data/ticker_universe.csv` (in the package), `var/historical_prices.csv` (local cache) | Loaded on first access; refreshed by `wolvwealth serve` when stale or by `wolvwealth refresh-data` |
+| Market data (ticker list + ~20 years of daily adjusted closes + precomputed return/covariance statistics) | `wolvwealth/data/ticker_universe.csv` (in the package), `var/historical_prices.parquet` and `var/market_stats.parquet` + `.json` (local caches) | Loaded on first access; refreshed by `wolvwealth serve` when stale or by `wolvwealth refresh-data` |
 | Walk-forward backtest | `scripts/backtest.py` | Standalone, reuses the domain optimizer |
 
 ## 2. The layers and the dependency rule
@@ -38,13 +38,14 @@ flowchart TB
     subgraph Infra["storage/ and market/"]
         REPO["storage/repository.py<br/>PortfolioRepository (all SQL)"]
         DB["storage/database.py<br/>Database: connect, schema, reset"]
-        PS["storage/price_store.py<br/>PriceStore: CSV in/out"]
+        PS["storage/price_store.py<br/>PriceStore: Parquet in/out"]
         SEC["storage/secrets.py"]
         YF["market/yahoo.py<br/>download_prices (chunked, retried)"]
     end
     subgraph Dom["domain/ (innermost: no Flask, SQL, files, or network)"]
         O["optimizer.py<br/>parse_request, solve, optimize"]
         M["market.py<br/>MarketData snapshot, universe aliases"]
+        ST["stats.py<br/>MarketStats: mu + covariance, slice()"]
         HP["holdings_parse.py<br/>brokerage text -> ParsedHoldings"]
         MO["models.py<br/>Workspace, Portfolio, valid_name"]
         E["errors.py<br/>DomainError, ValidationError, NotFoundError"]
@@ -80,13 +81,14 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 │   ├── domain/
 │   │   ├── errors.py              DomainError(message, details) + ValidationError, NotFoundError
 │   │   ├── models.py              Workspace, Portfolio dataclasses; valid_name()
-│   │   ├── market.py              MarketData(universe, prices): price(), value(), top(n), truncated(), expand_universe()
+│   │   ├── market.py              MarketData(universe, prices, stats): price(), value(), top(n), truncated(), stats_for(), expand_universe()
+│   │   ├── stats.py               MarketStats(mu, cov): compute() once per refresh, slice() per request
 │   │   ├── optimizer.py           parse_request() -> OptimizationRequest; solve(); optimize()
 │   │   └── holdings_parse.py      parse_holdings(text, universe) -> ParsedHoldings (pasted lines, brokerage CSVs)
 │   ├── storage/
 │   │   ├── database.py            Database(path): open(), connect() (transaction), ensure_schema(), reset()
 │   │   ├── repository.py          PortfolioRepository(connection): every query on the three tables
-│   │   ├── price_store.py         PriceStore: load/save prices CSV and the ticker list; legacy migration
+│   │   ├── price_store.py         PriceStore: prices + stats caches (Parquet) and the ticker list; legacy CSV conversion
 │   │   ├── secrets.py             load_or_create_secret_key()
 │   │   └── sql/schema.sql, data.sql   Three tables + the `demo` seed
 │   ├── market/
@@ -109,7 +111,7 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 ├── install.sh                     One-command installer (also curl-able)
 ├── pyproject.toml                 Metadata, four runtime deps, `wolvwealth` entry point, package data, lint settings
 ├── package.json, tailwind.config.js   Dev-only: `npm run css` rebuilds the committed CSS
-├── var/                           Local state, gitignored: wolvwealth.sqlite3, secret_key, historical_prices.csv
+├── var/                           Local state, gitignored: wolvwealth.sqlite3, secret_key, historical_prices.parquet, market_stats.parquet/.json
 └── README.md, CONTRIBUTING.md, ARCHITECTURE.md, MIGRATION.md
 ```
 
@@ -284,20 +286,21 @@ Every API error is `{"error": {"message": "...", "status_code": 400|404, "payloa
 
 ## 8. Workflow: market data
 
-Market data is the ticker list shipped in the package plus a per-machine price cache in gitignored `var/historical_prices.csv`. In memory it is a `MarketData` snapshot (frozen: universe tuple + price DataFrame) owned by `MarketDataService`.
+Market data is the ticker list shipped in the package plus two per-machine caches in gitignored `var/`: the price history (`historical_prices.parquet`) and the optimizer statistics derived from it (`market_stats.parquet`, with a `market_stats.json` sidecar recording which prices they were computed from). In memory it is a `MarketData` snapshot (frozen: universe tuple + price DataFrame + `MarketStats`) owned by `MarketDataService`.
 
 ```mermaid
 flowchart LR
     subgraph Load["first access to services.market.data"]
         U["PriceStore.load_universe()"] --> X{"cache exists?"}
-        X -- no, legacy in-repo copy exists --> MIG["copy it into var/ byte for byte"]
+        X -- no, legacy CSV cache exists --> MIG["convert it to Parquet in var/"]
         X -- no --> DL["yahoo.download_prices(universe, 2006-01-01)<br/>-> PriceStore.save_prices"]
         X -- yes --> RD["PriceStore.load_prices()"]
-        MIG & DL & RD --> MDATA["MarketData.build(universe, prices)"]
+        MIG & DL & RD --> STATS["stats cache matches prices?<br/>yes: load; no: MarketStats.compute + save"]
+        STATS --> MDATA["MarketData.build(universe, prices, stats)"]
     end
     subgraph Refresh["refresh() — wolvwealth refresh-data, or serve when stale"]
-        INC["incremental: download from last row + 1 day,<br/>refuse if >15% of live tickers went dark,<br/>concat + save"]
-        FULL["--full: re-download everything, replace"]
+        INC["incremental: download from last row + 1 day,<br/>refuse if >15% of live tickers went dark,<br/>concat + save prices, recompute + save stats"]
+        FULL["--full: re-download everything, replace, recompute stats"]
     end
     MDATA --> INC & FULL --> MDATA
 ```
@@ -305,6 +308,7 @@ flowchart LR
 Things to know:
 
 - The incremental path never corrects past adjusted closes after splits or dividends; run `--full` occasionally.
+- `MarketStats` (mean historical return + exponentially weighted covariance over the full universe) is the expensive part — minutes for 500 tickers — and both statistics are separable per column/pair, so they are computed **once per data refresh**, persisted, and sliced per optimize request by `MarketData.stats_for()`. The `.json` sidecar (last price date + row count) is written after the matrix and checked against the loaded prices, so a stale or half-written stats cache is rebuilt instead of silently served. Backtests call `truncated()`, which drops the stats (they describe the full history; reading them would be lookahead) and falls back to on-the-fly computation.
 - Yahoo rate-limits bulk downloads and a rate-limited ticker comes back all-NaN. `market/yahoo.py` fetches in chunks of 100 with pauses and retries the all-NaN stragglers with backoff. The download function is injectable (`MarketDataService(downloader=...)`), which is how tests avoid the network.
 - A delisted ticker ends in NaN. `MarketData.has_price()` is false for it; the workspace page shows "no price data" instead of failing, and the optimizer refuses it in `initial_holdings`.
 - To change the universe, edit `wolvwealth/data/ticker_universe.csv` (descending market cap) and run `wolvwealth refresh-data --full`. The old live-market-cap sorting helpers were removed.
@@ -381,16 +385,16 @@ The layering exists so that a new capability is a small, local change. The recip
 3. **An adapter.** For the API, a route on the `api` blueprint that reads JSON, calls the service, and `jsonify`s the result; errors are already handled. For the browser, a view module registered in `web/views/__init__.py` plus a template extending `base.html`. For the terminal, a subcommand in `__main__.py` receiving `Services`. Adapters should be a dozen lines: parse, call, render.
 4. **Tests ship with it.** `conftest.py` gives you `services` (temp dir, synthetic market), `client`, `workspace_client`, `repo`, `market`. `tests/test_architecture.py` will tell you if you imported across layers.
 
-Examples of bolt-ons that fit this shape without touching existing modules: a `trades` service that diffs an optimization result against a portfolio's holdings into buy/sell share deltas; a Parquet `PriceStore` swapped in via `Services.build`; a rebalancing-schedule command; a second price provider under `market/`.
+Examples of bolt-ons that fit this shape without touching existing modules: a `trades` service that diffs an optimization result against a portfolio's holdings into buy/sell share deltas; an alternative `PriceStore` (e.g. SQLite-backed) swapped in via `Services.build`; a rebalancing-schedule command; a second price provider under `market/`.
 
 ## 13. Known gaps between here and the goal
 
 The goal (README): each of us runs this locally against our own portfolios, with the local API usable as a tool surface for AI agents. The ordered plan is in MIGRATION.md. Open items by how much they block the goal:
 
-**Performance** (next up; the structure above was built to make these local changes)
+**Performance** (the structure above was built to make these local changes)
 
-1. `mean_historical_return` and `exp_cov` are recomputed on every optimize request over up to 500 tickers. Since a subset's exponentially-weighted covariance is a submatrix of the full one, both can be computed once per data refresh in `MarketDataService` and sliced per request.
-2. The CSV cache takes several seconds to parse at startup; Parquet in `PriceStore` would be ~10× faster to load and ~5× smaller, with no other module changing.
+1. ~~`mean_historical_return` and `exp_cov` recomputed on every optimize request~~ Done: computed once per data refresh, persisted in `var/market_stats.parquet`, sliced per request by `MarketData.stats_for()` (§8).
+2. ~~CSV cache takes several seconds to parse at startup~~ Done: prices and stats are Parquet; old CSV caches are converted on first load.
 3. The startup refresh blocks `wolvwealth serve` for minutes when the cache is stale; it should run in a background thread while the app serves cached prices.
 4. Identical optimize requests (which agents will send) could be served from an LRU cache keyed on (universe, constraints, data date).
 

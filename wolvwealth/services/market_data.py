@@ -4,6 +4,7 @@ from datetime import timedelta
 import pandas as pd
 
 from wolvwealth.domain.market import MarketData
+from wolvwealth.domain.stats import MarketStats
 from wolvwealth.market import yahoo
 from wolvwealth.storage.price_store import PriceStore
 
@@ -42,7 +43,32 @@ class MarketDataService:
             else:
                 self.log("wolvwealth: no price history cache, downloading 2006 -> today (this takes a while)...")
                 self.store.save_prices(self.downloader(universe, self.history_start))
-        return MarketData.build(universe, self.store.load_prices())
+        prices = self.store.load_prices()
+        return MarketData.build(universe, prices, self._load_or_compute_stats(prices))
+
+    @staticmethod
+    def _stats_meta(prices) -> dict:
+        """Return what the statistics cache must match to be served against ``prices``."""
+        return {"as_of": str(prices.index[-1].date()), "price_rows": len(prices)}
+
+    def _load_or_compute_stats(self, prices) -> MarketStats:
+        """Return the cached statistics if they were computed from ``prices``; rebuild them otherwise."""
+        try:
+            cached = self.store.load_stats()
+        except Exception:  # pylint: disable=broad-except  # a corrupt cache is never fatal; rebuild below
+            cached = None
+        if cached is not None:
+            meta, mu, cov = cached
+            if meta == self._stats_meta(prices) and list(cov.columns) == list(prices.columns):
+                return MarketStats(mu, cov)
+        return self._compute_and_save_stats(prices)
+
+    def _compute_and_save_stats(self, prices) -> MarketStats:
+        """Precompute the optimizer's statistics over the full universe and persist them."""
+        self.log("wolvwealth: precomputing return/covariance statistics (happens once per data refresh)...")
+        stats = MarketStats.compute(prices)
+        self.store.save_stats(stats.mu, stats.cov, self._stats_meta(prices))
+        return stats
 
     def age_days(self) -> int:
         """Days since the newest cached price row."""
@@ -57,7 +83,7 @@ class MarketDataService:
         if full:
             prices = self.downloader(list(self.data.universe), self.history_start)
             self.store.save_prices(prices)
-            self._data = MarketData.build(self.data.universe, prices)
+            self._data = MarketData.build(self.data.universe, prices, self._compute_and_save_stats(prices))
             return True
         current = self.data
         start = (current.prices.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -76,7 +102,7 @@ class MarketDataService:
             )
         prices = pd.concat([current.prices, fresh])
         self.store.save_prices(prices)
-        self._data = MarketData.build(current.universe, prices)
+        self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices))
         return True
 
     def auto_refresh_if_stale(self, max_age_days: int) -> bool:

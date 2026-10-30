@@ -22,8 +22,6 @@ class Settings:
     var_dir: pathlib.Path = REPO_ROOT / "var"
     #: Ticker symbols, one per line, descending market cap. Ships inside the package.
     ticker_universe_path: pathlib.Path = PACKAGE_DIR / "data" / "ticker_universe.csv"
-    #: Where the price history was committed in the repo before it moved to var/.
-    legacy_prices_path: pathlib.Path = REPO_ROOT / "historical_prices.csv"
     #: On startup, refresh prices if the newest cached row is older than this.
     auto_refresh_max_age_days: int = 7
     #: WOLVWEALTH_NO_AUTO_REFRESH disables the startup refresh (offline use, tests).
@@ -43,8 +41,17 @@ class Settings:
 
     @property
     def prices_path(self) -> pathlib.Path:
-        """Cached daily adjusted closes for the whole universe."""
-        return self.var_dir / "historical_prices.csv"
+        """Cached daily adjusted closes for the whole universe (Parquet)."""
+        return self.var_dir / "historical_prices.parquet"
+
+    @property
+    def legacy_csv_paths(self) -> tuple:
+        """Price caches from older CSV installs, converted to Parquet on first load.
+
+        Oldest history last: the var/ cache (before the Parquet switch), then
+        the in-repo file (before the cache moved out of git).
+        """
+        return (self.var_dir / "historical_prices.csv", REPO_ROOT / "historical_prices.csv")
 
     @classmethod
     def from_env(cls, environ=None) -> "Settings":

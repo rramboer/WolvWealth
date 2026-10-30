@@ -9,21 +9,24 @@ import dataclasses
 
 import pandas as pd
 
+from wolvwealth.domain.stats import MarketStats
+
 #: "top20" expands to the 20 largest tickers by market cap, etc.
 UNIVERSE_ALIASES = {f"top{n}": n for n in (20, 50, 100, 200, 300, 400, 500)}
 
 
 @dataclasses.dataclass(frozen=True)
 class MarketData:
-    """Ticker universe plus daily adjusted closes."""
+    """Ticker universe plus daily adjusted closes, with optional precomputed statistics."""
 
     universe: tuple
     prices: pd.DataFrame
+    stats: MarketStats = None
 
     @classmethod
-    def build(cls, universe, prices: pd.DataFrame) -> "MarketData":
+    def build(cls, universe, prices: pd.DataFrame, stats: MarketStats = None) -> "MarketData":
         """Normalize the universe to a tuple of upper-case tickers."""
-        return cls(tuple(str(t).upper() for t in universe), prices)
+        return cls(tuple(str(t).upper() for t in universe), prices, stats)
 
     def __contains__(self, ticker) -> bool:
         """Return true if the ticker is in the universe."""
@@ -58,8 +61,24 @@ class MarketData:
         return sum(shares * self.price(ticker) for ticker, shares in holdings.items())
 
     def truncated(self, end_date) -> "MarketData":
-        """Return a snapshot that knows nothing after ``end_date`` (for backtests)."""
+        """Return a snapshot that knows nothing after ``end_date`` (for backtests).
+
+        Precomputed stats are dropped: they describe the full history, and a
+        truncated snapshot reading them would be lookahead.
+        """
         return MarketData(self.universe, self.prices[:end_date])
+
+    def stats_for(self, tickers) -> tuple:
+        """Return the expected returns and covariance for ``tickers`` as ``(mu, cov)``.
+
+        Sliced from the precomputed full-universe stats when they cover the
+        request; computed from prices otherwise (truncated backtest
+        snapshots, tests).
+        """
+        tickers = list(tickers)
+        if self.stats is not None and self.stats.covers(tickers):
+            return self.stats.slice(tickers)
+        return MarketStats.compute(self.prices[tickers]).slice(tickers)
 
     def expand_universe(self, entries) -> list:
         """Expand aliases and tickers into a deduplicated ticker list.

@@ -120,7 +120,7 @@ Response shape (abbreviated, numbers illustrative):
 Two things to understand before trusting the numbers:
 
 - **Your holdings are valued and then fully reallocated.** The optimizer does not try to keep what you own. The browser flow adds your held tickers to the universe so keeping them is possible; a held ticker missing from the result means "sell it all".
-- **Prices come from the local cache, not live quotes.** Share counts and dollar values use the last row of `historical_prices.csv`. The startup auto-refresh keeps it within about a week of today; the pages show the price date.
+- **Prices come from the local cache, not live quotes.** Share counts and dollar values use the last row of the local price cache (`var/historical_prices.parquet`). The startup auto-refresh keeps it within about a week of today; the pages show the price date.
 
 The full request schema is in [ARCHITECTURE.md §7](ARCHITECTURE.md#7-workflow-optimize-a-portfolio-the-core-feature).
 

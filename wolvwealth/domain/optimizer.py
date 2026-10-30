@@ -8,7 +8,6 @@ import dataclasses
 
 import numpy as np
 import pandas as pd
-from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
 
 from wolvwealth.domain.errors import ValidationError
@@ -149,9 +148,7 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     if total_investment == 0:
         raise ValidationError("Invalid input. Total investment value cannot be 0.")
 
-    prices = market.prices[request.universe]
-    mu = expected_returns.mean_historical_return(prices)
-    cov_matrix = risk_models.exp_cov(prices)
+    mu, cov_matrix = market.stats_for(request.universe)
     try:
         frontier = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(request.min_universal_weight, 1))
         if request.max_weight != 1:

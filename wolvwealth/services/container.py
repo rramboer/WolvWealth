@@ -25,7 +25,7 @@ class Services:
     def build(cls, settings: Settings = None, log=print) -> "Services":
         """Wire the default implementations from settings (env-derived by default)."""
         settings = settings or Settings.from_env()
-        store = PriceStore(settings.prices_path, settings.ticker_universe_path, settings.legacy_prices_path)
+        store = PriceStore(settings.prices_path, settings.ticker_universe_path, settings.legacy_csv_paths)
         return cls(
             settings=settings,
             database=Database(settings.database_path),

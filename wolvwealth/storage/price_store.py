@@ -1,23 +1,32 @@
-"""PriceStore: the on-disk price history and ticker universe.
+"""PriceStore: the on-disk price history, precomputed statistics, and ticker universe.
 
-Owns the file format. If the cache ever moves from CSV to Parquet, this is
-the only module that changes.
+Owns the file formats. Prices and statistics are Parquet (the old CSV cache
+took seconds to parse on every process start); a cache left behind by a CSV
+install is converted in place on first load. The statistics cache is a pair
+of files: the matrix itself, and a small JSON sidecar recording which prices
+it was computed from. The sidecar is written last, so a crash mid-save leaves
+no sidecar and the cache reads as absent rather than stale.
 """
 import csv
+import json
 import pathlib
-import shutil
 
 import pandas as pd
 
+#: Column holding mu in the stats file; lowercase so it cannot collide with a ticker.
+EXPECTED_RETURN_COLUMN = "expected_return"
+
 
 class PriceStore:
-    """Read and write the price cache and the ticker list."""
+    """Read and write the price cache, the statistics cache, and the ticker list."""
 
-    def __init__(self, prices_path: pathlib.Path, universe_path: pathlib.Path, legacy_prices_path=None) -> None:
+    def __init__(self, prices_path: pathlib.Path, universe_path: pathlib.Path, legacy_csv_paths=()) -> None:
         """Remember paths; nothing is read until asked."""
         self.prices_path = pathlib.Path(prices_path)
         self.universe_path = pathlib.Path(universe_path)
-        self.legacy_prices_path = pathlib.Path(legacy_prices_path) if legacy_prices_path else None
+        self.legacy_csv_paths = tuple(pathlib.Path(p) for p in legacy_csv_paths)
+        self.stats_path = self.prices_path.with_name("market_stats.parquet")
+        self.stats_meta_path = self.prices_path.with_name("market_stats.json")
 
     def load_universe(self) -> list:
         """Tickers, one per line, in file order (descending market cap)."""
@@ -34,18 +43,36 @@ class PriceStore:
         return self.prices_path.exists()
 
     def migrate_legacy_prices(self) -> bool:
-        """Copy a pre-existing in-repo price file into the cache location, byte for byte."""
-        if self.has_prices() or not self.legacy_prices_path or not self.legacy_prices_path.exists():
+        """Convert the first price CSV left behind by an older install (numbers preserved, no re-download)."""
+        if self.has_prices():
             return False
-        self.prices_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(self.legacy_prices_path, self.prices_path)
-        return True
+        for legacy in self.legacy_csv_paths:
+            if legacy.exists():
+                self.save_prices(pd.read_csv(legacy, parse_dates=True, index_col="Date"))
+                return True
+        return False
 
     def load_prices(self) -> pd.DataFrame:
         """Read the cache into a date-indexed DataFrame."""
-        return pd.read_csv(self.prices_path, parse_dates=True, index_col="Date")
+        return pd.read_parquet(self.prices_path)
 
     def save_prices(self, prices: pd.DataFrame) -> None:
         """Overwrite the cache."""
         self.prices_path.parent.mkdir(parents=True, exist_ok=True)
-        prices.to_csv(self.prices_path, index=True)
+        prices.to_parquet(self.prices_path, index=True)
+
+    def load_stats(self):
+        """Return ``(meta, mu, cov)`` from the statistics cache, or None if it is absent."""
+        if not (self.stats_path.exists() and self.stats_meta_path.exists()):
+            return None
+        meta = json.loads(self.stats_meta_path.read_text(encoding="utf-8"))
+        frame = pd.read_parquet(self.stats_path)
+        return meta, frame[EXPECTED_RETURN_COLUMN], frame.drop(columns=[EXPECTED_RETURN_COLUMN])
+
+    def save_stats(self, mu: pd.Series, cov: pd.DataFrame, meta: dict) -> None:
+        """Overwrite the statistics cache; ``meta`` names the prices it was computed from."""
+        self.prices_path.parent.mkdir(parents=True, exist_ok=True)
+        frame = cov.copy()
+        frame[EXPECTED_RETURN_COLUMN] = mu
+        frame.to_parquet(self.stats_path, index=True)
+        self.stats_meta_path.write_text(json.dumps(meta), encoding="utf-8")

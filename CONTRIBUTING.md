@@ -68,14 +68,14 @@ There is no "prod" mode: `wolvwealth serve` binds to 127.0.0.1 and that is the o
 
 ## Things that will bite you
 
-### Market data is a 40 MB CSV in var/
+### Market data is a Parquet cache in var/
 
-Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `var/historical_prices.csv`, read through `storage/price_store.py` and held in memory as a `MarketData` snapshot by `services/market_data.py`. The cache is created on first access: migrated from a pre-existing in-repo `historical_prices.csv` if one is still on disk (the file used to be committed), otherwise downloaded in full. Refreshing is scripted and automatic:
+Prices are not fetched live. Share counts in optimizer output and the valuations on the workspace page use the last row of `var/historical_prices.parquet`, read through `storage/price_store.py` and held in memory as a `MarketData` snapshot by `services/market_data.py`. The cache is created on first access: converted from a CSV cache left by an older install if one is still on disk (`var/historical_prices.csv`, or the in-repo `historical_prices.csv` from when the file was committed), otherwise downloaded in full. Alongside it live `var/market_stats.parquet` + `.json`: the optimizer's expected-return and covariance statistics, precomputed once per data refresh and sliced per optimize request (see ARCHITECTURE.md §8); they are rebuilt automatically whenever they do not match the loaded prices. Refreshing is scripted and automatic:
 
 - **Automatic:** `wolvwealth serve` refreshes before binding if the newest cached row is more than `auto_refresh_max_age_days` (7) days old. Failures are non-fatal (it keeps serving cached prices). `WOLVWEALTH_NO_AUTO_REFRESH=1` disables it (offline use, scripts that manage data themselves). `create_app()` itself never refreshes.
 - **On demand:** `wolvwealth refresh-data` (incremental append) or `wolvwealth refresh-data --full` (complete 2006-to-today re-download).
 
-Run `--full` occasionally, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so `market/yahoo.py` works in chunks with pauses and retries; the incremental path refuses to write the CSV if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes, longer if Yahoo is throttling. To change the universe, edit `wolvwealth/data/ticker_universe.csv` (keep it sorted by market cap, largest first) and run `--full`.
+Run `--full` occasionally, because the append path never corrects earlier adjusted closes after splits and dividends. Yahoo rate-limits bulk downloads, so `market/yahoo.py` works in chunks with pauses and retries; the incremental path refuses to write the cache if a suspicious fraction of live tickers comes back empty. Expect a full-universe refresh to take several minutes, longer if Yahoo is throttling. To change the universe, edit `wolvwealth/data/ticker_universe.csv` (keep it sorted by market cap, largest first) and run `--full`.
 
 ### Importing the package has no side effects; building Services does
 
@@ -83,7 +83,7 @@ Run `--full` occasionally, because the append path never corrects earlier adjust
 
 ### Holdings tickers must be in the universe
 
-A holding can only be added if its ticker has a column in `var/historical_prices.csv` (equivalently, a line in `wolvwealth/data/ticker_universe.csv`). If your real portfolio has something exotic, add the ticker to the universe and refresh prices first.
+A holding can only be added if its ticker has a column in `var/historical_prices.parquet` (equivalently, a line in `wolvwealth/data/ticker_universe.csv`). If your real portfolio has something exotic, add the ticker to the universe and refresh prices first.
 
 ## Making changes
 
