@@ -16,7 +16,12 @@ from wolvwealth.domain import trades
 from wolvwealth.domain.errors import ValidationError
 from wolvwealth.domain.market import MarketData
 
-#: Risk-free rate used for the Sharpe ratio, matching PyPortfolioOpt's default.
+#: Annual risk-free rate, used both to solve for the max-Sharpe portfolio and
+#: to report its Sharpe ratio. It must be passed to the solver explicitly:
+#: PyPortfolioOpt's own default was 0.02 through 1.5.x and became 0.0 in
+#: 1.6.0, and both versions satisfy pyproject's pin, so relying on it meant
+#: the portfolio was optimized against whichever rate happened to be
+#: installed while the metrics always reported 2%.
 RISK_FREE_RATE = 0.02
 #: Default universe when the request names none: the 500 largest tickers.
 DEFAULT_UNIVERSE_SIZE = 500
@@ -278,7 +283,7 @@ def _run_solver(mu, cov_matrix, max_weight: float, min_universal_weight: float, 
             frontier.add_constraint(lambda weights: weights <= max_weight)
         if turnover_limit is not None:
             frontier.add_constraint(_turnover_constraint(mu.index, *turnover_limit))
-        frontier.max_sharpe()
+        frontier.max_sharpe(risk_free_rate=RISK_FREE_RATE)
         return frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
     except Exception as err:  # pylint: disable=broad-except
         # Surface the real solver error; "Infeasible" alone is undiagnosable.

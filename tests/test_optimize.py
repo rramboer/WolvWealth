@@ -126,6 +126,37 @@ def test_metrics_describe_the_returned_portfolio(market):
     assert result["metrics"]["sharpe_ratio"] == pytest.approx((expected_return - 0.02) / volatility, abs=0.05)
 
 
+def test_solver_uses_the_same_risk_free_rate_the_metrics_report(market, monkeypatch):
+    """Regression: max_sharpe() got no rate, so the solve followed PyPortfolioOpt's version-dependent default."""
+    seen = []
+    original = optimizer.EfficientFrontier.max_sharpe
+
+    def recording(self, risk_free_rate="unset"):
+        seen.append(risk_free_rate)
+        return original(self, risk_free_rate=risk_free_rate)
+
+    monkeypatch.setattr(optimizer.EfficientFrontier, "max_sharpe", recording)
+    optimizer.optimize({"initial_cash": 10000}, market)
+    assert seen == [optimizer.RISK_FREE_RATE]
+
+
+def test_returned_portfolio_maximizes_the_reported_sharpe(market):
+    """The portfolio solved at 2% must score at least as well on the 2% Sharpe as the one solved at 0%."""
+    from pypfopt.efficient_frontier import EfficientFrontier
+
+    mu, cov = market.stats_for(market.universe)
+
+    def sharpe_at_reported_rate(weights):
+        vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
+        return (float(vector @ mu) - optimizer.RISK_FREE_RATE) / float(np.sqrt(vector @ cov @ vector))
+
+    frontier = EfficientFrontier(mu, cov, weight_bounds=(0, 1), solver=optimizer.SOLVER)
+    frontier.max_sharpe(risk_free_rate=0.0)
+    rival = sharpe_at_reported_rate(frontier.clean_weights())
+    ours = optimizer.optimize({"initial_cash": 10000}, market)["optimized_portfolio"]
+    assert sharpe_at_reported_rate({t: p["percent_weight"] / 100 for t, p in ours.items()}) >= rival - 1e-6
+
+
 def test_exclude_metrics(market):
     assert "metrics" not in optimizer.optimize({"initial_cash": 10000, "exclude_metrics": True}, market)
 

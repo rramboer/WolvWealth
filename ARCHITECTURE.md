@@ -219,7 +219,7 @@ sequenceDiagram
     D->>D: parse_request: validate every field (ValidationError)
     D->>D: total = cash + market.value(holdings); 0 -> ValidationError
     D->>D: market.solutions: weights for<br/>(universe, max_weight, min_universal_weight,<br/>max_turnover + held weights if set)?
-    D->>PF: on a miss only: EfficientFrontier.max_sharpe<br/>over the sliced mu/cov (+ max_weight, max_turnover constraints)
+    D->>PF: on a miss only: EfficientFrontier.max_sharpe(risk_free_rate=0.02)<br/>over the sliced mu/cov (+ max_weight, max_turnover constraints)
     PF-->>D: weights -> clean, memoize
     D->>D: truncate to max_positions, renormalize, scale by total
     D-->>S: result dict (metrics describe the truncated portfolio)
@@ -227,6 +227,8 @@ sequenceDiagram
     S-->>V: render results.html
     Note over A,V: ValidationError -> 400 JSON / NotFoundError -> 404 JSON (API)<br/>DomainError -> flashed message on /workspace/ (browser)
 ```
+
+The risk-free rate is passed to the solver explicitly rather than left to PyPortfolioOpt's default, which changed from 0.02 to 0.0 between 1.5.x and 1.6.0 (both allowed by the pin). The rate sets where the capital-market line meets the frontier: a higher rate tangents further up it, toward higher-return, higher-volatility, more concentrated portfolios. Solving at one rate and reporting the Sharpe ratio at another would describe the result with a ratio it does not maximize.
 
 The `max_positions` step is a post-hoc truncation, not a cardinality constraint in the solver. The reported Sharpe/return/volatility metrics are recomputed from the truncated, renormalized weights, so they describe the portfolio that is actually returned.
 

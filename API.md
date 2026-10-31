@@ -161,7 +161,7 @@ your broker requires whole shares, accepting the small drift that introduces.
 | `portfolio_value` | Total being allocated: cash + holdings valued at `as_of`, USD |
 | `expected_annual_return` | Annualized expected return as a fraction (`0.124` is 12.4%) |
 | `annual_volatility` | Annualized standard deviation, same units |
-| `sharpe_ratio` | `(expected_annual_return − 0.02) / annual_volatility`, using a 2% risk-free rate. `null` when volatility is zero (degenerate history) rather than dividing by zero |
+| `sharpe_ratio` | `(expected_annual_return − 0.02) / annual_volatility`, using a 2% risk-free rate, the same rate the solver maximized against. `null` when volatility is zero (degenerate history) rather than dividing by zero |
 | `num_assets` | Positions in the returned portfolio |
 | `turnover` | Fraction of `portfolio_value` the `trades` sell (`0.3` means 30% of what you hold changes hands; buys funded by cash do not count). `0` when there are no holdings |
 
