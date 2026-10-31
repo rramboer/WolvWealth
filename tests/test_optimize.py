@@ -123,7 +123,9 @@ def test_metrics_describe_the_returned_portfolio(market):
     volatility = float(np.sqrt(weights @ cov @ weights))
     assert result["metrics"]["expected_annual_return"] == pytest.approx(expected_return, abs=0.01)
     assert result["metrics"]["annual_volatility"] == pytest.approx(volatility, abs=0.01)
-    assert result["metrics"]["sharpe_ratio"] == pytest.approx((expected_return - 0.02) / volatility, abs=0.05)
+    rate = optimizer.DEFAULT_RISK_FREE_RATE
+    assert result["metrics"]["sharpe_ratio"] == pytest.approx((expected_return - rate) / volatility, abs=0.05)
+    assert result["metrics"]["risk_free_rate"] == rate
 
 
 def test_solver_uses_the_same_risk_free_rate_the_metrics_report(market, monkeypatch):
@@ -137,7 +139,11 @@ def test_solver_uses_the_same_risk_free_rate_the_metrics_report(market, monkeypa
 
     monkeypatch.setattr(optimizer.EfficientFrontier, "max_sharpe", recording)
     optimizer.optimize({"initial_cash": 10000}, market)
-    assert seen == [optimizer.RISK_FREE_RATE]
+    assert seen == [optimizer.DEFAULT_RISK_FREE_RATE]
+    optimizer.optimize({"initial_cash": 10000, "risk_free_rate": 0.01}, market)
+    assert seen[-1] == 0.01
+    optimizer.optimize({"initial_cash": 10000, "universe": ["AAA", "BBB"]}, market, default_risk_free_rate=0.03)
+    assert seen[-1] == 0.03
 
 
 def test_returned_portfolio_maximizes_the_reported_sharpe(market):
@@ -148,13 +154,50 @@ def test_returned_portfolio_maximizes_the_reported_sharpe(market):
 
     def sharpe_at_reported_rate(weights):
         vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
-        return (float(vector @ mu) - optimizer.RISK_FREE_RATE) / float(np.sqrt(vector @ cov @ vector))
+        return (float(vector @ mu) - optimizer.DEFAULT_RISK_FREE_RATE) / float(np.sqrt(vector @ cov @ vector))
 
     frontier = EfficientFrontier(mu, cov, weight_bounds=(0, 1), solver=optimizer.SOLVER)
     frontier.max_sharpe(risk_free_rate=0.0)
     rival = sharpe_at_reported_rate(frontier.clean_weights())
     ours = optimizer.optimize({"initial_cash": 10000}, market)["optimized_portfolio"]
     assert sharpe_at_reported_rate({t: p["percent_weight"] / 100 for t, p in ours.items()}) >= rival - 1e-6
+
+
+def test_request_rate_overrides_the_install_default(market):
+    """The request's own rate wins over whatever default the caller passes, and both are echoed back."""
+    body = {"initial_cash": 10000, "risk_free_rate": 0.0}
+    result = optimizer.optimize(body, market, default_risk_free_rate=0.05)
+    assert result["metrics"]["risk_free_rate"] == 0.0
+    metrics = result["metrics"]
+    # At a zero rate the ratio is return over volatility; both are reported to 3 decimals, hence the slack.
+    assert metrics["sharpe_ratio"] == pytest.approx(
+        metrics["expected_annual_return"] / metrics["annual_volatility"], abs=0.05
+    )
+    assert (
+        optimizer.optimize({"initial_cash": 10000}, market, default_risk_free_rate=0.05)["metrics"]["risk_free_rate"]
+        == 0.05
+    )
+
+
+def test_a_higher_rate_tilts_toward_return(market):
+    """A higher risk-free rate moves the tangency point up the frontier: more expected return, more volatility."""
+    low = optimizer.optimize({"initial_cash": 10000, "risk_free_rate": 0.0}, market)["metrics"]
+    high = optimizer.optimize({"initial_cash": 10000, "risk_free_rate": 0.08}, market)["metrics"]
+    assert high["expected_annual_return"] >= low["expected_annual_return"]
+    assert high["annual_volatility"] >= low["annual_volatility"]
+
+
+def test_rate_above_every_expected_return_is_a_clear_error(market):
+    message = error_of(market, {"initial_cash": 10000, "risk_free_rate": 0.9})
+    assert "risk_free_rate" in message and "90.00%" in message and "cash" in message
+
+
+@pytest.mark.parametrize(
+    "value, fragment",
+    [("0.04", "must be a number"), (True, "must be a number"), (4, "0.04 means 4%"), (-1, "0.04 means 4%")],
+)
+def test_rejects_bad_risk_free_rate(market, value, fragment):
+    assert fragment in error_of(market, {"initial_cash": 1000, "risk_free_rate": value})
 
 
 def test_exclude_metrics(market):

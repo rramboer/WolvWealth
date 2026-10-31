@@ -1,5 +1,6 @@
 """Use case: optimize a portfolio, given either explicit inputs or a stored portfolio reference."""
 
+from wolvwealth.config import Settings
 from wolvwealth.domain import optimizer
 from wolvwealth.domain.errors import NotFoundError, ValidationError
 from wolvwealth.domain.market import MarketData
@@ -34,15 +35,26 @@ def resolve_portfolio_reference(payload, repo: PortfolioRepository, default_work
     return payload
 
 
-def optimize(payload, market: MarketData, repo: PortfolioRepository = None, default_workspace: str = None) -> dict:
-    """Resolve a stored-portfolio reference if present, then validate and solve."""
+def optimize(
+    payload,
+    market: MarketData,
+    repo: PortfolioRepository = None,
+    default_workspace: str = None,
+    settings: Settings = None,
+) -> dict:
+    """Resolve a stored-portfolio reference if present, then validate and solve.
+
+    ``settings`` supplies the install's risk-free rate for requests that do
+    not name one; without it the domain default applies.
+    """
     if repo is not None:
         payload = resolve_portfolio_reference(payload, repo, default_workspace)
-    return optimizer.optimize(payload, market)
+    rate = settings.risk_free_rate if settings is not None else optimizer.DEFAULT_RISK_FREE_RATE
+    return optimizer.optimize(payload, market, default_risk_free_rate=rate)
 
 
 def payload_for_portfolio(
-    portfolio, universe_alias: str, max_positions=None, max_weight=None, max_turnover=None
+    portfolio, universe_alias: str, max_positions=None, max_weight=None, max_turnover=None, risk_free_rate=None
 ) -> dict:
     """Build the request the browser form implies for a stored portfolio.
 
@@ -55,9 +67,12 @@ def payload_for_portfolio(
         constraints["max_weight"] = max_weight
     if max_turnover is not None:
         constraints["max_turnover"] = max_turnover
-    return {
+    payload = {
         "initial_cash": portfolio.cash,
         "initial_holdings": portfolio.holdings,
         "universe": [universe_alias] + list(portfolio.holdings),
         "constraints": constraints,
     }
+    if risk_free_rate is not None:
+        payload["risk_free_rate"] = risk_free_rate
+    return payload

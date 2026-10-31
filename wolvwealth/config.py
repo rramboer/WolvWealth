@@ -34,6 +34,13 @@ class Settings:
     #: and the default universe. Raising it helps portfolios holding smaller
     #: names, at a quadratic cost in refresh time.
     stats_universe_size: int = 500
+    #: Annual risk-free rate the optimizer maximizes the Sharpe ratio against
+    #: and reports it with, as a fraction (0.04 is 4%), roughly the 3-month
+    #: T-bill yield. WOLVWEALTH_RISK_FREE_RATE or `serve --risk-free-rate`
+    #: set it per install; a request's own `risk_free_rate` field wins over
+    #: both. Not a hard-coded constant because the rate moves with the market
+    #: and the right value is a decision for whoever is trading on the result.
+    risk_free_rate: float = 0.04
 
     def __post_init__(self) -> None:
         """Accept strings for the path fields; every reader expects a Path.
@@ -74,11 +81,24 @@ class Settings:
 
     @classmethod
     def from_env(cls, environ=None) -> "Settings":
-        """Build settings from environment variables (WOLVWEALTH_VAR, WOLVWEALTH_NO_AUTO_REFRESH)."""
+        """Build settings from the environment.
+
+        Reads WOLVWEALTH_VAR, WOLVWEALTH_NO_AUTO_REFRESH and
+        WOLVWEALTH_RISK_FREE_RATE. A malformed rate raises ValueError naming
+        the variable rather than being silently ignored.
+        """
         environ = os.environ if environ is None else environ
         overrides = {}
         if environ.get("WOLVWEALTH_VAR"):
             overrides["var_dir"] = pathlib.Path(environ["WOLVWEALTH_VAR"])
         if environ.get("WOLVWEALTH_NO_AUTO_REFRESH"):
             overrides["auto_refresh"] = False
+        if environ.get("WOLVWEALTH_RISK_FREE_RATE"):
+            try:
+                overrides["risk_free_rate"] = float(environ["WOLVWEALTH_RISK_FREE_RATE"])
+            except ValueError as err:
+                raise ValueError(
+                    f"WOLVWEALTH_RISK_FREE_RATE must be a decimal fraction such as 0.04, "
+                    f"got {environ['WOLVWEALTH_RISK_FREE_RATE']!r}"
+                ) from err
         return cls(**overrides)

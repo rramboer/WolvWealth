@@ -66,6 +66,7 @@ def show_workspace():
         workspace=workspace,
         portfolios=[_priced(p, market) for p in context.repo().list_portfolios(workspace)],
         prices_as_of=str(market.as_of),
+        risk_free_rate=context.services().settings.risk_free_rate,
     )
 
 

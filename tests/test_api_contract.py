@@ -46,6 +46,7 @@ def test_every_api_endpoint_is_documented(app):
         "max_positions",
         "min_universal_weight",
         "max_turnover",
+        "risk_free_rate",
         "exclude_metrics",
         "exclude_trades",
     ],
@@ -74,6 +75,7 @@ def test_documented_response_keys_are_the_ones_sent(client):
         "sharpe_ratio",
         "num_assets",
         "turnover",
+        "risk_free_rate",
     ):
         assert key in body["metrics"] and key in DOCUMENTED
 

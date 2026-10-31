@@ -119,6 +119,24 @@ def test_browser_max_turnover_keeps_the_holding(workspace_client, repo):
     assert b"Max turnover must be a number" in workspace_client.get("/workspace/").data
 
 
+def test_browser_risk_free_rate_field(workspace_client, repo, services):
+    """The form shows the install default, sends an override through, and the results page says which rate was used."""
+    import dataclasses
+
+    services.settings = dataclasses.replace(services.settings, risk_free_rate=0.03)
+    assert b"default 0.03" in workspace_client.get("/workspace/").data
+    pid = repo.get_portfolio("tester", name="main").id
+    response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "universe": "top20"})
+    assert b"vs 3.00% risk-free" in response.data
+    response = workspace_client.post(
+        "/optimizer/run/", data={"portfolio_id": pid, "universe": "top20", "risk_free_rate": "0.01"}
+    )
+    assert b"vs 1.00% risk-free" in response.data
+    response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "risk_free_rate": "x"})
+    assert response.status_code == 302
+    assert b"Risk-free rate must be a decimal fraction" in workspace_client.get("/workspace/").data
+
+
 def test_browser_optimize_error_flashes(workspace_client, repo):
     pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "max_positions": "x"})

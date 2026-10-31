@@ -27,6 +27,21 @@ def test_optimize_explicit_body(client):
     assert body["metrics"]["portfolio_value"] == 10000
 
 
+def test_optimize_uses_the_install_rate_unless_the_request_names_one(client, services):
+    import dataclasses
+
+    services.settings = dataclasses.replace(services.settings, risk_free_rate=0.03)
+    body = client.post("/api/optimize/", json={"initial_cash": 10000, "universe": ["top20"]}).get_json()
+    assert body["metrics"]["risk_free_rate"] == 0.03
+    body = client.post(
+        "/api/optimize/", json={"initial_cash": 10000, "universe": ["top20"], "risk_free_rate": 0.01}
+    ).get_json()
+    assert body["metrics"]["risk_free_rate"] == 0.01
+    response = client.post("/api/optimize/", json={"initial_cash": 10000, "risk_free_rate": 4})
+    assert response.status_code == 400
+    assert "0.04 means 4%" in response.get_json()["error"]["message"]
+
+
 def test_optimize_rejects_invalid_json(client):
     response = client.post("/api/optimize/", data="{not json", content_type="application/json")
     assert response.status_code == 400

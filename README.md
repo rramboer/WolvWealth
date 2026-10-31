@@ -52,6 +52,8 @@ Or from a clone: `./install.sh` then `wolvwealth serve`. The installer checks fo
 
 Other commands: `wolvwealth refresh-data [--full]` pulls prices up to today, `wolvwealth reset-db` erases every workspace, `wolvwealth dump-db` prints them. `python -m wolvwealth ...` is equivalent.
 
+The optimizer maximizes the Sharpe ratio against a risk-free rate of 4% by default, roughly the current T-bill yield. Change it for the whole install with `wolvwealth serve --risk-free-rate 0.045` or `WOLVWEALTH_RISK_FREE_RATE=0.045`, or per run from the form and the API's `risk_free_rate` field. It is an input rather than a constant because the right value moves with the market.
+
 On first start the app creates its own local database (seeded with a deletable `demo` workspace) and a per-install session key under `var/`. If the price history is more than a week old it refreshes in the background, so the app is usable immediately and picks up the fresher prices when they land (set `WOLVWEALTH_NO_AUTO_REFRESH=1` to skip, e.g. offline).
 
 Then in the browser: open `http://localhost:8000/workspaces/`, create your workspace, add a portfolio with your cash and holdings, and hit **Optimize**. For more than a handful of positions, open **Import holdings in bulk** on the portfolio card and paste `TICKER, shares` lines or upload the positions CSV your brokerage exports (Fidelity, Schwab, Vanguard, Robinhood exports work as-is; a `CASH` row sets your cash).

@@ -29,7 +29,7 @@
                 <p class="text-xl text-yellow font-bold">{{ "%.1f" | format(result.metrics.annual_volatility * 100) }}%</p>
             </div>
             <div class="rounded-lg bg-gray p-4">
-                <p class="text-xs" style="color: gray;">Sharpe ratio</p>
+                <p class="text-xs" style="color: gray;">Sharpe ratio (vs {{ "%.2f" | format(result.metrics.risk_free_rate * 100) }}% risk-free)</p>
                 <p class="text-xl text-cyan font-bold">{{ result.metrics.sharpe_ratio }}</p>
             </div>
             <div class="rounded-lg bg-gray p-4">

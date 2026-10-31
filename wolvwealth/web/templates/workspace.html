@@ -195,6 +195,13 @@
                     <input type="number" name="max_turnover" id="maxturn-{{ p.id }}" min="0" max="1" step="0.01"
                         placeholder="0.20" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
                 </div>
+                <div>
+                    <label class="block mb-1 text-xs font-medium text-white" for="rfr-{{ p.id }}"
+                        title="Annual risk-free rate the Sharpe ratio is measured against, as a fraction. Roughly the current T-bill yield. Leave blank for this install's default.">Risk-free
+                        rate (default {{ "%.2f" | format(risk_free_rate) }})</label>
+                    <input type="number" name="risk_free_rate" id="rfr-{{ p.id }}" min="-0.99" max="0.99" step="0.001"
+                        placeholder="{{ "%.2f" | format(risk_free_rate) }}" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
+                </div>
                 <input type="hidden" name="portfolio_id" value="{{ p.id }}" />
                 <button type="submit"
                     class="text-white font-medium rounded-lg text-sm px-5 py-2 bg-green text-black">Optimize</button>

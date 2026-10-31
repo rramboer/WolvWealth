@@ -8,6 +8,29 @@ from wolvwealth.services import optimize
 from wolvwealth.web import context
 from wolvwealth.web.views import blueprint
 
+#: Optional numeric form fields: name -> (parser, message flashed when it does not parse).
+OPTIONAL_NUMBERS = {
+    "max_positions": (int, "Max positions must be a whole number."),
+    "max_weight": (float, "Max weight must be a number between 0 and 1."),
+    "max_turnover": (float, "Max turnover must be a number between 0 and 1."),
+    "risk_free_rate": (float, "Risk-free rate must be a decimal fraction, such as 0.04 for 4%."),
+}
+
+
+def _optional_numbers(form) -> dict:
+    """Parse the optional numeric fields; blank means absent. Raises ValueError with the message to flash."""
+    values = {}
+    for name, (parse, message) in OPTIONAL_NUMBERS.items():
+        raw = form.get(name, "").strip()
+        if not raw:
+            values[name] = None
+            continue
+        try:
+            values[name] = parse(raw)
+        except ValueError as err:
+            raise ValueError(message) from err
+    return values
+
 
 @blueprint.route("/optimizer/run/", methods=["POST"])
 def run_optimizer():
@@ -28,33 +51,17 @@ def run_optimizer():
     universe = flask.request.form.get("universe", "top100")
     if universe not in UNIVERSE_ALIASES:
         universe = "top100"
-    max_positions = max_weight = max_turnover = None
-    raw = flask.request.form.get("max_positions", "").strip()
-    if raw:
-        try:
-            max_positions = int(raw)
-        except ValueError:
-            flask.flash("Max positions must be a whole number.")
-            return back
-    raw = flask.request.form.get("max_weight", "").strip()
-    if raw:
-        try:
-            max_weight = float(raw)
-        except ValueError:
-            flask.flash("Max weight must be a number between 0 and 1.")
-            return back
-    raw = flask.request.form.get("max_turnover", "").strip()
-    if raw:
-        try:
-            max_turnover = float(raw)
-        except ValueError:
-            flask.flash("Max turnover must be a number between 0 and 1.")
-            return back
+    try:
+        options = _optional_numbers(flask.request.form)
+    except ValueError as error:
+        flask.flash(str(error))
+        return back
 
     market = context.market()
+    settings = context.services().settings
     try:
-        payload = optimize.payload_for_portfolio(portfolio, universe, max_positions, max_weight, max_turnover)
-        result = optimize.optimize(payload, market)
+        payload = optimize.payload_for_portfolio(portfolio, universe, **options)
+        result = optimize.optimize(payload, market, settings=settings)
     except DomainError as error:
         flask.flash(error.message)
         return back

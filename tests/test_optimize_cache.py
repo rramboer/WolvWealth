@@ -76,13 +76,23 @@ def test_fields_that_only_scale_or_truncate_reuse_the_same_solve(market, solves,
         {"constraints": {"max_weight": 0.5}},
         {"constraints": {"min_universal_weight": 0.1}},
         {"initial_holdings": {"AAA": 5}, "constraints": {"max_turnover": 0.2}},
+        {"risk_free_rate": 0.01},
     ],
-    ids=["universe", "max_weight", "min_universal_weight", "max_turnover"],
+    ids=["universe", "max_weight", "min_universal_weight", "max_turnover", "risk_free_rate"],
 )
 def test_fields_that_reach_the_solver_get_their_own_solve(market, solves, changes):
     optimizer.optimize(BASE, market)
     optimizer.optimize({**BASE, **changes}, market)
     assert len(solves) == 2
+
+
+def test_the_install_default_rate_is_part_of_the_key(market, solves):
+    """Two installs' defaults differ only in the parse step, so they must still get separate solves."""
+    optimizer.optimize(BASE, market, default_risk_free_rate=0.02)
+    optimizer.optimize(BASE, market, default_risk_free_rate=0.05)
+    assert len(solves) == 2
+    optimizer.optimize({**BASE, "risk_free_rate": 0.02}, market, default_risk_free_rate=0.05)
+    assert len(solves) == 2, "an explicit rate equal to a cached default is the same solve"
 
 
 def test_holdings_join_the_key_only_under_a_turnover_limit(market, solves):

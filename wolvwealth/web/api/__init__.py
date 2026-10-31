@@ -96,7 +96,11 @@ def workspaces():
 def run_optimize():
     """Optimize explicit holdings or a stored portfolio."""
     result = optimize.optimize(
-        _json_body(), context.market(), repo=context.repo(), default_workspace=flask.session.get("workspace")
+        _json_body(),
+        context.market(),
+        repo=context.repo(),
+        default_workspace=flask.session.get("workspace"),
+        settings=context.services().settings,
     )
     return flask.jsonify(result)
 

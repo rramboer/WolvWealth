@@ -77,6 +77,7 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | `constraints.max_positions` | integer ≥ 1 | Keep the N largest weights, then renormalize | unlimited |
 | `constraints.min_universal_weight` | number 0–1 | Floor applied to **every** asset in the universe | `0` |
 | `constraints.max_turnover` | number 0–1 | Largest fraction of the portfolio's value the plan may **sell**. `0` keeps every holding and only invests cash; `1` is no limit | `1` |
+| `risk_free_rate` | number, −1 to 1 | Annual risk-free rate the Sharpe ratio is maximized and reported against, as a fraction (`0.04` is 4%) | the install's setting, `0.04` unless `WOLVWEALTH_RISK_FREE_RATE` or `serve --risk-free-rate` changed it |
 | `exclude_metrics` | boolean | Omit the `metrics` block | `false` |
 | `exclude_trades` | boolean | Omit the `trades` block | `false` |
 
@@ -125,9 +126,10 @@ the metric reports what the returned plan actually sells.
     "portfolio_value": 24917.5,
     "expected_annual_return": 0.124,
     "annual_volatility": 0.084,
-    "sharpe_ratio": 1.24,
+    "sharpe_ratio": 1.0,
     "num_assets": 4,
-    "turnover": 0.7993
+    "turnover": 0.7993,
+    "risk_free_rate": 0.04
   }
 }
 ```
@@ -161,9 +163,10 @@ your broker requires whole shares, accepting the small drift that introduces.
 | `portfolio_value` | Total being allocated: cash + holdings valued at `as_of`, USD |
 | `expected_annual_return` | Annualized expected return as a fraction (`0.124` is 12.4%) |
 | `annual_volatility` | Annualized standard deviation, same units |
-| `sharpe_ratio` | `(expected_annual_return − 0.02) / annual_volatility`, using a 2% risk-free rate, the same rate the solver maximized against. `null` when volatility is zero (degenerate history) rather than dividing by zero |
+| `sharpe_ratio` | `(expected_annual_return − risk_free_rate) / annual_volatility`, the same rate the solver maximized against. `null` when volatility is zero (degenerate history) rather than dividing by zero |
 | `num_assets` | Positions in the returned portfolio |
 | `turnover` | Fraction of `portfolio_value` the `trades` sell (`0.3` means 30% of what you hold changes hands; buys funded by cash do not count). `0` when there are no holdings |
+| `risk_free_rate` | The rate this solve assumed, whether it came from the request, the install's setting, or the default. Echoed so a reader can tell which |
 
 ### Worth knowing before trading on this
 
@@ -172,6 +175,11 @@ your broker requires whole shares, accepting the small drift that introduces.
   `constraints.max_turnover` to cap how much is sold, and include held tickers in `universe`
   so the optimizer is allowed to keep them at all.
 - **Mean-variance optimization over historical returns is a model, not a forecast.**
+- **The risk-free rate shapes the answer, not just the score.** Max-Sharpe picks the frontier
+  portfolio tangent to a line from the risk-free rate, so a higher rate tilts toward higher-return,
+  higher-volatility, more concentrated portfolios. Pass `risk_free_rate` to match the T-bill yield
+  you actually face; a rate above every asset's expected return is rejected, since nothing then beats
+  cash.
 - **Repeated identical requests are served from a memo cache** keyed on the universe,
   constraints and the price snapshot (plus your held weights when `max_turnover` is set), so
   polling is cheap (sub-millisecond). The answer only changes when the cache refreshes, which

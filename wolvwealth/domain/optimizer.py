@@ -16,13 +16,15 @@ from wolvwealth.domain import trades
 from wolvwealth.domain.errors import ValidationError
 from wolvwealth.domain.market import MarketData
 
-#: Annual risk-free rate, used both to solve for the max-Sharpe portfolio and
-#: to report its Sharpe ratio. It must be passed to the solver explicitly:
-#: PyPortfolioOpt's own default was 0.02 through 1.5.x and became 0.0 in
-#: 1.6.0, and both versions satisfy pyproject's pin, so relying on it meant
-#: the portfolio was optimized against whichever rate happened to be
-#: installed while the metrics always reported 2%.
-RISK_FREE_RATE = 0.02
+#: Annual risk-free rate used when neither the request nor the caller
+#: supplies one: roughly the 3-month T-bill yield. The same rate is used both
+#: to solve for the max-Sharpe portfolio and to report its Sharpe ratio, and
+#: it is always passed to the solver explicitly: PyPortfolioOpt's own default
+#: was 0.02 through 1.5.x and became 0.0 in 1.6.0, and both satisfy
+#: pyproject's pin, so relying on it meant the portfolio was optimized against
+#: whichever rate happened to be installed. Installs set their own default
+#: through ``Settings.risk_free_rate``; this constant is only the fallback.
+DEFAULT_RISK_FREE_RATE = 0.04
 #: Default universe when the request names none: the 500 largest tickers.
 DEFAULT_UNIVERSE_SIZE = 500
 #: Weights below this are treated as zero after solving.
@@ -57,19 +59,25 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     max_positions: int = None
     min_universal_weight: float = 0.0
     max_turnover: float = None  # fraction of portfolio value that may be sold; None = no limit
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE
     exclude_metrics: bool = False
     exclude_trades: bool = False
 
 
-def parse_request(payload, market: MarketData) -> OptimizationRequest:
+def parse_request(
+    payload, market: MarketData, default_risk_free_rate: float = DEFAULT_RISK_FREE_RATE
+) -> OptimizationRequest:
     """Validate a raw request dict against the market data.
 
-    Every problem raises ValidationError with a message naming the field.
+    ``default_risk_free_rate`` is the install's configured rate, used when
+    the payload has no ``risk_free_rate`` of its own. Every problem raises
+    ValidationError with a message naming the field.
     """
     if not isinstance(payload, dict):
         raise ValidationError("Parse Error. Request body must be a JSON object.")
-    request = OptimizationRequest(universe=market.top(DEFAULT_UNIVERSE_SIZE))
+    request = OptimizationRequest(universe=market.top(DEFAULT_UNIVERSE_SIZE), risk_free_rate=default_risk_free_rate)
     _parse_cash(payload, request)
+    _parse_risk_free_rate(payload, request)
     _parse_universe(payload, request, market)
     _parse_holdings(payload, request, market)
     _parse_output_flags(payload, request)
@@ -86,6 +94,18 @@ def _parse_cash(payload, request) -> None:
     if cash < 0:
         raise ValidationError("Invalid initial_cash. initial_cash must be greater than 0.")
     request.cash = round(cash, 2)
+
+
+def _parse_risk_free_rate(payload, request) -> None:
+    if "risk_free_rate" not in payload:
+        return
+    value = payload["risk_free_rate"]
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValidationError("Invalid risk_free_rate. risk_free_rate must be a number.")
+    if not -1 < value < 1:
+        # The common slip is writing 4 for 4%; say so rather than reporting a range.
+        raise ValidationError("Invalid risk_free_rate. risk_free_rate is a decimal fraction: 0.04 means 4%.")
+    request.risk_free_rate = round(value, 6)
 
 
 def _parse_universe(payload, request, market) -> None:
@@ -269,12 +289,21 @@ def _check_turnover_feasible(request: OptimizationRequest, current: dict) -> Non
         )
 
 
-def _run_solver(mu, cov_matrix, max_weight: float, min_universal_weight: float, turnover_limit: tuple = None) -> dict:
-    """Maximize the Sharpe ratio under the weight bounds; return the cleaned weights.
+def _run_solver(mu, cov_matrix, request: OptimizationRequest, turnover_limit: tuple = None) -> dict:
+    """Maximize the Sharpe ratio under the request's bounds; return the cleaned weights.
 
     ``turnover_limit`` is ``(limit, current)`` with ``current`` the held
     weights (ticker -> fraction of total investment), or None for no limit.
     """
+    max_weight, min_universal_weight = request.max_weight, request.min_universal_weight
+    if float(mu.max()) <= request.risk_free_rate:
+        # PyPortfolioOpt raises the same complaint in its own words; this one
+        # names the number and the field so the fix is obvious.
+        raise ValidationError(
+            f"Optimization Error. No asset in the universe has an expected return above the risk_free_rate of "
+            f"{request.risk_free_rate:.2%} (best is {float(mu.max()):.2%}), so no portfolio beats holding cash. "
+            "Lower risk_free_rate or widen the universe."
+        )
     try:
         frontier = EfficientFrontier(
             mu, cov_matrix, verbose=False, weight_bounds=(min_universal_weight, 1), solver=SOLVER
@@ -283,7 +312,7 @@ def _run_solver(mu, cov_matrix, max_weight: float, min_universal_weight: float, 
             frontier.add_constraint(lambda weights: weights <= max_weight)
         if turnover_limit is not None:
             frontier.add_constraint(_turnover_constraint(mu.index, *turnover_limit))
-        frontier.max_sharpe(risk_free_rate=RISK_FREE_RATE)
+        frontier.max_sharpe(risk_free_rate=request.risk_free_rate)
         return frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
     except Exception as err:  # pylint: disable=broad-except
         # Surface the real solver error; "Infeasible" alone is undiagnosable.
@@ -341,12 +370,19 @@ def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current
     reporting its own error rather than a remembered one.
     """
     turnover_inputs = _solver_inputs(request, current)
-    key = ("weights", tuple(request.universe), request.max_weight, request.min_universal_weight, turnover_inputs)
+    key = (
+        "weights",
+        tuple(request.universe),
+        request.max_weight,
+        request.min_universal_weight,
+        request.risk_free_rate,
+        turnover_inputs,
+    )
 
     def compute():
         mu, cov_matrix = market.stats_for(request.universe)
         limit = None if turnover_inputs is None else (request.max_turnover, current)
-        return _run_solver(mu, cov_matrix, request.max_weight, request.min_universal_weight, limit)
+        return _run_solver(mu, cov_matrix, request, limit)
 
     # Copied on the way out: callers rebuild the dict as they filter it, and a
     # cached value must survive that unchanged for the next request.
@@ -373,6 +409,7 @@ def _return_and_volatility(request: OptimizationRequest, market: MarketData, wei
         tuple(request.universe),
         request.max_weight,
         request.min_universal_weight,
+        request.risk_free_rate,
         _solver_inputs(request, current),
         request.max_positions,
     )
@@ -427,12 +464,16 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
         expected_return, volatility = _return_and_volatility(request, market, weights, current)
         # Degenerate history (too few rows, flat prices) gives zero volatility; report
         # the Sharpe ratio as null rather than dividing by zero.
-        sharpe = round((expected_return - RISK_FREE_RATE) / volatility, 2) if volatility > 0 else None
+        sharpe = round((expected_return - request.risk_free_rate) / volatility, 2) if volatility > 0 else None
         result["metrics"] = {
             "portfolio_value": round(total_investment, 2),
             "expected_annual_return": round(expected_return, 3),
             "annual_volatility": round(volatility, 3),
             "sharpe_ratio": sharpe,
+            # Echoed so a reader of the response knows which rate the solve
+            # and the ratio above assumed, whether it came from the request,
+            # the install's settings, or the built-in default.
+            "risk_free_rate": request.risk_free_rate,
             "num_assets": len(weights),
             # Measured on the returned portfolio, so it includes anything the
             # max_positions truncation sold beyond what the solver was allowed.
@@ -441,6 +482,6 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     return result
 
 
-def optimize(payload, market: MarketData) -> dict:
+def optimize(payload, market: MarketData, default_risk_free_rate: float = DEFAULT_RISK_FREE_RATE) -> dict:
     """Validate and solve in one call."""
-    return solve(parse_request(payload, market), market)
+    return solve(parse_request(payload, market, default_risk_free_rate), market)

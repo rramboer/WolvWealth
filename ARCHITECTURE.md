@@ -79,7 +79,7 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 ├── wolvwealth/                    The package. Importing it has no side effects.
 │   ├── __init__.py                Exports create_app (so `flask --app wolvwealth run` works)
 │   ├── __main__.py                The `wolvwealth` command
-│   ├── config.py                  Settings dataclass; Settings.from_env() reads WOLVWEALTH_VAR / WOLVWEALTH_NO_AUTO_REFRESH
+│   ├── config.py                  Settings dataclass; Settings.from_env() reads WOLVWEALTH_VAR / WOLVWEALTH_NO_AUTO_REFRESH / WOLVWEALTH_RISK_FREE_RATE
 │   ├── domain/
 │   │   ├── errors.py              DomainError(message, details) + ValidationError, NotFoundError
 │   │   ├── models.py              Workspace, Portfolio dataclasses; valid_name()
@@ -219,7 +219,7 @@ sequenceDiagram
     D->>D: parse_request: validate every field (ValidationError)
     D->>D: total = cash + market.value(holdings); 0 -> ValidationError
     D->>D: market.solutions: weights for<br/>(universe, max_weight, min_universal_weight,<br/>max_turnover + held weights if set)?
-    D->>PF: on a miss only: EfficientFrontier.max_sharpe(risk_free_rate=0.02)<br/>over the sliced mu/cov (+ max_weight, max_turnover constraints)
+    D->>PF: on a miss only: EfficientFrontier.max_sharpe(risk_free_rate)<br/>over the sliced mu/cov (+ max_weight, max_turnover constraints)
     PF-->>D: weights -> clean, memoize
     D->>D: truncate to max_positions, renormalize, scale by total
     D-->>S: result dict (metrics describe the truncated portfolio)
@@ -228,7 +228,7 @@ sequenceDiagram
     Note over A,V: ValidationError -> 400 JSON / NotFoundError -> 404 JSON (API)<br/>DomainError -> flashed message on /workspace/ (browser)
 ```
 
-The risk-free rate is passed to the solver explicitly rather than left to PyPortfolioOpt's default, which changed from 0.02 to 0.0 between 1.5.x and 1.6.0 (both allowed by the pin). The rate sets where the capital-market line meets the frontier: a higher rate tangents further up it, toward higher-return, higher-volatility, more concentrated portfolios. Solving at one rate and reporting the Sharpe ratio at another would describe the result with a ratio it does not maximize.
+The risk-free rate is passed to the solver explicitly rather than left to PyPortfolioOpt's default, which changed from 0.02 to 0.0 between 1.5.x and 1.6.0 (both allowed by the pin). The rate sets where the capital-market line meets the frontier: a higher rate tangents further up it, toward higher-return, higher-volatility, more concentrated portfolios. Solving at one rate and reporting the Sharpe ratio at another would describe the result with a ratio it does not maximize. The rate is an input, not a constant: `Settings.risk_free_rate` (default 0.04, roughly the T-bill yield; `WOLVWEALTH_RISK_FREE_RATE` or `serve --risk-free-rate` override it per install) is the default the service layer hands to `parse_request`, and a request's own top-level `risk_free_rate` wins over that. `domain/optimizer.py` keeps a `DEFAULT_RISK_FREE_RATE` only as the fallback for callers without settings (tests, the backtest). Whatever rate was used is echoed in `metrics.risk_free_rate`.
 
 The `max_positions` step is a post-hoc truncation, not a cardinality constraint in the solver. The reported Sharpe/return/volatility metrics are recomputed from the truncated, renormalized weights, so they describe the portfolio that is actually returned.
 
@@ -246,6 +246,7 @@ All fields are optional. Unknown fields are ignored.
   "initial_holdings": { "AAPL": 10, "MSFT": 5.5 },
   "universe": ["top50", "TSLA"],
   "constraints": { "max_weight": 0.25, "max_positions": 10, "min_universal_weight": 0.0, "max_turnover": 0.2 },
+  "risk_free_rate": 0.04,
   "exclude_metrics": false
 }
 ```
@@ -260,9 +261,10 @@ All fields are optional. Unknown fields are ignored.
 | `constraints.max_positions` | Keep only the N largest weights after solving, then renormalize | unlimited |
 | `constraints.min_universal_weight` | Lower bound applied to **every** asset in the universe | 0 |
 | `constraints.max_turnover` | Largest fraction of portfolio value the plan may sell, 0 to 1 | 1 (no limit) |
+| `risk_free_rate` | Annual rate the Sharpe ratio is maximized and reported against, as a fraction | `Settings.risk_free_rate` (0.04) |
 | `exclude_metrics` | Omit the `metrics` block | false |
 
-Total investment must be greater than zero. The response is `as_of` (the price date every number came from), an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}`, a `trades` list, and a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets, turnover}`. `exclude_metrics` and `exclude_trades` drop their blocks.
+Total investment must be greater than zero. The response is `as_of` (the price date every number came from), an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}`, a `trades` list, and a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets, turnover, risk_free_rate}`. `exclude_metrics` and `exclude_trades` drop their blocks.
 
 `trades` is `domain/trades.py`: the share deltas from `initial_holdings` to the target, as `{ticker, action, shares, price, value}` with positive share counts and the direction in `action`. Sells lead, each group by descending value, so an agent executing in order frees the cash before spending it; unchanged positions and differences too small to show at four decimals produce no entry. It exists so an agent driving a broker never has to diff two allocations itself, and `price` records which close the plan assumed. The browser results page renders the same list.
 
@@ -274,7 +276,7 @@ Agents re-send the same request constantly, so the two costly halves of a solve 
 
 | Memo | Key | Why those fields |
 |---|---|---|
-| Max-Sharpe weights | `universe`, `max_weight`, `min_universal_weight`, and when `max_turnover` is set, the limit plus the held weights | Everything the solver sees. ~90% of a cold request |
+| Max-Sharpe weights | `universe`, `max_weight`, `min_universal_weight`, `risk_free_rate`, and when `max_turnover` is set, the limit plus the held weights | Everything the solver sees. ~90% of a cold request |
 | Expected return + volatility | the same, plus `max_positions` | A function of the final weight vector, which those fields determine |
 
 `initial_cash` and `initial_holdings` are deliberately **not** in either key by default: they scale the portfolio without changing its shape, so sweeping cash amounts over one universe still costs a single solve. A `max_turnover` limit is the exception, since it makes the current weights a solver input; such requests key on the held weights too. `max_positions` truncates the weights after the solve, so it reuses the solve but gets its own metrics entry.
@@ -384,7 +386,7 @@ flowchart LR
         PIP --> PATHFIX["ensure ~/.local/bin on PATH"]
         PATHFIX --> DATA["wolvwealth refresh-data<br/>(--no-data defers to first start)"]
     end
-    DATA --> SERVE["wolvwealth serve [--dev] [--port] [--no-browser]"]
+    DATA --> SERVE["wolvwealth serve [--dev] [--port] [--no-browser] [--risk-free-rate]"]
     subgraph Styling["contributors only (Node)"]
         TPL["web/templates/*.html"] --> TW["npm run css / css:watch"] --> OUT["web/static/css/output.css (committed)"]
     end
