@@ -41,7 +41,9 @@ def optimize(payload, market: MarketData, repo: PortfolioRepository = None, defa
     return optimizer.optimize(payload, market)
 
 
-def payload_for_portfolio(portfolio, universe_alias: str, max_positions=None, max_weight=None) -> dict:
+def payload_for_portfolio(
+    portfolio, universe_alias: str, max_positions=None, max_weight=None, max_turnover=None
+) -> dict:
     """Build the request the browser form implies for a stored portfolio.
 
     Held tickers join the universe so the optimizer is allowed to keep them.
@@ -51,6 +53,8 @@ def payload_for_portfolio(portfolio, universe_alias: str, max_positions=None, ma
         constraints["max_positions"] = max_positions
     if max_weight is not None:
         constraints["max_weight"] = max_weight
+    if max_turnover is not None:
+        constraints["max_turnover"] = max_turnover
     return {
         "initial_cash": portfolio.cash,
         "initial_holdings": portfolio.holdings,

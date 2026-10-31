@@ -45,6 +45,7 @@ def test_every_api_endpoint_is_documented(app):
         "max_weight",
         "max_positions",
         "min_universal_weight",
+        "max_turnover",
         "exclude_metrics",
         "exclude_trades",
     ],
@@ -66,7 +67,14 @@ def test_documented_response_keys_are_the_ones_sent(client):
         assert key in next(iter(body["optimized_portfolio"].values()))
     for key in ("ticker", "action", "shares", "price", "value"):
         assert key in body["trades"][0]
-    for key in ("portfolio_value", "expected_annual_return", "annual_volatility", "sharpe_ratio", "num_assets"):
+    for key in (
+        "portfolio_value",
+        "expected_annual_return",
+        "annual_volatility",
+        "sharpe_ratio",
+        "num_assets",
+        "turnover",
+    ):
         assert key in body["metrics"] and key in DOCUMENTED
 
 

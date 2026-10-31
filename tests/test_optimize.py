@@ -130,6 +130,126 @@ def test_exclude_metrics(market):
     assert "metrics" not in optimizer.optimize({"initial_cash": 10000, "exclude_metrics": True}, market)
 
 
+# --- max_turnover -----------------------------------------------------------
+
+
+def all_in(market, ticker, value=10_000.0):
+    """Holdings worth ``value`` entirely in ``ticker``."""
+    return {ticker: value / market.price(ticker)}
+
+
+def sold_fraction(result):
+    """Fraction of portfolio value the trade list sells."""
+    sells = sum(trade["value"] for trade in result["trades"] if trade["action"] == "sell")
+    return sells / result["metrics"]["portfolio_value"]
+
+
+def test_unconstrained_run_sells_most_of_a_concentrated_portfolio(market):
+    result = optimizer.optimize({"initial_holdings": all_in(market, "DDD")}, market)
+    assert result["metrics"]["turnover"] > 0.5
+    assert result["metrics"]["turnover"] == pytest.approx(sold_fraction(result), abs=1e-3)
+
+
+def test_max_turnover_caps_what_is_sold(market):
+    body = {"initial_holdings": all_in(market, "DDD"), "constraints": {"max_turnover": 0.3}}
+    result = optimizer.optimize(body, market)
+    assert sold_fraction(result) <= 0.3 + 1e-3
+    assert result["metrics"]["turnover"] == pytest.approx(0.3, abs=1e-3), "the cap should bind"
+    assert result["optimized_portfolio"]["DDD"]["percent_weight"] == pytest.approx(70, abs=0.1)
+
+
+def test_zero_turnover_keeps_every_holding(market):
+    body = {"initial_holdings": {"AAA": 20, "DDD": 10}, "constraints": {"max_turnover": 0}}
+    result = optimizer.optimize(body, market)
+    assert result["trades"] == []
+    assert result["metrics"]["turnover"] == 0
+    assert result["optimized_portfolio"]["AAA"]["shares"] == pytest.approx(20, abs=1e-3)
+    assert result["optimized_portfolio"]["DDD"]["shares"] == pytest.approx(10, abs=1e-3)
+
+
+def test_buying_with_cash_is_not_turnover(market):
+    body = {
+        "initial_cash": 10_000,
+        "initial_holdings": all_in(market, "DDD"),
+        "constraints": {"max_turnover": 0},
+    }
+    result = optimizer.optimize(body, market)
+    assert all(trade["action"] == "buy" for trade in result["trades"])
+    assert result["trades"], "the cash should be invested"
+    assert result["optimized_portfolio"]["DDD"]["percent_weight"] == pytest.approx(50, abs=0.1)
+    assert result["metrics"]["turnover"] == 0
+
+
+def test_an_untouched_holding_does_not_become_a_dust_sell(market):
+    """Regression: weight rounding left a kept position 0.0001 shares short, which the trade list reported as a sell."""
+    body = {"initial_cash": 5000, "initial_holdings": {"AAA": 10}, "constraints": {"max_turnover": 0}}
+    result = optimizer.optimize(body, market)
+    assert all(trade["action"] == "buy" for trade in result["trades"])
+    assert result["optimized_portfolio"]["AAA"]["shares"] == 10
+    assert sum(p["percent_weight"] for p in result["optimized_portfolio"].values()) == pytest.approx(100, abs=0.05)
+
+
+def test_tighter_turnover_never_beats_a_looser_one(market):
+    holdings = all_in(market, "DDD")
+    sharpes = [
+        optimizer.optimize({"initial_holdings": holdings, "constraints": {"max_turnover": limit}}, market)["metrics"][
+            "sharpe_ratio"
+        ]
+        for limit in (0.1, 0.3, 0.6, 1.0)
+    ]
+    assert sharpes == sorted(sharpes)
+
+
+def test_turnover_limit_of_one_matches_no_limit(market):
+    holdings = all_in(market, "DDD")
+    plain = optimizer.optimize({"initial_holdings": holdings}, market)
+    assert optimizer.optimize({"initial_holdings": holdings, "constraints": {"max_turnover": 1}}, market) == plain
+
+
+def test_holding_outside_the_universe_is_a_forced_sale(market):
+    body = {
+        "initial_holdings": {**all_in(market, "DDD", 2_000), **all_in(market, "AAA", 8_000)},
+        "universe": ["AAA", "BBB", "CCC"],
+        "constraints": {"max_turnover": 0.25},
+    }
+    result = optimizer.optimize(body, market)
+    assert "DDD" not in result["optimized_portfolio"]
+    assert sold_fraction(result) <= 0.25 + 1e-3
+
+
+def test_turnover_below_what_the_universe_forces_names_the_ticker(market):
+    message = error_of(
+        market,
+        {"initial_holdings": all_in(market, "DDD"), "universe": ["AAA", "BBB"], "constraints": {"max_turnover": 0.5}},
+    )
+    assert message.startswith("Infeasible.")
+    assert "DDD" in message and "universe" in message
+
+
+def test_turnover_below_what_max_weight_forces_says_so(market):
+    message = error_of(
+        market,
+        {"initial_holdings": all_in(market, "DDD"), "constraints": {"max_turnover": 0.1, "max_weight": 0.5}},
+    )
+    assert message.startswith("Infeasible.")
+    assert "max_weight" in message and "50.0%" in message
+
+
+def test_turnover_limit_with_no_holdings_is_harmless(market):
+    plain = optimizer.optimize({"initial_cash": 10_000}, market)
+    limited = optimizer.optimize({"initial_cash": 10_000, "constraints": {"max_turnover": 0}}, market)
+    assert limited["optimized_portfolio"] == plain["optimized_portfolio"]
+    assert limited["metrics"]["turnover"] == 0
+
+
+@pytest.mark.parametrize(
+    "value, fragment",
+    [("0.2", "must be a number"), (True, "must be a number"), (-0.1, "between 0 and 1"), (1.5, "between 0 and 1")],
+)
+def test_rejects_bad_max_turnover(market, value, fragment):
+    assert fragment in error_of(market, {"initial_cash": 1000, "constraints": {"max_turnover": value}})
+
+
 def test_solver_error_is_surfaced(market):
     """Regression: the real solver error used to be swallowed into a bare 'Infeasible'."""
     message = error_of(market, {"initial_cash": 10000, "constraints": {"min_universal_weight": 0.5, "max_weight": 1}})

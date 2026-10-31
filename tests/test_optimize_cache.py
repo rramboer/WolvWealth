@@ -75,13 +75,30 @@ def test_fields_that_only_scale_or_truncate_reuse_the_same_solve(market, solves,
         {"universe": ["AAA", "BBB"]},
         {"constraints": {"max_weight": 0.5}},
         {"constraints": {"min_universal_weight": 0.1}},
+        {"initial_holdings": {"AAA": 5}, "constraints": {"max_turnover": 0.2}},
     ],
-    ids=["universe", "max_weight", "min_universal_weight"],
+    ids=["universe", "max_weight", "min_universal_weight", "max_turnover"],
 )
 def test_fields_that_reach_the_solver_get_their_own_solve(market, solves, changes):
     optimizer.optimize(BASE, market)
     optimizer.optimize({**BASE, **changes}, market)
     assert len(solves) == 2
+
+
+def test_holdings_join_the_key_only_under_a_turnover_limit(market, solves):
+    """A turnover limit makes the held weights a solver input, so different holdings must not share a solve."""
+    limited = {**BASE, "constraints": {"max_turnover": 0.2}}
+    optimizer.optimize({**limited, "initial_holdings": {"AAA": 5}}, market)
+    optimizer.optimize({**limited, "initial_holdings": {"AAA": 50}}, market)
+    assert len(solves) == 2
+    optimizer.optimize({**limited, "initial_holdings": {"AAA": 50}}, market)
+    assert len(solves) == 2
+
+
+def test_a_turnover_limit_of_one_shares_the_unconstrained_solve(market, solves):
+    optimizer.optimize(BASE, market)
+    optimizer.optimize({**BASE, "initial_holdings": {"AAA": 5}, "constraints": {"max_turnover": 1}}, market)
+    assert len(solves) == 1
 
 
 def test_cached_weights_survive_a_max_positions_truncation(market):

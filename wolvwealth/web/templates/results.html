@@ -36,6 +36,10 @@
                 <p class="text-xs" style="color: gray;">Assets</p>
                 <p class="text-xl text-white font-bold">{{ result.metrics.num_assets }}</p>
             </div>
+            <div class="rounded-lg bg-gray p-4">
+                <p class="text-xs" style="color: gray;">Sold to get there</p>
+                <p class="text-xl text-white font-bold">{{ "%.1f" | format(result.metrics.turnover * 100) }}%</p>
+            </div>
         </div>
         {% endif %}
 

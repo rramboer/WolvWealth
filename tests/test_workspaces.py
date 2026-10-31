@@ -104,6 +104,21 @@ def test_browser_results_show_the_trades_to_place(workspace_client, repo):
     assert b"BUY" in response.data or b"SELL" in response.data
 
 
+def test_browser_max_turnover_keeps_the_holding(workspace_client, repo):
+    """The form's max turnover reaches the solver: at 0 the held AAA is kept and only cash is invested."""
+    pid = repo.get_portfolio("tester", name="main").id
+    response = workspace_client.post(
+        "/optimizer/run/", data={"portfolio_id": pid, "universe": "top20", "max_turnover": "0"}
+    )
+    assert response.status_code == 200
+    assert b"Sold to get there" in response.data
+    assert b"SELL" not in response.data
+
+    response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "max_turnover": "x"})
+    assert response.status_code == 302
+    assert b"Max turnover must be a number" in workspace_client.get("/workspace/").data
+
+
 def test_browser_optimize_error_flashes(workspace_client, repo):
     pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "max_positions": "x"})

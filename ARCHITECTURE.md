@@ -218,8 +218,8 @@ sequenceDiagram
     S->>D: optimize(payload, market)
     D->>D: parse_request: validate every field (ValidationError)
     D->>D: total = cash + market.value(holdings); 0 -> ValidationError
-    D->>D: market.solutions: weights for<br/>(universe, max_weight, min_universal_weight)?
-    D->>PF: on a miss only: EfficientFrontier.max_sharpe<br/>over the sliced mu/cov (+ max_weight constraint)
+    D->>D: market.solutions: weights for<br/>(universe, max_weight, min_universal_weight,<br/>max_turnover + held weights if set)?
+    D->>PF: on a miss only: EfficientFrontier.max_sharpe<br/>over the sliced mu/cov (+ max_weight, max_turnover constraints)
     PF-->>D: weights -> clean, memoize
     D->>D: truncate to max_positions, renormalize, scale by total
     D-->>S: result dict (metrics describe the truncated portfolio)
@@ -229,6 +229,8 @@ sequenceDiagram
 ```
 
 The `max_positions` step is a post-hoc truncation, not a cardinality constraint in the solver. The reported Sharpe/return/volatility metrics are recomputed from the truncated, renormalized weights, so they describe the portfolio that is actually returned.
+
+`max_turnover`, by contrast, *is* a solver constraint: `sum(pos(current - w)) <= limit`, the fraction of portfolio value sold (buys funded by cash are free, matching the SEC's lesser-of-purchases-and-sales convention). It is a hard constraint rather than an L1 penalty because PyPortfolioOpt's `max_sharpe` rewrites the problem through the Charnes-Cooper substitution `w = k·w_true`, scaling constraints by `k` but leaving added objectives alone, so a penalty would weigh against the wrong variable, and because "sell at most 20%" is a number a person can set, where a penalty weight is not. The same substitution only scales the constant side of each constraint, so the held weights are multiplied by `sum(w)` (which the transformed problem pins to `k`) to keep the constraint homogeneous; `_turnover_constraint` in `domain/optimizer.py` explains the algebra. Holdings the universe lacks, and holdings above `max_weight`, force sales no limit can avoid; `_check_turnover_feasible` rejects those requests with a message naming the cause instead of letting the solver report a bare "infeasible". The `metrics.turnover` field reports what the returned plan actually sells, which can exceed the limit only via the `max_positions` truncation.
 
 ### API request schema
 
@@ -241,7 +243,7 @@ All fields are optional. Unknown fields are ignored.
   "initial_cash": 10000,
   "initial_holdings": { "AAPL": 10, "MSFT": 5.5 },
   "universe": ["top50", "TSLA"],
-  "constraints": { "max_weight": 0.25, "max_positions": 10, "min_universal_weight": 0.0 },
+  "constraints": { "max_weight": 0.25, "max_positions": 10, "min_universal_weight": 0.0, "max_turnover": 0.2 },
   "exclude_metrics": false
 }
 ```
@@ -255,9 +257,10 @@ All fields are optional. Unknown fields are ignored.
 | `constraints.max_weight` | Per-asset cap, 0 to 1 | 1 |
 | `constraints.max_positions` | Keep only the N largest weights after solving, then renormalize | unlimited |
 | `constraints.min_universal_weight` | Lower bound applied to **every** asset in the universe | 0 |
+| `constraints.max_turnover` | Largest fraction of portfolio value the plan may sell, 0 to 1 | 1 (no limit) |
 | `exclude_metrics` | Omit the `metrics` block | false |
 
-Total investment must be greater than zero. The response is `as_of` (the price date every number came from), an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}`, a `trades` list, and a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets}`. `exclude_metrics` and `exclude_trades` drop their blocks.
+Total investment must be greater than zero. The response is `as_of` (the price date every number came from), an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}`, a `trades` list, and a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets, turnover}`. `exclude_metrics` and `exclude_trades` drop their blocks.
 
 `trades` is `domain/trades.py`: the share deltas from `initial_holdings` to the target, as `{ticker, action, shares, price, value}` with positive share counts and the direction in `action`. Sells lead, each group by descending value, so an agent executing in order frees the cash before spending it; unchanged positions and differences too small to show at four decimals produce no entry. It exists so an agent driving a broker never has to diff two allocations itself, and `price` records which close the plan assumed. The browser results page renders the same list.
 
@@ -269,10 +272,10 @@ Agents re-send the same request constantly, so the two costly halves of a solve 
 
 | Memo | Key | Why those fields |
 |---|---|---|
-| Max-Sharpe weights | `universe`, `max_weight`, `min_universal_weight` | Everything the solver sees. ~90% of a cold request |
-| Expected return + volatility | the same, plus `max_positions` | A function of the final weight vector, which those four fields determine |
+| Max-Sharpe weights | `universe`, `max_weight`, `min_universal_weight`, and when `max_turnover` is set, the limit plus the held weights | Everything the solver sees. ~90% of a cold request |
+| Expected return + volatility | the same, plus `max_positions` | A function of the final weight vector, which those fields determine |
 
-`initial_cash` and `initial_holdings` are deliberately **not** in either key: they scale the portfolio without changing its shape, so sweeping cash amounts over one universe still costs a single solve. `max_positions` truncates the weights after the solve, so it reuses the solve but gets its own metrics entry.
+`initial_cash` and `initial_holdings` are deliberately **not** in either key by default: they scale the portfolio without changing its shape, so sweeping cash amounts over one universe still costs a single solve. A `max_turnover` limit is the exception, since it makes the current weights a solver input; such requests key on the held weights too. `max_positions` truncates the weights after the solve, so it reuses the solve but gets its own metrics entry.
 
 Because the cache is a field of the snapshot, a price refresh builds a new snapshot and drops every entry with it — there is no expiry logic, and no way to serve a portfolio computed from prices that are no longer current. `truncated()` likewise gives each backtest step its own empty cache. A failed solve is not stored, so an infeasible request keeps reporting its own error.
 

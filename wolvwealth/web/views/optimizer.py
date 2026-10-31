@@ -28,7 +28,7 @@ def run_optimizer():
     universe = flask.request.form.get("universe", "top100")
     if universe not in UNIVERSE_ALIASES:
         universe = "top100"
-    max_positions = max_weight = None
+    max_positions = max_weight = max_turnover = None
     raw = flask.request.form.get("max_positions", "").strip()
     if raw:
         try:
@@ -43,10 +43,17 @@ def run_optimizer():
         except ValueError:
             flask.flash("Max weight must be a number between 0 and 1.")
             return back
+    raw = flask.request.form.get("max_turnover", "").strip()
+    if raw:
+        try:
+            max_turnover = float(raw)
+        except ValueError:
+            flask.flash("Max turnover must be a number between 0 and 1.")
+            return back
 
     market = context.market()
     try:
-        payload = optimize.payload_for_portfolio(portfolio, universe, max_positions, max_weight)
+        payload = optimize.payload_for_portfolio(portfolio, universe, max_positions, max_weight, max_turnover)
         result = optimize.optimize(payload, market)
     except DomainError as error:
         flask.flash(error.message)

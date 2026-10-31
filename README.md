@@ -67,9 +67,13 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
         "workspace": "ryan",
         "portfolio": "long-term",
         "universe": ["top100"],
-        "constraints": {"max_positions": 10, "max_weight": 0.25}
+        "constraints": {"max_positions": 10, "max_weight": 0.25, "max_turnover": 0.2}
       }'
 ```
+
+`max_turnover` caps how much of what you hold gets sold (here 20% of the portfolio's value), so a
+rebalance does not churn the whole account through fees and spreads. Leave it out to let the
+optimizer start from scratch.
 
 Or spell everything out:
 

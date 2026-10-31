@@ -76,11 +76,22 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | `constraints.max_weight` | number 0–1 | Per-asset cap | `1` |
 | `constraints.max_positions` | integer ≥ 1 | Keep the N largest weights, then renormalize | unlimited |
 | `constraints.min_universal_weight` | number 0–1 | Floor applied to **every** asset in the universe | `0` |
+| `constraints.max_turnover` | number 0–1 | Largest fraction of the portfolio's value the plan may **sell**. `0` keeps every holding and only invests cash; `1` is no limit | `1` |
 | `exclude_metrics` | boolean | Omit the `metrics` block | `false` |
 | `exclude_trades` | boolean | Omit the `trades` block | `false` |
 
 `max_positions × max_weight` must be at least 1, or the request is infeasible by
 construction and is rejected.
+
+`max_turnover` is a hard constraint inside the solver, not a penalty: the result is the
+best Sharpe ratio reachable while selling no more than that share of what you hold, valued
+at the `as_of` close against cash plus holdings. Buying with cash is not counted, so a
+portfolio that is half cash can be fully invested at `max_turnover: 0`. Two things force
+sales no limit can prevent, and the request is rejected with a message naming them when the
+limit is below what they require: a held ticker that is not in `universe` (it cannot be
+kept), and a position already above `max_weight`. `max_positions` truncates *after* the
+solve, so dropping a held position that way can push the realized `turnover` past the limit;
+the metric reports what the returned plan actually sells.
 
 ```json
 {
@@ -115,7 +126,8 @@ construction and is rejected.
     "expected_annual_return": 0.124,
     "annual_volatility": 0.084,
     "sharpe_ratio": 1.24,
-    "num_assets": 4
+    "num_assets": 4,
+    "turnover": 0.7993
   }
 }
 ```
@@ -151,15 +163,19 @@ your broker requires whole shares, accepting the small drift that introduces.
 | `annual_volatility` | Annualized standard deviation, same units |
 | `sharpe_ratio` | `(expected_annual_return − 0.02) / annual_volatility`, using a 2% risk-free rate. `null` when volatility is zero (degenerate history) rather than dividing by zero |
 | `num_assets` | Positions in the returned portfolio |
+| `turnover` | Fraction of `portfolio_value` the `trades` sell (`0.3` means 30% of what you hold changes hands; buys funded by cash do not count). `0` when there are no holdings |
 
 ### Worth knowing before trading on this
 
-- **Your holdings are fully reallocated.** The optimizer does not try to keep what you own. To
-  let it keep a position, include that ticker in `universe`.
+- **By default your holdings are fully reallocated.** The optimizer does not try to keep what
+  you own, and the first run on a real portfolio often sells most of it. Set
+  `constraints.max_turnover` to cap how much is sold, and include held tickers in `universe`
+  so the optimizer is allowed to keep them at all.
 - **Mean-variance optimization over historical returns is a model, not a forecast.**
 - **Repeated identical requests are served from a memo cache** keyed on the universe,
-  constraints and the price snapshot, so polling is cheap (sub-millisecond). The answer only
-  changes when the cache refreshes, which `as_of` tells you.
+  constraints and the price snapshot (plus your held weights when `max_turnover` is set), so
+  polling is cheap (sub-millisecond). The answer only changes when the cache refreshes, which
+  `as_of` tells you.
 
 ---
 
