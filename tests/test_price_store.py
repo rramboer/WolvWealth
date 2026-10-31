@@ -54,6 +54,15 @@ def test_stats_round_trip(tmp_path):
     pandas.testing.assert_frame_equal(cov, stats.cov)
 
 
+def test_tbill_round_trip_and_absence(tmp_path):
+    store = PriceStore(tmp_path / "prices.parquet", tmp_path / "universe.csv")
+    assert store.load_tbill() is None
+    store.save_tbill(0.0412, "2026-10-30")
+    assert store.load_tbill() == {"rate": 0.0412, "as_of": "2026-10-30"}
+    store.tbill_path.write_text("not json", encoding="utf-8")
+    assert store.load_tbill() is None, "a corrupt sidecar reads as absent, never as an error"
+
+
 def test_stats_absent_without_both_files(tmp_path):
     store = make_store(tmp_path)
     assert store.load_stats() is None

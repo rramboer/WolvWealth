@@ -79,7 +79,7 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 ├── wolvwealth/                    The package. Importing it has no side effects.
 │   ├── __init__.py                Exports create_app (so `flask --app wolvwealth run` works)
 │   ├── __main__.py                The `wolvwealth` command
-│   ├── config.py                  Settings dataclass; Settings.from_env() reads WOLVWEALTH_VAR / WOLVWEALTH_NO_AUTO_REFRESH / WOLVWEALTH_RISK_FREE_RATE
+│   ├── config.py                  Settings dataclass; Settings.from_env() reads WOLVWEALTH_VAR / WOLVWEALTH_NO_AUTO_REFRESH
 │   ├── domain/
 │   │   ├── errors.py              DomainError(message, details) + ValidationError, NotFoundError
 │   │   ├── models.py              Workspace, Portfolio dataclasses; valid_name()
@@ -92,9 +92,9 @@ Everything resolves paths from `Settings` in `config.py` (absolute, derived from
 │   ├── storage/
 │   │   ├── database.py            Database(path): open(), connect() (transaction), ensure_schema(), reset()
 │   │   ├── repository.py          PortfolioRepository(connection): every query on the three tables
-│   │   ├── price_store.py         PriceStore: prices + stats caches (Parquet) and the ticker list; legacy CSV conversion
+│   │   ├── price_store.py         PriceStore: prices + stats caches (Parquet), the T-bill sidecar, and the ticker list; legacy CSV conversion
 │   │   ├── secrets.py             load_or_create_secret_key()
-│   │   └── sql/schema.sql, data.sql   Three tables + the `demo` seed
+│   │   └── sql/schema.sql, data.sql   Three tables + the `demo` seed (database.py adds later columns to older files)
 │   ├── market/
 │   │   └── yahoo.py               download_prices(tickers, start, end): chunked, paused, retried
 │   ├── services/
@@ -228,7 +228,7 @@ sequenceDiagram
     Note over A,V: ValidationError -> 400 JSON / NotFoundError -> 404 JSON (API)<br/>DomainError -> flashed message on /workspace/ (browser)
 ```
 
-The risk-free rate is passed to the solver explicitly rather than left to PyPortfolioOpt's default, which changed from 0.02 to 0.0 between 1.5.x and 1.6.0 (both allowed by the pin). The rate sets where the capital-market line meets the frontier: a higher rate tangents further up it, toward higher-return, higher-volatility, more concentrated portfolios. Solving at one rate and reporting the Sharpe ratio at another would describe the result with a ratio it does not maximize. The rate is an input, not a constant: `Settings.risk_free_rate` (default 0.04, roughly the T-bill yield; `WOLVWEALTH_RISK_FREE_RATE` or `serve --risk-free-rate` override it per install) is the default the service layer hands to `parse_request`, and a request's own top-level `risk_free_rate` wins over that. `domain/optimizer.py` keeps a `DEFAULT_RISK_FREE_RATE` only as the fallback for callers without settings (tests, the backtest). Whatever rate was used is echoed in `metrics.risk_free_rate`.
+The risk-free rate is passed to the solver explicitly rather than left to PyPortfolioOpt's default, which changed from 0.02 to 0.0 between 1.5.x and 1.6.0 (both allowed by the pin). The rate sets where the capital-market line meets the frontier: a higher rate tangents further up it, toward higher-return, higher-volatility, more concentrated portfolios. Solving at one rate and reporting the Sharpe ratio at another would describe the result with a ratio it does not maximize. The rate is a property of the portfolio, not the install: it is whatever that portfolio's idle money earns (a savings account, T-bills, a bond fund, a checking account paying nothing), so `portfolios.risk_free_rate` stores it (nullable; `Database.migrate` adds the column to databases from before it existed) and `services/optimize.py` resolves a request's rate as: the request's own `risk_free_rate`, else the referenced portfolio's stored rate, else the domain's `DEFAULT_RISK_FREE_RATE` of 0. Zero because the app cannot know where someone's cash sits and a silent guess would misstate every Sharpe ratio; instead the response's top-level `risk_free_rate` block reports the `value`, its `source` (`request`, `tbill`, `portfolio`, `default`) and, for the default, a `note` telling the reader to set one. The browser shows the same note under the results and flags unset portfolios on their cards. As a reference, `MarketDataService.refresh()` also fetches the 13-week T-bill yield (`^IRX`, `market/yahoo.download_tbill_rate`) and caches it in `var/tbill_rate.json`; the card offers a *Use T-bill* button, `/api/market/` exposes `tbill_rate`, and `"tbill"` is accepted wherever a rate can be given. Installs that predate the sidecar fetch it in the background at startup even when prices are fresh. It is never applied without being asked for.
 
 The `max_positions` step is a post-hoc truncation, not a cardinality constraint in the solver. The reported Sharpe/return/volatility metrics are recomputed from the truncated, renormalized weights, so they describe the portfolio that is actually returned.
 
@@ -261,10 +261,10 @@ All fields are optional. Unknown fields are ignored.
 | `constraints.max_positions` | Keep only the N largest weights after solving, then renormalize | unlimited |
 | `constraints.min_universal_weight` | Lower bound applied to **every** asset in the universe | 0 |
 | `constraints.max_turnover` | Largest fraction of portfolio value the plan may sell, 0 to 1 | 1 (no limit) |
-| `risk_free_rate` | Annual rate the Sharpe ratio is maximized and reported against, as a fraction | `Settings.risk_free_rate` (0.04) |
+| `risk_free_rate` | Annual yield the idle money earns, as a fraction, or `"tbill"` for the cached Treasury yield | the stored portfolio's rate, else 0 (flagged in the response) |
 | `exclude_metrics` | Omit the `metrics` block | false |
 
-Total investment must be greater than zero. The response is `as_of` (the price date every number came from), an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}`, a `trades` list, and a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets, turnover, risk_free_rate}`. `exclude_metrics` and `exclude_trades` drop their blocks.
+Total investment must be greater than zero. The response is `as_of` (the price date every number came from), an `optimized_portfolio` map of ticker to `{shares, value, percent_weight}`, a `trades` list, and a `risk_free_rate` block `{value, source, note?}`, and a `metrics` block `{portfolio_value, expected_annual_return, annual_volatility, sharpe_ratio, num_assets, turnover}`. `exclude_metrics` and `exclude_trades` drop their blocks.
 
 `trades` is `domain/trades.py`: the share deltas from `initial_holdings` to the target, as `{ticker, action, shares, price, value}` with positive share counts and the direction in `action`. Sells lead, each group by descending value, so an agent executing in order frees the cash before spending it; unchanged positions and differences too small to show at four decimals produce no entry. It exists so an agent driving a broker never has to diff two allocations itself, and `price` records which close the plan assumed. The browser results page renders the same list.
 
@@ -386,7 +386,7 @@ flowchart LR
         PIP --> PATHFIX["ensure ~/.local/bin on PATH"]
         PATHFIX --> DATA["wolvwealth refresh-data<br/>(--no-data defers to first start)"]
     end
-    DATA --> SERVE["wolvwealth serve [--dev] [--port] [--no-browser] [--risk-free-rate]"]
+    DATA --> SERVE["wolvwealth serve [--dev] [--port] [--no-browser]"]
     subgraph Styling["contributors only (Node)"]
         TPL["web/templates/*.html"] --> TW["npm run css / css:watch"] --> OUT["web/static/css/output.css (committed)"]
     end

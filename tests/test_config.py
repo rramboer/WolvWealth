@@ -2,8 +2,6 @@
 
 import pathlib
 
-import pytest
-
 from wolvwealth.config import Settings
 
 
@@ -33,16 +31,7 @@ def test_defaults_are_paths():
 
 
 def test_from_env_reads_the_overrides():
-    settings = Settings.from_env(
-        {"WOLVWEALTH_VAR": "/tmp/env", "WOLVWEALTH_NO_AUTO_REFRESH": "1", "WOLVWEALTH_RISK_FREE_RATE": "0.035"}
-    )
+    settings = Settings.from_env({"WOLVWEALTH_VAR": "/tmp/env", "WOLVWEALTH_NO_AUTO_REFRESH": "1"})
     assert settings.var_dir == pathlib.Path("/tmp/env")
     assert settings.auto_refresh is False
-    assert settings.risk_free_rate == 0.035
     assert Settings.from_env({}).auto_refresh is True
-    assert Settings.from_env({}).risk_free_rate == 0.04
-
-
-def test_malformed_risk_free_rate_in_env_names_the_variable():
-    with pytest.raises(ValueError, match="WOLVWEALTH_RISK_FREE_RATE"):
-        Settings.from_env({"WOLVWEALTH_RISK_FREE_RATE": "four percent"})

@@ -30,4 +30,8 @@ class Portfolio:
     name: str
     cash: float = 0.0
     holdings: dict = dataclasses.field(default_factory=dict)  # ticker -> shares
+    #: Annual yield this portfolio's uninvested money earns (savings account,
+    #: T-bills, a bond ETF...), as a fraction. None means the owner has not
+    #: said, and the optimizer assumes 0% and says so in its output.
+    risk_free_rate: float = None
     created: str = ""

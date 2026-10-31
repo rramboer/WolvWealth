@@ -11,6 +11,7 @@ from wolvwealth.domain import holdings_parse
 from wolvwealth.domain.errors import NotFoundError, ValidationError
 from wolvwealth.domain.market import MarketData
 from wolvwealth.domain.models import NAME_RULE, Portfolio, valid_name
+from wolvwealth.services import risk_free
 from wolvwealth.storage.repository import PortfolioRepository
 
 MODES = ("merge", "replace")
@@ -26,6 +27,7 @@ class ImportOutcome:
     skipped_unknown: list
     ignored_lines: list
     cash_set: float = None
+    risk_free_rate_set: float = None
 
 
 def resolve_target(repo: PortfolioRepository, workspace, name, create: bool = False) -> Portfolio:
@@ -66,7 +68,7 @@ def parse_holdings_map(holdings, market: MarketData) -> holdings_parse.ParsedHol
     return parsed
 
 
-def import_holdings(
+def import_holdings(  # pylint: disable=too-many-arguments  # keyword-only knobs mirroring the API body
     repo: PortfolioRepository,
     market: MarketData,
     portfolio: Portfolio,
@@ -76,8 +78,16 @@ def import_holdings(
     cash=None,
     mode: str = "merge",
     skip_unknown: bool = False,
+    risk_free_rate=None,
+    tbill: dict = None,
 ) -> ImportOutcome:
-    """Parse, validate, and write holdings into ``portfolio`` in one transaction."""
+    """Parse, validate, and write holdings into ``portfolio`` in one transaction.
+
+    ``risk_free_rate`` (a fraction, or ``"tbill"``) also stores the yield the
+    portfolio's idle money earns, since an import is usually the moment a
+    portfolio is set up and the only API that writes one.
+    """
+    rate, _ = risk_free.resolve(risk_free_rate, tbill)
     if mode not in MODES:
         raise ValidationError('Invalid mode. mode must be "merge" or "replace".')
     if not isinstance(skip_unknown, bool):
@@ -106,6 +116,8 @@ def import_holdings(
     if final_cash is not None:
         final_cash = round(final_cash, 2)
         repo.set_cash(portfolio.workspace, portfolio.id, final_cash)
+    if rate is not None:
+        repo.set_risk_free_rate(portfolio.workspace, portfolio.id, rate)
     return ImportOutcome(
         portfolio=repo.get_portfolio(portfolio.workspace, portfolio_id=portfolio.id),
         imported=imported,
@@ -113,4 +125,5 @@ def import_holdings(
         skipped_unknown=parsed.unknown,
         ignored_lines=parsed.ignored,
         cash_set=final_cash,
+        risk_free_rate_set=rate,
     )

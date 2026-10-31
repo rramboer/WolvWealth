@@ -16,15 +16,25 @@ from wolvwealth.domain import trades
 from wolvwealth.domain.errors import ValidationError
 from wolvwealth.domain.market import MarketData
 
-#: Annual risk-free rate used when neither the request nor the caller
-#: supplies one: roughly the 3-month T-bill yield. The same rate is used both
-#: to solve for the max-Sharpe portfolio and to report its Sharpe ratio, and
-#: it is always passed to the solver explicitly: PyPortfolioOpt's own default
-#: was 0.02 through 1.5.x and became 0.0 in 1.6.0, and both satisfy
-#: pyproject's pin, so relying on it meant the portfolio was optimized against
-#: whichever rate happened to be installed. Installs set their own default
-#: through ``Settings.risk_free_rate``; this constant is only the fallback.
-DEFAULT_RISK_FREE_RATE = 0.04
+#: Annual risk-free rate assumed when the request names none: zero, because
+#: the app cannot know where someone's uninvested money sits. A savings
+#: account, T-bills, a bond ETF and a checking account all pay differently,
+#: so the rate belongs to the portfolio and its owner, and a guess applied
+#: silently would misstate every Sharpe ratio. The result says when this
+#: fallback was used (``risk_free_rate.note``). The same rate is used both
+#: to solve for the max-Sharpe portfolio and to report its ratio, and it is
+#: always passed to the solver explicitly: PyPortfolioOpt's own default was
+#: 0.02 through 1.5.x and 0.0 from 1.6.0, both allowed by pyproject's pin.
+DEFAULT_RISK_FREE_RATE = 0.0
+#: Where the rate in a request came from, for the response. The service
+#: layer sets "portfolio" or "tbill" when it filled the rate in itself.
+RATE_SOURCES = ("request", "portfolio", "tbill", "default")
+#: Shown whenever the fallback rate was used.
+DEFAULT_RATE_NOTE = (
+    "No risk-free rate was given, so 0% was assumed: the Sharpe ratio treats uninvested money as earning "
+    "nothing. Set the rate your cash actually earns (savings, T-bills, a bond fund) on the portfolio, or "
+    "pass risk_free_rate with the request."
+)
 #: Default universe when the request names none: the 500 largest tickers.
 DEFAULT_UNIVERSE_SIZE = 500
 #: Weights below this are treated as zero after solving.
@@ -60,22 +70,19 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     min_universal_weight: float = 0.0
     max_turnover: float = None  # fraction of portfolio value that may be sold; None = no limit
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE
+    risk_free_rate_source: str = "default"
     exclude_metrics: bool = False
     exclude_trades: bool = False
 
 
-def parse_request(
-    payload, market: MarketData, default_risk_free_rate: float = DEFAULT_RISK_FREE_RATE
-) -> OptimizationRequest:
+def parse_request(payload, market: MarketData) -> OptimizationRequest:
     """Validate a raw request dict against the market data.
 
-    ``default_risk_free_rate`` is the install's configured rate, used when
-    the payload has no ``risk_free_rate`` of its own. Every problem raises
-    ValidationError with a message naming the field.
+    Every problem raises ValidationError with a message naming the field.
     """
     if not isinstance(payload, dict):
         raise ValidationError("Parse Error. Request body must be a JSON object.")
-    request = OptimizationRequest(universe=market.top(DEFAULT_UNIVERSE_SIZE), risk_free_rate=default_risk_free_rate)
+    request = OptimizationRequest(universe=market.top(DEFAULT_UNIVERSE_SIZE))
     _parse_cash(payload, request)
     _parse_risk_free_rate(payload, request)
     _parse_universe(payload, request, market)
@@ -106,6 +113,7 @@ def _parse_risk_free_rate(payload, request) -> None:
         # The common slip is writing 4 for 4%; say so rather than reporting a range.
         raise ValidationError("Invalid risk_free_rate. risk_free_rate is a decimal fraction: 0.04 means 4%.")
     request.risk_free_rate = round(value, 6)
+    request.risk_free_rate_source = "request"
 
 
 def _parse_universe(payload, request, market) -> None:
@@ -449,7 +457,11 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     # as_of is the date of the prices every number here was computed from.
     # An agent about to place real orders needs it to decide whether the plan
     # is fresh enough to act on; without it the response looks like a quote.
-    result = {"as_of": str(market.as_of), "optimized_portfolio": portfolio}
+    result = {
+        "as_of": str(market.as_of),
+        "risk_free_rate": _describe_rate(request),
+        "optimized_portfolio": portfolio,
+    }
     if not request.exclude_trades:
         result["trades"] = trades.plan(
             request.holdings,
@@ -470,10 +482,6 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
             "expected_annual_return": round(expected_return, 3),
             "annual_volatility": round(volatility, 3),
             "sharpe_ratio": sharpe,
-            # Echoed so a reader of the response knows which rate the solve
-            # and the ratio above assumed, whether it came from the request,
-            # the install's settings, or the built-in default.
-            "risk_free_rate": request.risk_free_rate,
             "num_assets": len(weights),
             # Measured on the returned portfolio, so it includes anything the
             # max_positions truncation sold beyond what the solver was allowed.
@@ -482,6 +490,19 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     return result
 
 
-def optimize(payload, market: MarketData, default_risk_free_rate: float = DEFAULT_RISK_FREE_RATE) -> dict:
+def _describe_rate(request: OptimizationRequest) -> dict:
+    """Describe the rate the solve assumed and where it came from, for the response.
+
+    Present even when metrics are excluded: it is an input being echoed, not
+    a measurement, and a reader must be able to tell a deliberate 0% from
+    the fallback.
+    """
+    described = {"value": request.risk_free_rate, "source": request.risk_free_rate_source}
+    if request.risk_free_rate_source == "default":
+        described["note"] = DEFAULT_RATE_NOTE
+    return described
+
+
+def optimize(payload, market: MarketData) -> dict:
     """Validate and solve in one call."""
-    return solve(parse_request(payload, market, default_risk_free_rate), market)
+    return solve(parse_request(payload, market), market)

@@ -86,13 +86,17 @@ def test_fields_that_reach_the_solver_get_their_own_solve(market, solves, change
     assert len(solves) == 2
 
 
-def test_the_install_default_rate_is_part_of_the_key(market, solves):
-    """Two installs' defaults differ only in the parse step, so they must still get separate solves."""
-    optimizer.optimize(BASE, market, default_risk_free_rate=0.02)
-    optimizer.optimize(BASE, market, default_risk_free_rate=0.05)
-    assert len(solves) == 2
-    optimizer.optimize({**BASE, "risk_free_rate": 0.02}, market, default_risk_free_rate=0.05)
-    assert len(solves) == 2, "an explicit rate equal to a cached default is the same solve"
+def test_a_portfolio_rate_and_an_equal_request_rate_share_a_solve(market, solves):
+    """The source of the rate is bookkeeping for the response; only its value reaches the solver."""
+    from wolvwealth.domain.models import Portfolio
+    from wolvwealth.services import optimize as service
+
+    stored = Portfolio(id=1, workspace="w", name="p", cash=10_000, risk_free_rate=0.03)
+    first = service.optimize(BASE, market, portfolio=stored)
+    second = service.optimize({**BASE, "risk_free_rate": 0.03}, market)
+    assert len(solves) == 1
+    assert first["optimized_portfolio"] == second["optimized_portfolio"]
+    assert first["risk_free_rate"]["source"] == "portfolio" and second["risk_free_rate"]["source"] == "request"
 
 
 def test_holdings_join_the_key_only_under_a_turnover_limit(market, solves):

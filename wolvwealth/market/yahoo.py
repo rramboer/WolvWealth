@@ -27,6 +27,10 @@ RETRY_BACKOFF_SECONDS = 30
 #: shorter request is cheaper for Yahoo to answer and costs us less when it
 #: is refused.
 RETRY_CHUNK_SIZES = (100, 25, 5)
+#: Yahoo's symbol for the 13-week US Treasury bill discount yield, quoted in
+#: percent (4.12 means 4.12%). The textbook risk-free rate, offered to users
+#: as a reference they can copy onto a portfolio, never applied for them.
+TBILL_SYMBOL = "^IRX"
 
 
 def _download_chunk(tickers: list, start_date: str, end_date: str) -> pd.DataFrame:
@@ -61,6 +65,21 @@ def download_prices(tickers: list, start_date: str, end_date: str = None, sleep=
                 data[ticker] = retried[ticker]
             sleep(CHUNK_PAUSE_SECONDS)
     return data
+
+
+def download_tbill_rate() -> tuple:
+    """Return ``(rate, as_of)``: the latest 13-week T-bill yield as a fraction, and its date.
+
+    Raises if Yahoo returns nothing; the caller decides whether that is
+    fatal (it never is: the rate is a reference, not an input the app needs).
+    """
+    data = yf.download(TBILL_SYMBOL, period="10d", auto_adjust=False, progress=False)["Close"]
+    if isinstance(data, pd.DataFrame):
+        data = data.iloc[:, 0]
+    data = data.dropna()
+    if data.empty:
+        raise RuntimeError(f"Yahoo returned no quotes for {TBILL_SYMBOL}")
+    return round(float(data.iloc[-1]) / 100, 6), str(data.index[-1].date())
 
 
 def empty_tickers(prices: pd.DataFrame, tickers=None) -> list:

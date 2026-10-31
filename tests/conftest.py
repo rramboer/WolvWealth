@@ -6,6 +6,7 @@ import pytest
 
 from wolvwealth.config import Settings
 from wolvwealth.domain.market import MarketData
+from wolvwealth.market import yahoo
 from wolvwealth.services.container import Services
 from wolvwealth.web import create_app
 
@@ -23,6 +24,21 @@ def synthetic_market(seed: int = 42, periods: int = 400) -> MarketData:
     frame = pd.DataFrame(prices, index=dates)
     frame.index.name = "Date"
     return MarketData.build(TICKERS, frame)
+
+
+@pytest.fixture(autouse=True)
+def offline_tbill(monkeypatch):
+    """No test reaches Yahoo for the T-bill yield; it behaves as if the network were down.
+
+    ``refresh()`` fetches the yield alongside prices, so without this every
+    refresh test would make a real request. Tests that need a yield set
+    ``service.tbill_downloader`` or call ``set_tbill``.
+    """
+
+    def offline():
+        raise RuntimeError("offline in tests")
+
+    monkeypatch.setattr(yahoo, "download_tbill_rate", offline)
 
 
 @pytest.fixture

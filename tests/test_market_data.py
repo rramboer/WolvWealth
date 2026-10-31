@@ -72,6 +72,36 @@ def test_refresh_recomputes_stats_for_the_new_rows(tmp_path):
     assert list(cov.columns) == list(data.prices.columns)
 
 
+def test_refresh_fetches_the_tbill_rate_and_survives_its_failure(tmp_path):
+    service, store = build_service(tmp_path)
+    service.set_data(synthetic_market())
+    assert service.tbill is None
+    service.tbill_downloader = lambda: (0.0412, "2026-10-30")
+    assert service.refresh_tbill() is True
+    assert service.tbill == {"rate": 0.0412, "as_of": "2026-10-30"} == store.load_tbill()
+
+    def broken():
+        raise RuntimeError("no quotes")
+
+    service.tbill_downloader = broken
+    assert service.refresh_tbill() is False
+    assert service.tbill == {"rate": 0.0412, "as_of": "2026-10-30"}, "a failed fetch keeps the last good value"
+
+
+def test_fresh_prices_but_no_tbill_triggers_only_a_tbill_fetch(tmp_path):
+    """An install from before the T-bill reference existed picks it up at startup without a price refresh."""
+    service, _store = build_service(tmp_path)
+    frame = synthetic_market().prices.copy()
+    frame.index = pd.date_range(end=pd.Timestamp.now().normalize(), periods=len(frame))
+    service.set_data(MarketData(synthetic_market().universe, frame))
+    service.tbill_downloader = lambda: (0.0412, "2026-10-30")
+    thread = service.start_background_refresh(max_age_days=7)
+    assert thread is not None
+    thread.join(timeout=10)
+    assert service.tbill["rate"] == 0.0412
+    assert service.start_background_refresh(max_age_days=7) is None, "nothing left to do"
+
+
 def test_stats_for_slices_equal_direct_computation(market):
     subset = ["AAA", "CCC"]
     full = MarketData.build(market.universe, market.prices, MarketStats.compute(market.prices))

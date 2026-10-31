@@ -186,6 +186,26 @@ def test_api_import_then_optimize_round_trip(workspace_client, repo):
     assert response.get_json()["metrics"]["portfolio_value"] > 5000  # cash + 20 BBB
 
 
+def test_api_import_can_set_the_risk_free_rate(workspace_client, repo, services):
+    body = workspace_client.post(
+        "/api/holdings/import/", json={"portfolio": "main", "holdings": {"BBB": 1}, "risk_free_rate": 0.045}
+    ).get_json()
+    assert body["risk_free_rate"] == 0.045
+    assert repo.get_portfolio("tester", name="main").risk_free_rate == 0.045
+    response = workspace_client.post(
+        "/api/holdings/import/", json={"portfolio": "main", "holdings": {"BBB": 1}, "risk_free_rate": "tbill"}
+    )
+    assert response.status_code == 400 and "not been fetched" in response.get_json()["error"]["message"]
+    assert repo.get_portfolio("tester", name="main").risk_free_rate == 0.045, "a rejected import writes nothing"
+    services.market.set_tbill(0.0412, "2026-10-30")
+    body = workspace_client.post(
+        "/api/holdings/import/", json={"portfolio": "main", "holdings": {"BBB": 1}, "risk_free_rate": "tbill"}
+    ).get_json()
+    assert body["risk_free_rate"] == 0.0412
+    body = workspace_client.post("/api/holdings/import/", json={"portfolio": "main", "holdings": {"BBB": 2}}).get_json()
+    assert body["risk_free_rate"] == 0.0412, "an import without a rate leaves the stored one alone"
+
+
 def test_api_import_unknown_ticker_is_400_with_payload(workspace_client, repo):
     response = workspace_client.post(
         "/api/holdings/import/", json={"workspace": "tester", "portfolio": "main", "holdings": {"FAKE": 1}}

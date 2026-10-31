@@ -125,7 +125,7 @@ def test_metrics_describe_the_returned_portfolio(market):
     assert result["metrics"]["annual_volatility"] == pytest.approx(volatility, abs=0.01)
     rate = optimizer.DEFAULT_RISK_FREE_RATE
     assert result["metrics"]["sharpe_ratio"] == pytest.approx((expected_return - rate) / volatility, abs=0.05)
-    assert result["metrics"]["risk_free_rate"] == rate
+    assert result["risk_free_rate"]["value"] == rate
 
 
 def test_solver_uses_the_same_risk_free_rate_the_metrics_report(market, monkeypatch):
@@ -142,41 +142,41 @@ def test_solver_uses_the_same_risk_free_rate_the_metrics_report(market, monkeypa
     assert seen == [optimizer.DEFAULT_RISK_FREE_RATE]
     optimizer.optimize({"initial_cash": 10000, "risk_free_rate": 0.01}, market)
     assert seen[-1] == 0.01
-    optimizer.optimize({"initial_cash": 10000, "universe": ["AAA", "BBB"]}, market, default_risk_free_rate=0.03)
-    assert seen[-1] == 0.03
 
 
 def test_returned_portfolio_maximizes_the_reported_sharpe(market):
-    """The portfolio solved at 2% must score at least as well on the 2% Sharpe as the one solved at 0%."""
+    """The portfolio solved at a rate must score at least as well on that rate's Sharpe as one solved at another."""
     from pypfopt.efficient_frontier import EfficientFrontier
 
     mu, cov = market.stats_for(market.universe)
+    rate = 0.04
 
-    def sharpe_at_reported_rate(weights):
+    def sharpe_at(weights):
         vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
-        return (float(vector @ mu) - optimizer.DEFAULT_RISK_FREE_RATE) / float(np.sqrt(vector @ cov @ vector))
+        return (float(vector @ mu) - rate) / float(np.sqrt(vector @ cov @ vector))
 
     frontier = EfficientFrontier(mu, cov, weight_bounds=(0, 1), solver=optimizer.SOLVER)
     frontier.max_sharpe(risk_free_rate=0.0)
-    rival = sharpe_at_reported_rate(frontier.clean_weights())
-    ours = optimizer.optimize({"initial_cash": 10000}, market)["optimized_portfolio"]
-    assert sharpe_at_reported_rate({t: p["percent_weight"] / 100 for t, p in ours.items()}) >= rival - 1e-6
+    rival = sharpe_at(frontier.clean_weights())
+    ours = optimizer.optimize({"initial_cash": 10000, "risk_free_rate": rate}, market)["optimized_portfolio"]
+    assert sharpe_at({t: p["percent_weight"] / 100 for t, p in ours.items()}) >= rival - 1e-6
 
 
-def test_request_rate_overrides_the_install_default(market):
-    """The request's own rate wins over whatever default the caller passes, and both are echoed back."""
-    body = {"initial_cash": 10000, "risk_free_rate": 0.0}
-    result = optimizer.optimize(body, market, default_risk_free_rate=0.05)
-    assert result["metrics"]["risk_free_rate"] == 0.0
+def test_no_rate_means_zero_with_a_note(market):
+    """The fallback is 0%, flagged in the response so a reader can tell it from a deliberate zero."""
+    result = optimizer.optimize({"initial_cash": 10000}, market)
+    assert result["risk_free_rate"]["value"] == 0.0
+    assert result["risk_free_rate"]["source"] == "default"
+    assert "0% was assumed" in result["risk_free_rate"]["note"]
     metrics = result["metrics"]
     # At a zero rate the ratio is return over volatility; both are reported to 3 decimals, hence the slack.
     assert metrics["sharpe_ratio"] == pytest.approx(
         metrics["expected_annual_return"] / metrics["annual_volatility"], abs=0.05
     )
-    assert (
-        optimizer.optimize({"initial_cash": 10000}, market, default_risk_free_rate=0.05)["metrics"]["risk_free_rate"]
-        == 0.05
-    )
+    explicit = optimizer.optimize({"initial_cash": 10000, "risk_free_rate": 0}, market)
+    assert explicit["risk_free_rate"] == {"value": 0.0, "source": "request"}
+    assert explicit["optimized_portfolio"] == result["optimized_portfolio"]
+    assert "risk_free_rate" in optimizer.optimize({"initial_cash": 10000, "exclude_metrics": True}, market)
 
 
 def test_a_higher_rate_tilts_toward_return(market):

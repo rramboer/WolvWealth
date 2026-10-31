@@ -119,22 +119,44 @@ def test_browser_max_turnover_keeps_the_holding(workspace_client, repo):
     assert b"Max turnover must be a number" in workspace_client.get("/workspace/").data
 
 
-def test_browser_risk_free_rate_field(workspace_client, repo, services):
-    """The form shows the install default, sends an override through, and the results page says which rate was used."""
-    import dataclasses
-
-    services.settings = dataclasses.replace(services.settings, risk_free_rate=0.03)
-    assert b"default 0.03" in workspace_client.get("/workspace/").data
+def test_browser_unset_rate_is_flagged_on_the_card_and_in_the_results(workspace_client, repo):
     pid = repo.get_portfolio("tester", name="main").id
+    assert b"not set, 0% assumed" in workspace_client.get("/workspace/").data
     response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "universe": "top20"})
-    assert b"vs 3.00% risk-free" in response.data
+    assert b"vs 0.00% risk-free" in response.data
+    assert b"0% was assumed" in response.data
+
+
+def test_browser_set_rate_on_the_portfolio(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post(
-        "/optimizer/run/", data={"portfolio_id": pid, "universe": "top20", "risk_free_rate": "0.01"}
+        "/portfolios/risk-free-rate/", data={"portfolio_id": pid, "risk_free_rate": "0.035"}
     )
-    assert b"vs 1.00% risk-free" in response.data
-    response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "risk_free_rate": "x"})
     assert response.status_code == 302
+    assert repo.get_portfolio("tester", name="main").risk_free_rate == 0.035
+    page = workspace_client.get("/workspace/").data
+    assert b"Risk-free rate set to 3.50%" in page and b"not set, 0% assumed" not in page
+    response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "universe": "top20"})
+    assert b"vs 3.50% risk-free" in response.data
+    assert b"0% was assumed" not in response.data
+    # Blank clears it.
+    workspace_client.post("/portfolios/risk-free-rate/", data={"portfolio_id": pid, "risk_free_rate": ""})
+    assert repo.get_portfolio("tester", name="main").risk_free_rate is None
+    workspace_client.post("/portfolios/risk-free-rate/", data={"portfolio_id": pid, "risk_free_rate": "x"})
     assert b"Risk-free rate must be a decimal fraction" in workspace_client.get("/workspace/").data
+    workspace_client.post("/portfolios/risk-free-rate/", data={"portfolio_id": pid, "risk_free_rate": "4"})
+    assert b"0.04 means 4%" in workspace_client.get("/workspace/").data
+
+
+def test_browser_tbill_button(workspace_client, repo, services):
+    pid = repo.get_portfolio("tester", name="main").id
+    assert b"Use\n                        T-bill" not in workspace_client.get("/workspace/").data
+    assert b'value="tbill"' not in workspace_client.get("/workspace/").data
+    services.market.set_tbill(0.0412, "2026-10-30")
+    page = workspace_client.get("/workspace/").data
+    assert b'value="tbill"' in page and b"(4.12%)" in page
+    workspace_client.post("/portfolios/risk-free-rate/", data={"portfolio_id": pid, "source": "tbill"})
+    assert repo.get_portfolio("tester", name="main").risk_free_rate == 0.0412
 
 
 def test_browser_optimize_error_flashes(workspace_client, repo):
@@ -163,6 +185,39 @@ def test_flashed_message_renders_on_picker(client):
 
 def test_react_shell_page_is_gone(client):
     assert client.get("/optimizer/").status_code == 404
+
+
+def test_database_from_before_the_rate_column_is_migrated_on_open(tmp_path):
+    """An install created before portfolios.risk_free_rate existed must keep working after upgrading."""
+    import sqlite3
+
+    from wolvwealth.storage.database import Database
+    from wolvwealth.storage.repository import PortfolioRepository
+
+    path = tmp_path / "old.sqlite3"
+    old = sqlite3.connect(str(path))
+    old.executescript(
+        "CREATE TABLE workspaces(name VARCHAR(64) NOT NULL, created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY(name));"
+        "CREATE TABLE portfolios(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace VARCHAR(64) NOT NULL, "
+        "name VARCHAR(64) NOT NULL, cash REAL NOT NULL DEFAULT 0, created DATETIME NOT NULL DEFAULT "
+        "CURRENT_TIMESTAMP, UNIQUE(workspace, name), FOREIGN KEY(workspace) REFERENCES workspaces(name) "
+        "ON DELETE CASCADE);"
+        "CREATE TABLE holdings(portfolio_id INTEGER NOT NULL, ticker VARCHAR(16) NOT NULL, shares REAL NOT NULL, "
+        "PRIMARY KEY(portfolio_id, ticker), FOREIGN KEY(portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE);"
+        "INSERT INTO workspaces(name) VALUES ('old'); INSERT INTO portfolios(workspace, name, cash) "
+        "VALUES ('old', 'p', 5);"
+    )
+    old.commit()
+    old.close()
+    with Database(path).connect() as connection:
+        repo = PortfolioRepository(connection)
+        portfolio = repo.get_portfolio("old", name="p")
+        assert portfolio.cash == 5 and portfolio.risk_free_rate is None
+        repo.set_risk_free_rate("old", portfolio.id, 0.02)
+        assert repo.get_portfolio("old", name="p").risk_free_rate == 0.02
+    with Database(path).connect() as connection:  # a second open finds nothing left to migrate
+        assert Database.migrate(connection) == []
 
 
 def test_repository_transaction_rolls_back_on_error(services):

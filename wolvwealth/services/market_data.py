@@ -10,8 +10,11 @@ from wolvwealth.domain.stats import MarketStats
 from wolvwealth.market import yahoo
 from wolvwealth.storage.price_store import PriceStore
 
+#: Marks the T-bill reference as not yet read from disk (None means read, and absent).
+_UNLOADED = object()
 
-class MarketDataService:
+
+class MarketDataService:  # pylint: disable=too-many-instance-attributes
     """Lazily loads the price cache, creates it on first run, and refreshes it on request."""
 
     #: Refuse to persist an incremental refresh if more than this share of
@@ -25,12 +28,17 @@ class MarketDataService:
         downloader=yahoo.download_prices,
         log=print,
         stats_universe_size: int = 500,
+        tbill_downloader=None,
     ) -> None:
-        """Wire the store and the download function (injectable for tests)."""
+        """Wire the store and the download functions (injectable for tests)."""
         self.store = store
         self.history_start = history_start
         self.downloader = downloader
+        #: None means ``yahoo.download_tbill_rate``, looked up at call time
+        #: so a test can replace the module function and never reach Yahoo.
+        self.tbill_downloader = tbill_downloader
         self.log = log
+        self._tbill = _UNLOADED
         self.stats_universe_size = stats_universe_size
         self._data = None
         #: Held for the duration of a background refresh so a second trigger
@@ -47,6 +55,33 @@ class MarketDataService:
     def set_data(self, data: MarketData) -> None:
         """Replace the snapshot in memory (tests, backtests). Does not write to disk."""
         self._data = data
+
+    @property
+    def tbill(self):
+        """The cached 13-week T-bill yield as ``{"rate", "as_of"}``, or None if never fetched.
+
+        A reference for users choosing a risk-free rate, surfaced in the UI
+        and the API; the optimizer never reads it on its own.
+        """
+        if self._tbill is _UNLOADED:
+            self._tbill = self.store.load_tbill()
+        return self._tbill
+
+    def set_tbill(self, rate: float, as_of: str) -> None:
+        """Replace the cached T-bill yield in memory (tests). Does not write to disk."""
+        self._tbill = {"rate": rate, "as_of": as_of}
+
+    def refresh_tbill(self) -> bool:
+        """Fetch the latest T-bill yield and cache it. Never raises; returns whether it succeeded."""
+        downloader = self.tbill_downloader or yahoo.download_tbill_rate
+        try:
+            rate, as_of = downloader()
+        except Exception as err:  # pylint: disable=broad-except
+            self.log(f"wolvwealth: could not fetch the T-bill rate ({err}); the stored one, if any, stands")
+            return False
+        self.store.save_tbill(rate, as_of)
+        self.set_tbill(rate, as_of)
+        return True
 
     def _load(self) -> MarketData:
         universe = self.store.load_universe()
@@ -127,6 +162,7 @@ class MarketDataService:
         ``full`` re-downloads the entire history, which is the only way to
         pick up corrected adjusted closes after splits and dividends.
         """
+        self.refresh_tbill()
         if full:
             prices = self._download(self.data.universe, self.history_start)
             self.store.save_prices(prices)
@@ -184,20 +220,28 @@ class MarketDataService:
         The thread is a daemon so Ctrl-C never waits on a download.
         """
         age = self._stale_by(max_age_days)
-        if not age:
+        if not age and self.tbill is not None:
             return None
         # Not a `with`: the lock is acquired here and released on the worker
         # thread when the refresh finishes, so the scopes cannot coincide.
         if not self._refresh_lock.acquire(blocking=False):  # pylint: disable=consider-using-with
             return None
-        self.log(
-            f"wolvwealth: cached prices are {age} days old, refreshing in the background "
-            "(set WOLVWEALTH_NO_AUTO_REFRESH=1 to skip); serving cached prices meanwhile..."
-        )
+        if age:
+            self.log(
+                f"wolvwealth: cached prices are {age} days old, refreshing in the background "
+                "(set WOLVWEALTH_NO_AUTO_REFRESH=1 to skip); serving cached prices meanwhile..."
+            )
+        else:
+            self.log("wolvwealth: fetching the current T-bill rate in the background...")
 
         def run():
             try:
-                self._refresh_quietly()
+                if age:
+                    self._refresh_quietly()
+                else:
+                    # Prices are fresh; only the T-bill reference is missing
+                    # (an install from before it existed). One tiny download.
+                    self.refresh_tbill()
             finally:
                 self._refresh_lock.release()
 

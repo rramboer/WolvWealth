@@ -6,6 +6,13 @@ import sqlite3
 
 SQL_DIR = pathlib.Path(__file__).resolve().parent / "sql"
 
+#: Columns added after the first release, applied to databases created
+#: before them. Each entry is (table, column, ALTER TABLE clause). SQLite
+#: cannot add a column inside the CREATE TABLE after the fact, and
+#: ``schema.sql`` only runs for brand-new files, so an existing install
+#: gets the column here on its next connection.
+MIGRATIONS = (("portfolios", "risk_free_rate", "ALTER TABLE portfolios ADD COLUMN risk_free_rate REAL"),)
+
 
 def _dict_factory(cursor, row):
     """Return rows as dicts keyed on column name."""
@@ -39,10 +46,26 @@ class Database:
             self.path.unlink()
         self.ensure_schema()
 
+    @staticmethod
+    def migrate(connection: sqlite3.Connection) -> list:
+        """Add any column in MIGRATIONS the database lacks; return the names added."""
+        added = []
+        for table, column, statement in MIGRATIONS:
+            rows = connection.execute(f"PRAGMA table_info({table})").fetchall()  # fixed table names
+            # Plain tuples on a fresh connection, dicts once the row factory is set.
+            columns = {row["name"] if isinstance(row, dict) else row[1] for row in rows}
+            if column not in columns:
+                connection.execute(statement)
+                added.append(f"{table}.{column}")
+        if added:
+            connection.commit()
+        return added
+
     def open(self) -> sqlite3.Connection:
         """Open a connection with dict rows and foreign keys on. Caller commits and closes."""
         self.ensure_schema()
         connection = sqlite3.connect(str(self.path))
+        self.migrate(connection)
         connection.row_factory = _dict_factory
         connection.execute("PRAGMA foreign_keys = ON")  # per-connection in sqlite
         return connection

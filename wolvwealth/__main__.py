@@ -9,7 +9,6 @@ Works from any directory; data files are resolved from the install location.
 """
 
 import argparse
-import dataclasses
 import os
 import sys
 import threading
@@ -29,13 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port (default {DEFAULT_PORT})")
     serve.add_argument("--no-browser", action="store_true", help="Do not open a browser tab")
     serve.add_argument("--dev", action="store_true", help="Flask debug mode: auto-reload on code changes")
-    serve.add_argument(
-        "--risk-free-rate",
-        type=float,
-        metavar="RATE",
-        help="Annual risk-free rate the optimizer uses, as a fraction (0.04 is 4%%). Default: the "
-        "WOLVWEALTH_RISK_FREE_RATE environment variable, else 0.04. Any request can still override it.",
-    )
 
     refresh = sub.add_parser("refresh-data", help="Pull market prices up to today into var/historical_prices.parquet")
     refresh.add_argument(
@@ -54,11 +46,6 @@ def cmd_serve(args, services: Services) -> int:
     """Load prices, start a refresh if they are stale, then run Flask on localhost only (no auth)."""
     from wolvwealth.web import create_app  # pylint: disable=import-outside-toplevel
 
-    if args.risk_free_rate is not None:
-        if not -1 < args.risk_free_rate < 1:
-            print("--risk-free-rate must be a fraction between -1 and 1 (0.04 for 4%)", file=sys.stderr)
-            return 2
-        services.settings = dataclasses.replace(services.settings, risk_free_rate=args.risk_free_rate)
     in_reloader_child = bool(os.environ.get("WERKZEUG_RUN_MAIN"))
     if not in_reloader_child:
         services.market.data  # pylint: disable=pointless-statement  # load (or build) the cache up front
@@ -70,7 +57,6 @@ def cmd_serve(args, services: Services) -> int:
     app = create_app(services)
     url = f"http://localhost:{args.port}/"
     print(f"WolvWealth is running at {url}  (Ctrl-C to stop)")
-    print(f"Risk-free rate: {services.settings.risk_free_rate:.2%} (--risk-free-rate or WOLVWEALTH_RISK_FREE_RATE)")
     if not args.no_browser and not in_reloader_child:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     app.run(host="127.0.0.1", port=args.port, debug=args.dev)
@@ -86,7 +72,9 @@ def cmd_refresh_data(args, services: Services) -> int:
     if market.refresh(full=args.full):
         print(f"Done. Prices now end {market.data.as_of}.")
     else:
-        print("Already up to date.")
+        print("Prices already up to date.")
+    if market.tbill is not None:
+        print(f"13-week T-bill yield: {market.tbill['rate']:.2%} as of {market.tbill['as_of']}.")
     return 0
 
 

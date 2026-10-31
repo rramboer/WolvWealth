@@ -14,6 +14,9 @@ CREATE TABLE portfolios(
   workspace VARCHAR(64) NOT NULL,
   name VARCHAR(64) NOT NULL,
   cash REAL NOT NULL DEFAULT 0,
+  -- Annual yield of the uninvested money, as a fraction (0.04 = 4%). NULL
+  -- until the owner sets one; the optimizer then assumes 0% and says so.
+  risk_free_rate REAL,
   created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(workspace, name),
   FOREIGN KEY(workspace) REFERENCES workspaces(name) ON DELETE CASCADE

@@ -7,6 +7,9 @@ workspace's data (tidiness, not security: there are no passwords).
 
 from wolvwealth.domain.models import Portfolio, Workspace
 
+#: Every column of ``portfolios`` the Portfolio dataclass carries, in one place.
+PORTFOLIO_COLUMNS = "id, workspace, name, cash, risk_free_rate, created"
+
 
 class PortfolioRepository:
     """SQL for the three tables, returning domain objects."""
@@ -50,7 +53,7 @@ class PortfolioRepository:
     def list_portfolios(self, workspace: str) -> list:
         """All portfolios in a workspace, each with holdings."""
         rows = self.connection.execute(
-            "SELECT id, workspace, name, cash, created FROM portfolios WHERE workspace = ? ORDER BY created, name",
+            f"SELECT {PORTFOLIO_COLUMNS} FROM portfolios WHERE workspace = ? ORDER BY created, name",
             (workspace,),
         ).fetchall()
         return [self._with_holdings(row) for row in rows]
@@ -59,12 +62,12 @@ class PortfolioRepository:
         """One portfolio by name or id within a workspace, or None."""
         if portfolio_id is not None:
             row = self.connection.execute(
-                "SELECT id, workspace, name, cash, created FROM portfolios WHERE workspace = ? AND id = ?",
+                f"SELECT {PORTFOLIO_COLUMNS} FROM portfolios WHERE workspace = ? AND id = ?",
                 (workspace, portfolio_id),
             ).fetchone()
         else:
             row = self.connection.execute(
-                "SELECT id, workspace, name, cash, created FROM portfolios WHERE workspace = ? AND name = ?",
+                f"SELECT {PORTFOLIO_COLUMNS} FROM portfolios WHERE workspace = ? AND name = ?",
                 (workspace, name),
             ).fetchone()
         return None if row is None else self._with_holdings(row)
@@ -84,6 +87,12 @@ class PortfolioRepository:
         """Set the uninvested cash of a portfolio."""
         self.connection.execute(
             "UPDATE portfolios SET cash = ? WHERE workspace = ? AND id = ?", (cash, workspace, portfolio_id)
+        )
+
+    def set_risk_free_rate(self, workspace: str, portfolio_id: int, rate) -> None:
+        """Set the yield a portfolio's uninvested money earns, as a fraction; None clears it."""
+        self.connection.execute(
+            "UPDATE portfolios SET risk_free_rate = ? WHERE workspace = ? AND id = ?", (rate, workspace, portfolio_id)
         )
 
     # --- holdings -----------------------------------------------------------

@@ -11,8 +11,6 @@ def test_parser_commands_and_defaults():
     assert serve.command == "serve" and serve.port == 8000 and not serve.dev and not serve.no_browser
     serve = parser.parse_args(["serve", "--port", "9000", "--dev", "--no-browser"])
     assert serve.port == 9000 and serve.dev and serve.no_browser
-    assert serve.risk_free_rate is None
-    assert parser.parse_args(["serve", "--risk-free-rate", "0.045"]).risk_free_rate == 0.045
     assert parser.parse_args(["refresh-data", "--full"]).full
     assert parser.parse_args(["reset-db"]).command == "reset-db"
     with pytest.raises(SystemExit):
@@ -44,17 +42,6 @@ def test_serve_binds_localhost_and_opens_browser(services, monkeypatch):
     assert calls["debug"] is True and opened == []
 
 
-def test_serve_risk_free_rate_flag_sets_the_install_default(services, monkeypatch, capsys):
-    monkeypatch.setattr("flask.Flask.run", lambda self, **kwargs: None)
-    assert services.settings.risk_free_rate == 0.04
-    assert cli.main(["serve", "--no-browser", "--risk-free-rate", "0.05"], services) == 0
-    assert services.settings.risk_free_rate == 0.05
-    assert "Risk-free rate: 5.00%" in capsys.readouterr().out
-    assert cli.main(["serve", "--no-browser", "--risk-free-rate", "5"], services) == 2
-    assert "0.04 for 4%" in capsys.readouterr().err
-    assert services.settings.risk_free_rate == 0.05, "a rejected flag must not change the setting"
-
-
 def test_reset_db_erases_workspaces_and_restores_demo(workspace_client, services, capsys):
     assert cli.main(["reset-db"], services) == 0
     names = [w["name"] for w in workspace_client.get("/api/workspaces/").get_json()["workspaces"]]
@@ -76,5 +63,10 @@ def test_refresh_data_reports_up_to_date(services, capsys):
     frame = services.market.data.prices.copy()
     frame.index = pd.date_range(end=pd.Timestamp.now().normalize(), periods=len(frame))
     services.market.set_data(services.market.data.__class__(services.market.data.universe, frame))
+    services.market.tbill_downloader = lambda: (0.0412, "2026-10-30")
     assert cli.main(["refresh-data"], services) == 0
-    assert "Already up to date" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Prices already up to date" in out
+    assert "T-bill yield: 4.12% as of 2026-10-30" in out
+    assert services.market.tbill == {"rate": 0.0412, "as_of": "2026-10-30"}
+    assert services.price_store.load_tbill() == {"rate": 0.0412, "as_of": "2026-10-30"}

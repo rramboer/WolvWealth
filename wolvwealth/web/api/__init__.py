@@ -41,7 +41,7 @@ def index():
     return flask.jsonify(
         {
             "/api/": "GET: this index",
-            "/api/market/": "GET: price date, ticker universe, universe aliases",
+            "/api/market/": "GET: price date, ticker universe, universe aliases, current T-bill yield",
             "/api/optimize/": "POST: optimize a portfolio; returns target allocation, trades, metrics",
             "/api/workspaces/": "GET: list workspaces and their portfolios",
             "/api/holdings/import/": "POST: bulk-load holdings into a stored portfolio (holdings map or csv text)",
@@ -59,6 +59,7 @@ def market():
     ``tickers`` to validate symbols without a round trip per guess.
     """
     data = context.market()
+    tbill = context.services().market.tbill
     return flask.jsonify(
         {
             "as_of": str(data.as_of),
@@ -67,6 +68,10 @@ def market():
             "tradeable_size": len(data.tradeable),
             "universe_aliases": sorted(UNIVERSE_ALIASES),
             "tickers": list(data.tradeable),
+            # A reference for choosing a portfolio's risk_free_rate; null
+            # until the first refresh has fetched it. Never applied for you.
+            "tbill_rate": None if tbill is None else tbill["rate"],
+            "tbill_as_of": None if tbill is None else tbill["as_of"],
         }
     )
 
@@ -82,7 +87,7 @@ def workspaces():
                     "name": workspace.name,
                     "created": workspace.created,
                     "portfolios": [
-                        {"name": p.name, "cash": p.cash, "holdings": p.holdings}
+                        {"name": p.name, "cash": p.cash, "risk_free_rate": p.risk_free_rate, "holdings": p.holdings}
                         for p in repo.list_portfolios(workspace.name)
                     ],
                 }
@@ -100,7 +105,7 @@ def run_optimize():
         context.market(),
         repo=context.repo(),
         default_workspace=flask.session.get("workspace"),
-        settings=context.services().settings,
+        tbill=context.services().market.tbill,
     )
     return flask.jsonify(result)
 
@@ -110,7 +115,8 @@ def import_holdings():
     """Bulk-import holdings into a stored portfolio.
 
     Body: workspace (optional; session fallback), portfolio, create_portfolio,
-    holdings (object) OR csv (string), cash, mode ("merge"|"replace"), skip_unknown.
+    holdings (object) OR csv (string), cash, risk_free_rate (number or "tbill"),
+    mode ("merge"|"replace"), skip_unknown.
     """
     body = _json_body()
     repo = context.repo()
@@ -133,6 +139,8 @@ def import_holdings():
         cash=body.get("cash"),
         mode=body.get("mode", "merge"),
         skip_unknown=body.get("skip_unknown", False),
+        risk_free_rate=body.get("risk_free_rate"),
+        tbill=context.services().market.tbill,
     )
     return flask.jsonify(
         {
@@ -143,6 +151,7 @@ def import_holdings():
             "skipped_unknown": outcome.skipped_unknown,
             "ignored_lines": outcome.ignored_lines,
             "cash": outcome.portfolio.cash,
+            "risk_free_rate": outcome.portfolio.risk_free_rate,
             "holdings": outcome.portfolio.holdings,
         }
     )

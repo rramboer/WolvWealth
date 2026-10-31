@@ -40,7 +40,9 @@ Price-cache freshness and the symbols a request may use.
   "universe_size": 1982,
   "tradeable_size": 1576,
   "universe_aliases": ["top20", "top50", "top100", "top200", "top300", "top400", "top500"],
-  "tickers": ["MSFT", "AAPL", "GOOGL", "..."]
+  "tickers": ["MSFT", "AAPL", "GOOGL", "..."],
+  "tbill_rate": 0.0412,
+  "tbill_as_of": "2026-10-29"
 }
 ```
 
@@ -52,6 +54,8 @@ Price-cache freshness and the symbols a request may use.
 | `tradeable_size` | Tickers with a current price — the ones you may actually name |
 | `universe_aliases` | Shorthands accepted in `universe` |
 | `tickers` | The full tradeable list, so symbols can be validated without a round trip |
+| `tbill_rate` | 13-week US Treasury bill yield as a fraction, fetched from Yahoo at the last price refresh. A reference for choosing a `risk_free_rate`; the app never applies it on its own. `null` until the first refresh |
+| `tbill_as_of` | Date of that yield, or `null` |
 
 `universe_size` exceeds `tradeable_size` because the ticker list keeps names that were
 acquired, renamed or delisted. Those are excluded from aliases and rejected if named.
@@ -77,7 +81,7 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | `constraints.max_positions` | integer ≥ 1 | Keep the N largest weights, then renormalize | unlimited |
 | `constraints.min_universal_weight` | number 0–1 | Floor applied to **every** asset in the universe | `0` |
 | `constraints.max_turnover` | number 0–1 | Largest fraction of the portfolio's value the plan may **sell**. `0` keeps every holding and only invests cash; `1` is no limit | `1` |
-| `risk_free_rate` | number, −1 to 1 | Annual risk-free rate the Sharpe ratio is maximized and reported against, as a fraction (`0.04` is 4%) | the install's setting, `0.04` unless `WOLVWEALTH_RISK_FREE_RATE` or `serve --risk-free-rate` changed it |
+| `risk_free_rate` | number −1 to 1, or `"tbill"` | Annual yield the idle money earns, as a fraction (`0.04` is 4%). The Sharpe ratio is maximized and reported against it. `"tbill"` means the cached 13-week Treasury yield (see `/api/market/`) | the rate stored on the referenced `portfolio`, else `0` with a `note` in the response |
 | `exclude_metrics` | boolean | Omit the `metrics` block | `false` |
 | `exclude_trades` | boolean | Omit the `trades` block | `false` |
 
@@ -108,6 +112,7 @@ the metric reports what the returned plan actually sells.
 ```json
 {
   "as_of": "2026-10-29",
+  "risk_free_rate": { "value": 0.0, "source": "default", "note": "No risk-free rate was given, so 0% was assumed: ..." },
   "optimized_portfolio": {
     "BND":  { "shares": 149.0631, "value": 10640.13, "percent_weight": 42.7 },
     "MA":   { "shares": 8.7415,   "value": 5556.96,  "percent_weight": 22.3 },
@@ -126,15 +131,24 @@ the metric reports what the returned plan actually sells.
     "portfolio_value": 24917.5,
     "expected_annual_return": 0.124,
     "annual_volatility": 0.084,
-    "sharpe_ratio": 1.0,
+    "sharpe_ratio": 1.48,
     "num_assets": 4,
-    "turnover": 0.7993,
-    "risk_free_rate": 0.04
+    "turnover": 0.7993
   }
 }
 ```
 
 **`as_of`** — the price date every number above was computed from.
+
+**`risk_free_rate`** — the rate this solve assumed, always present (even with `exclude_metrics`):
+
+| Field | Meaning |
+|---|---|
+| `value` | The annual rate used, as a fraction |
+| `source` | `"request"` (you passed a number), `"tbill"` (you passed `"tbill"`), `"portfolio"` (read from the stored portfolio), or `"default"` (nothing was given, so `0`) |
+| `note` | Present only when `source` is `"default"`: a reminder that 0% was assumed and how to set a real rate |
+
+An agent should treat `"default"` as a prompt to ask its user where the cash sits, or to set a rate on the portfolio via `/api/holdings/import/`, rather than reporting a Sharpe ratio measured against nothing.
 
 **`optimized_portfolio`** — the target, keyed by ticker. `shares` is rounded to 4 decimals,
 `value` to cents, `percent_weight` is 0–100. A ticker you hold that is *absent* here should
@@ -163,10 +177,9 @@ your broker requires whole shares, accepting the small drift that introduces.
 | `portfolio_value` | Total being allocated: cash + holdings valued at `as_of`, USD |
 | `expected_annual_return` | Annualized expected return as a fraction (`0.124` is 12.4%) |
 | `annual_volatility` | Annualized standard deviation, same units |
-| `sharpe_ratio` | `(expected_annual_return − risk_free_rate) / annual_volatility`, the same rate the solver maximized against. `null` when volatility is zero (degenerate history) rather than dividing by zero |
+| `sharpe_ratio` | `(expected_annual_return − risk_free_rate.value) / annual_volatility`, the same rate the solver maximized against. `null` when volatility is zero (degenerate history) rather than dividing by zero |
 | `num_assets` | Positions in the returned portfolio |
 | `turnover` | Fraction of `portfolio_value` the `trades` sell (`0.3` means 30% of what you hold changes hands; buys funded by cash do not count). `0` when there are no holdings |
-| `risk_free_rate` | The rate this solve assumed, whether it came from the request, the install's setting, or the default. Echoed so a reader can tell which |
 
 ### Worth knowing before trading on this
 
@@ -177,9 +190,10 @@ your broker requires whole shares, accepting the small drift that introduces.
 - **Mean-variance optimization over historical returns is a model, not a forecast.**
 - **The risk-free rate shapes the answer, not just the score.** Max-Sharpe picks the frontier
   portfolio tangent to a line from the risk-free rate, so a higher rate tilts toward higher-return,
-  higher-volatility, more concentrated portfolios. Pass `risk_free_rate` to match the T-bill yield
-  you actually face; a rate above every asset's expected return is rejected, since nothing then beats
-  cash.
+  higher-volatility, more concentrated portfolios. There is no universal right value: it is whatever
+  this portfolio's idle money actually earns (a savings account, T-bills, a bond fund, a checking
+  account paying nothing), which is why it is stored per portfolio and defaults to `0` rather than
+  to a guess. A rate above every asset's expected return is rejected, since nothing then beats cash.
 - **Repeated identical requests are served from a memo cache** keyed on the universe,
   constraints and the price snapshot (plus your held weights when `max_turnover` is set), so
   polling is cheap (sub-millisecond). The answer only changes when the cache refreshes, which
@@ -200,6 +214,7 @@ Bulk-load holdings into a stored portfolio — how a brokerage export becomes so
 | `holdings` | object | Ticker → shares | one of these |
 | `csv` | string | Raw brokerage CSV or pasted `TICKER, shares` lines, same parser the browser uses | two is required |
 | `cash` | number | Set the portfolio's cash. A `CASH` row in `csv` does the same | unchanged |
+| `risk_free_rate` | number −1 to 1, or `"tbill"` | Store the annual yield this portfolio's idle money earns, as a fraction. Every later `/api/optimize/` call that references the portfolio uses it unless the request names its own | unchanged |
 | `mode` | `"merge"` \| `"replace"` | `merge` upserts each ticker (0 removes); `replace` drops existing holdings first | `"merge"` |
 | `skip_unknown` | boolean | Drop unrecognized tickers instead of failing | `false` |
 
@@ -208,15 +223,15 @@ nothing is stored and the error lists every problem at once.
 
 ```json
 { "workspace": "ryan", "portfolio": "long-term", "create_portfolio": true,
-  "mode": "replace", "holdings": { "AAPL": 10, "MSFT": 5.5 }, "cash": 5000 }
+  "mode": "replace", "holdings": { "AAPL": 10, "MSFT": 5.5 }, "cash": 5000, "risk_free_rate": 0.04 }
 ```
 
-Returns the portfolio's final state:
+Returns the portfolio's final state (`risk_free_rate` is `null` when none has been stored):
 
 ```json
 { "workspace": "ryan", "portfolio": "long-term", "mode": "replace",
   "imported": 2, "skipped_unknown": [], "ignored_lines": [],
-  "cash": 5000, "holdings": { "AAPL": 10, "MSFT": 5.5 } }
+  "cash": 5000, "risk_free_rate": 0.04, "holdings": { "AAPL": 10, "MSFT": 5.5 } }
 ```
 
 ## `GET /api/workspaces/`
@@ -225,7 +240,7 @@ Every workspace with its portfolios and holdings.
 
 ```json
 { "workspaces": [ { "name": "demo", "created": "2026-10-29 12:00:00",
-    "portfolios": [ { "name": "main", "cash": 5000, "holdings": { "AAPL": 10 } } ] } ] }
+    "portfolios": [ { "name": "main", "cash": 5000, "risk_free_rate": null, "holdings": { "AAPL": 10 } } ] } ] }
 ```
 
 ---

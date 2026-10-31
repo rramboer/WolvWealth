@@ -37,6 +37,7 @@ def appending_downloader(service, rows=3, before=None):
 def test_fresh_cache_starts_no_thread(tmp_path):
     service, _ = build_service(tmp_path, lambda *a, **k: pytest.fail("must not download"))
     service.set_data(service.data)
+    service.set_tbill(0.04, "2026-10-30")  # fresh prices and a known T-bill: nothing to fetch
     assert service.start_background_refresh(max_age_days=100_000) is None
 
 

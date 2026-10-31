@@ -62,7 +62,7 @@ def test_documented_request_fields_are_actually_parsed(field):
 
 def test_documented_response_keys_are_the_ones_sent(client):
     body = client.post("/api/optimize/", json={"initial_cash": 1000, "universe": ["top20"]}).get_json()
-    for key in ("as_of", "optimized_portfolio", "trades", "metrics"):
+    for key in ("as_of", "risk_free_rate", "optimized_portfolio", "trades", "metrics"):
         assert key in body and key in DOCUMENTED
     for key in ("shares", "value", "percent_weight"):
         assert key in next(iter(body["optimized_portfolio"].values()))
@@ -75,9 +75,10 @@ def test_documented_response_keys_are_the_ones_sent(client):
         "sharpe_ratio",
         "num_assets",
         "turnover",
-        "risk_free_rate",
     ):
         assert key in body["metrics"] and key in DOCUMENTED
+    for key in ("value", "source", "note"):
+        assert key in body["risk_free_rate"] and key in DOCUMENTED
 
 
 def test_documented_error_shape_matches(client):

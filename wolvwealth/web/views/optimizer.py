@@ -13,7 +13,6 @@ OPTIONAL_NUMBERS = {
     "max_positions": (int, "Max positions must be a whole number."),
     "max_weight": (float, "Max weight must be a number between 0 and 1."),
     "max_turnover": (float, "Max turnover must be a number between 0 and 1."),
-    "risk_free_rate": (float, "Risk-free rate must be a decimal fraction, such as 0.04 for 4%."),
 }
 
 
@@ -58,10 +57,10 @@ def run_optimizer():
         return back
 
     market = context.market()
-    settings = context.services().settings
     try:
         payload = optimize.payload_for_portfolio(portfolio, universe, **options)
-        result = optimize.optimize(payload, market, settings=settings)
+        # The stored portfolio carries the risk-free rate its owner set, if any.
+        result = optimize.optimize(payload, market, portfolio=portfolio)
     except DomainError as error:
         flask.flash(error.message)
         return back

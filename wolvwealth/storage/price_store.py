@@ -45,6 +45,7 @@ class PriceStore:
         self.legacy_csv_paths = tuple(pathlib.Path(p) for p in legacy_csv_paths)
         self.stats_path = self.prices_path.with_name("market_stats.parquet")
         self.stats_meta_path = self.prices_path.with_name("market_stats.json")
+        self.tbill_path = self.prices_path.with_name("tbill_rate.json")
 
     def load_universe(self) -> list:
         """Tickers, one per line, in file order (descending market cap)."""
@@ -77,6 +78,21 @@ class PriceStore:
     def save_prices(self, prices: pd.DataFrame) -> None:
         """Overwrite the cache."""
         _replace(self.prices_path, lambda path: prices.to_parquet(path, index=True))
+
+    def load_tbill(self):
+        """Return ``{"rate": fraction, "as_of": "YYYY-MM-DD"}`` for the cached T-bill yield, or None."""
+        if not self.tbill_path.exists():
+            return None
+        try:
+            data = json.loads(self.tbill_path.read_text(encoding="utf-8"))
+            return {"rate": float(data["rate"]), "as_of": str(data["as_of"])}
+        except (ValueError, KeyError, TypeError):
+            return None
+
+    def save_tbill(self, rate: float, as_of: str) -> None:
+        """Overwrite the cached T-bill yield."""
+        payload = json.dumps({"rate": rate, "as_of": as_of})
+        _replace(self.tbill_path, lambda path: path.write_text(payload, encoding="utf-8"))
 
     def load_stats(self):
         """Return ``(meta, mu, cov)`` from the statistics cache, or None if it is absent."""

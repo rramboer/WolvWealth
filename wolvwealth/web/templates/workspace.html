@@ -125,6 +125,28 @@
                         class="text-white text-sm font-medium rounded-lg px-4 py-2 bg-gray-dark/60 hover:bg-gray-dark">Set
                         cash</button>
                 </form>
+
+                <form action="{{ url_for('views.portfolios_risk_free_rate') }}" method="post"
+                    class="flex items-end gap-2 flex-wrap">
+                    <div>
+                        <label class="block mb-1 text-xs font-medium text-white" for="rfr-{{ p.id }}"
+                            title="Annual yield your uninvested money earns (savings account, T-bills, a bond fund...), as a fraction. The Sharpe ratio is measured against it. Leave blank to clear; 0% is then assumed.">Risk-free
+                            rate{% if p.risk_free_rate is none %} <span style="color: gray;">(not set, 0% assumed)</span>{% endif %}</label>
+                        <input type="number" name="risk_free_rate" id="rfr-{{ p.id }}" min="-0.99" max="0.99"
+                            step="0.0001" value="{{ '' if p.risk_free_rate is none else p.risk_free_rate }}"
+                            placeholder="0.04" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
+                    </div>
+                    <input type="hidden" name="portfolio_id" value="{{ p.id }}" />
+                    <button type="submit"
+                        class="text-white text-sm font-medium rounded-lg px-4 py-2 bg-gray-dark/60 hover:bg-gray-dark">Set
+                        rate</button>
+                    {% if tbill %}
+                    <button type="submit" name="source" value="tbill"
+                        title="13-week US Treasury bill yield as of {{ tbill.as_of }}, from Yahoo Finance at the last price refresh"
+                        class="text-white text-sm font-medium rounded-lg px-4 py-2 bg-gray-dark/60 hover:bg-gray-dark">Use
+                        T-bill ({{ "%.2f" | format(tbill.rate * 100) }}%)</button>
+                    {% endif %}
+                </form>
             </div>
 
             <!-- Bulk import -->
@@ -194,13 +216,6 @@
                         turnover (optional)</label>
                     <input type="number" name="max_turnover" id="maxturn-{{ p.id }}" min="0" max="1" step="0.01"
                         placeholder="0.20" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
-                </div>
-                <div>
-                    <label class="block mb-1 text-xs font-medium text-white" for="rfr-{{ p.id }}"
-                        title="Annual risk-free rate the Sharpe ratio is measured against, as a fraction. Roughly the current T-bill yield. Leave blank for this install's default.">Risk-free
-                        rate (default {{ "%.2f" | format(risk_free_rate) }})</label>
-                    <input type="number" name="risk_free_rate" id="rfr-{{ p.id }}" min="-0.99" max="0.99" step="0.001"
-                        placeholder="{{ "%.2f" | format(risk_free_rate) }}" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
                 </div>
                 <input type="hidden" name="portfolio_id" value="{{ p.id }}" />
                 <button type="submit"

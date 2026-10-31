@@ -4,7 +4,7 @@ import flask
 
 from wolvwealth.domain.errors import DomainError
 from wolvwealth.domain.models import NAME_RULE, valid_name
-from wolvwealth.services import holdings_import
+from wolvwealth.services import holdings_import, risk_free
 from wolvwealth.web import context
 from wolvwealth.web.views import blueprint
 
@@ -28,6 +28,7 @@ def _priced(portfolio, market) -> dict:
         "id": portfolio.id,
         "name": portfolio.name,
         "cash": portfolio.cash,
+        "risk_free_rate": portfolio.risk_free_rate,
         "holdings": portfolio.holdings,
         "holding_rows": rows,
         "total_value": round(portfolio.cash + sum(r["value"] for r in rows), 2),
@@ -66,7 +67,7 @@ def show_workspace():
         workspace=workspace,
         portfolios=[_priced(p, market) for p in context.repo().list_portfolios(workspace)],
         prices_as_of=str(market.as_of),
-        risk_free_rate=context.services().settings.risk_free_rate,
+        tbill=context.services().market.tbill,
     )
 
 
@@ -112,6 +113,34 @@ def portfolios_cash():
     cash = _cash(flask.request.form.get("cash", ""))
     if portfolio_id is not None and cash is not None:
         context.repo().set_cash(workspace, portfolio_id, cash)
+    return _back()
+
+
+@blueprint.route("/portfolios/risk-free-rate/", methods=["POST"])
+def portfolios_risk_free_rate():
+    """Set the yield a portfolio's idle money earns. Blank clears it; the T-bill button copies the cached yield."""
+    workspace = context.current_workspace()
+    if workspace is None:
+        return _to_picker()
+    portfolio_id = _portfolio_id()
+    if portfolio_id is None:
+        return _back()
+    if flask.request.form.get("source") == risk_free.TBILL:
+        value = risk_free.TBILL
+    else:
+        raw = flask.request.form.get("risk_free_rate", "").strip()
+        try:
+            value = float(raw) if raw else None
+        except ValueError:
+            flask.flash("Risk-free rate must be a decimal fraction, such as 0.04 for 4%.")
+            return _back()
+    try:
+        rate, _ = risk_free.resolve(value, context.services().market.tbill)
+    except DomainError as error:
+        flask.flash(error.message)
+        return _back()
+    context.repo().set_risk_free_rate(workspace, portfolio_id, rate)
+    flask.flash("Risk-free rate cleared; 0% will be assumed." if rate is None else f"Risk-free rate set to {rate:.2%}.")
     return _back()
 
 
