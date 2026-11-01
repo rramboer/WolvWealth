@@ -2,7 +2,7 @@
 
 This is a small project maintained by a few friends. The point of this file is to make sure each of us can clone the repo, get it running on our own machine in a few minutes, and make changes without stepping on each other.
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) first if you have not looked at the code in a while. It describes how the pieces fit together and lists the known gaps. In particular: **the old login/accounts/API-key system is gone** — the app now uses passwordless local workspaces, and the JSON API needs no auth header.
+Read the "How it is built" section of [README.md](README.md) first if you have not looked at the code in a while, and [AGENTS.md](AGENTS.md) for the rules and invariants that changes must respect (it is written for AI agents, but every rule in it applies to humans too).
 
 ## Prerequisites
 
@@ -71,9 +71,8 @@ There is no "prod" mode: `wolvwealth serve` binds to 127.0.0.1 and that is the o
 ### Market data is a Parquet cache in var/
 
 Prices are not fetched live. Share counts and the valuations on the workspace page use the
-last row of `var/historical_prices.parquet`, held in memory as a `MarketData` snapshot.
-**[ARCHITECTURE.md §8](ARCHITECTURE.md#8-workflow-market-data) describes the caches, how they
-are built, and how the precomputed statistics stay in step with the prices.** What matters
+last row of `var/historical_prices.parquet`, held in memory as a `MarketData` snapshot
+(README "How it is built" covers the caches and the precomputed statistics). What matters
 when you are changing code:
 
 - `wolvwealth serve` refreshes in the background when the cache is more than
@@ -83,8 +82,9 @@ when you are changing code:
   occasionally, because the append path never corrects earlier closes after splits and
   dividends. Expect several minutes, longer when Yahoo throttles.
 - To change the universe, edit `wolvwealth/data/ticker_universe.csv` (sorted by market cap,
-  largest first) and run `--full`. Tickers that stop trading are handled automatically; see
-  "Dead tickers" in ARCHITECTURE.md §8 before pruning anything from that file.
+  largest first) and run `--full`. Tickers that stop trading are handled automatically. Never
+  prune the file because tickers came back empty: Yahoo returns the same nothing for a
+  delisted company as for a throttled request, so pruning deletes live companies.
 
 ### Importing the package has no side effects; building Services does
 
@@ -150,7 +150,7 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 | Change the optimizer maths | `wolvwealth/domain/optimizer.py` — plain dict in, plain dict out, only reads a `MarketData`. `scripts/backtest.py` reuses it |
 | Change the browser optimize flow | `wolvwealth/web/views/optimizer.py` + `templates/results.html`, forms live in `templates/workspace.html` |
 | Change where files live or a tunable | `wolvwealth/config.py` (`Settings`) |
-| Add a bolt-on feature | A module in `wolvwealth/services/` for the use case, a blueprint or CLI command to expose it, tests. See ARCHITECTURE.md "Adding a bolt-on" |
+| Add a bolt-on feature | A module in `wolvwealth/services/` for the use case, a blueprint or CLI command to expose it, tests. See AGENTS.md "Where things go" |
 | Add a CLI command | `wolvwealth/__main__.py` (argparse subcommand + `cmd_*` function), tests in `tests/test_cli.py` |
 | Change the installer | `install.sh`; test it with a sandbox `HOME` so your real user site and shell rc are untouched |
 
@@ -162,4 +162,4 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 
 ## Questions
 
-Open an issue or ask in the group chat. If you figure out something non-obvious about the codebase, add it to ARCHITECTURE.md or this file so the next person does not have to rediscover it.
+Open an issue or ask in the group chat. If you figure out something non-obvious about the codebase, add it to AGENTS.md or this file so the next person does not have to rediscover it.
