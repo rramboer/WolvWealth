@@ -78,15 +78,51 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | `workspace` + `portfolio` | string | Load cash and holdings from a stored portfolio instead. `workspace` falls back to the browser session. Explicit `initial_cash`/`initial_holdings` still win | — |
 | `universe` | array | Tickers and/or aliases to allocate across | `top500` |
 | `constraints.max_weight` | number 0–1 | Per-asset cap | `1` |
-| `constraints.max_positions` | integer ≥ 1 | Keep the N largest weights, then renormalize | unlimited |
+| `constraints.max_positions` | integer ≥ 1 | Largest number of holdings. Applied by solving, keeping the N largest names, and re-solving over those under the same constraints | unlimited |
 | `constraints.min_universal_weight` | number 0–1 | Floor applied to **every** asset in the universe | `0` |
 | `constraints.max_turnover` | number 0–1 | Largest fraction of the portfolio's value the plan may **sell**. `0` keeps every holding and only invests cash; `1` is no limit | `1` |
 | `risk_free_rate` | number −1 to 1, or `"tbill"` | Annual yield the idle money earns, as a fraction (`0.04` is 4%). The Sharpe ratio is maximized and reported against it. `"tbill"` means the cached 13-week Treasury yield (see `/api/market/`) | the rate stored on the referenced `portfolio`, else `0` with a `note` in the response |
 | `exclude_metrics` | boolean | Omit the `metrics` block | `false` |
 | `exclude_trades` | boolean | Omit the `trades` block | `false` |
 
-`max_positions × max_weight` must be at least 1, or the request is infeasible by
-construction and is rejected.
+### Infeasible constraint sets
+
+Constraints that are each individually valid can still be impossible together, and those
+requests are rejected before the solver runs rather than answered with a portfolio that
+quietly breaks one of them. The checks:
+
+| Rule | Why |
+|---|---|
+| `max_weight` × the number of holdings allowed ≥ 1 | Otherwise the weights cannot add to 100%. The holding count is `max_positions`, or the universe size when it is unset |
+| `min_universal_weight` × universe size ≤ 1 | The floor applies to **every** universe ticker, so a large universe overfills the portfolio |
+| `min_universal_weight` = 0 when `max_positions` < universe size | A positive floor requires every universe ticker to be held, so the holding count cannot also be capped below it |
+| `min_universal_weight` ≤ `max_weight` | No single weight can be under the floor and over the cap |
+| `max_turnover` ≥ the selling the other inputs force | A held ticker outside `universe`, a position already above `max_weight`, or a `max_positions` cap that drops held names |
+
+**Every** violated rule is reported in one response, so a contradictory body takes one round
+trip to diagnose rather than one per conflict. The message names the fields and a remedy, and
+`error.payload.conflicts` carries the same structurally:
+
+```json
+{
+  "error": {
+    "message": "Infeasible. max_positions 8 holdings at max_weight 0.1 each allocates at most 80% of the portfolio, leaving 20% with nowhere to go. Raise max_positions to at least 10, or max_weight to at least 0.13.",
+    "status_code": 400,
+    "payload": {
+      "conflicts": [
+        {
+          "fields": ["constraints.max_positions", "constraints.max_weight"],
+          "reason": "max_positions 8 holdings at max_weight 0.1 each allocates at most 80% of the portfolio, leaving 20% with nowhere to go.",
+          "remedy": "Raise max_positions to at least 10, or max_weight to at least 0.13."
+        }
+      ]
+    }
+  }
+}
+```
+
+An agent should apply a `remedy` and retry rather than dropping the constraint, and the
+suggested values are chosen to be feasible as written.
 
 `max_turnover` is a hard constraint inside the solver, not a penalty: the result is the
 best Sharpe ratio reachable while selling no more than that share of what you hold, valued
@@ -94,9 +130,9 @@ at the `as_of` close against cash plus holdings. Buying with cash is not counted
 portfolio that is half cash can be fully invested at `max_turnover: 0`. Two things force
 sales no limit can prevent, and the request is rejected with a message naming them when the
 limit is below what they require: a held ticker that is not in `universe` (it cannot be
-kept), and a position already above `max_weight`. `max_positions` truncates *after* the
-solve, so dropping a held position that way can push the realized `turnover` past the limit;
-the metric reports what the returned plan actually sells.
+kept), and a position already above `max_weight`. A `max_positions` cap that would have to
+drop held positions is checked against the limit the same way, so the returned `turnover`
+never exceeds `max_turnover`.
 
 ```json
 {
@@ -169,8 +205,8 @@ order frees cash before spending it. A position that does not change produces no
 does a difference too small to show at 4 decimals. Share counts are fractional; round them if
 your broker requires whole shares, accepting the small drift that introduces.
 
-**`metrics`** — figures describing the portfolio actually returned, including the
-`max_positions` truncation:
+**`metrics`** — figures describing the portfolio actually returned, including any
+`max_positions` re-solve:
 
 | Field | Meaning |
 |---|---|

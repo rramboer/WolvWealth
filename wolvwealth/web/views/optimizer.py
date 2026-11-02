@@ -7,6 +7,7 @@ from wolvwealth.domain.market import UNIVERSE_ALIASES
 from wolvwealth.services import optimize
 from wolvwealth.web import context
 from wolvwealth.web.views import blueprint
+from wolvwealth.web.views.portfolios import render_workspace
 
 #: Optional numeric form fields: name -> (parser, message flashed when it does not parse).
 OPTIONAL_NUMBERS = {
@@ -31,6 +32,17 @@ def _optional_numbers(form) -> dict:
     return values
 
 
+def _rejected(workspace, portfolio_id, message: str):
+    """Re-show the workspace with the constraints still filled in, so they can be edited.
+
+    Redirecting instead would empty the form, and a rejected optimization is
+    almost always a number or two away from a good one: the whole point of
+    the message is that the reader should change a value and try again.
+    """
+    flask.flash(message)
+    return render_workspace(workspace, rejected_portfolio_id=portfolio_id, rejected_form=flask.request.form.to_dict())
+
+
 @blueprint.route("/optimizer/run/", methods=["POST"])
 def run_optimizer():
     """Read the form, build the request, solve, render results.html."""
@@ -53,8 +65,7 @@ def run_optimizer():
     try:
         options = _optional_numbers(flask.request.form)
     except ValueError as error:
-        flask.flash(str(error))
-        return back
+        return _rejected(workspace, portfolio_id, str(error))
 
     market = context.market()
     try:
@@ -62,8 +73,7 @@ def run_optimizer():
         # The stored portfolio carries the risk-free rate its owner set, if any.
         result = optimize.optimize(payload, market, portfolio=portfolio)
     except DomainError as error:
-        flask.flash(error.message)
-        return back
+        return _rejected(workspace, portfolio_id, error.message)
 
     allocation = sorted(result["optimized_portfolio"].items(), key=lambda kv: kv[1]["value"], reverse=True)
     return flask.render_template(

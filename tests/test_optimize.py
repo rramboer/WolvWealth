@@ -99,7 +99,7 @@ def test_max_weight_respected(market):
         assert position["percent_weight"] <= 40.0 + 0.01
 
 
-def test_max_positions_truncates_and_renormalizes(market):
+def test_max_positions_caps_the_holding_count_and_stays_fully_invested(market):
     result = optimizer.optimize({"initial_cash": 10000, "constraints": {"max_positions": 2}}, market)
     portfolio = result["optimized_portfolio"]
     assert len(portfolio) <= 2
@@ -324,11 +324,23 @@ def test_rejects_bad_max_turnover(market, value, fragment):
     assert fragment in error_of(market, {"initial_cash": 1000, "constraints": {"max_turnover": value}})
 
 
-def test_solver_error_is_surfaced(market):
-    """Regression: the real solver error used to be swallowed into a bare 'Infeasible'."""
-    message = error_of(market, {"initial_cash": 10000, "constraints": {"min_universal_weight": 0.5, "max_weight": 1}})
+def test_solver_error_is_surfaced(market, monkeypatch):
+    """Regression: the real solver error used to be swallowed into a bare 'Infeasible'.
+
+    Driven by forcing the solver to fail rather than by a contradictory
+    request, because the contradictions that used to reach the solver are
+    now caught by name beforehand (see test_constraints.py). What is still
+    worth pinning is that a failure the checks cannot predict arrives with
+    the solver's own words attached.
+    """
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("Solver status: infeasible")
+
+    monkeypatch.setattr(optimizer, "EfficientFrontier", explode)
+    message = error_of(market, {"initial_cash": 10000})
     assert message.startswith("Optimization Error.")
-    assert len(message) > len("Optimization Error. Check your inputs and constraints. ")
+    assert "Solver status: infeasible" in message
 
 
 def test_market_snapshot_helpers(market):

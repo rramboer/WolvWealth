@@ -115,8 +115,8 @@ def test_browser_max_turnover_keeps_the_holding(workspace_client, repo):
     assert b"SELL" not in response.data
 
     response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "max_turnover": "x"})
-    assert response.status_code == 302
-    assert b"Max turnover must be a number" in workspace_client.get("/workspace/").data
+    assert response.status_code == 200
+    assert b"Max turnover must be a number" in response.data
 
 
 def test_browser_unset_rate_is_flagged_on_the_card_and_in_the_results(workspace_client, repo):
@@ -159,11 +159,11 @@ def test_browser_tbill_button(workspace_client, repo, services):
     assert repo.get_portfolio("tester", name="main").risk_free_rate == 0.0412
 
 
-def test_browser_optimize_error_flashes(workspace_client, repo):
+def test_browser_optimize_error_shows_on_the_page_it_came_from(workspace_client, repo):
     pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "max_positions": "x"})
-    assert response.status_code == 302
-    assert b"Max positions must be a whole number" in workspace_client.get("/workspace/").data
+    assert response.status_code == 200
+    assert b"Max positions must be a whole number" in response.data
 
 
 def test_legacy_redirects(client):

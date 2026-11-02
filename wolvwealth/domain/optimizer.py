@@ -6,12 +6,14 @@ the same code runs in the web app, the CLI, tests, and the backtest.
 """
 
 import dataclasses
+import math
 
 import cvxpy as cp
 import numpy as np
 import pandas as pd
 from pypfopt.efficient_frontier import EfficientFrontier
 
+from wolvwealth.domain import constraints as constraint_rules
 from wolvwealth.domain import trades
 from wolvwealth.domain.errors import ValidationError
 from wolvwealth.domain.market import MarketData
@@ -89,6 +91,9 @@ def parse_request(payload, market: MarketData) -> OptimizationRequest:
     _parse_holdings(payload, request, market)
     _parse_output_flags(payload, request)
     _parse_constraints(payload, request)
+    # Field-by-field validation above; how the fields interact is one concern
+    # in one module, checked once everything is known.
+    constraint_rules.check(request)
     return request
 
 
@@ -189,10 +194,6 @@ def _parse_constraints(payload, request) -> None:
         if value < 1:
             raise ValidationError("Invalid max_positions. max_positions must be greater than 0.")
         request.max_positions = min(value, len(request.universe))
-        if request.max_positions * request.max_weight < 1:
-            raise ValidationError(
-                "Infeasible. max_positions * max_weight must be greater than or equal to 1 for full allocation."
-            )
     if "min_universal_weight" in constraints:
         value = constraints["min_universal_weight"]
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -202,8 +203,6 @@ def _parse_constraints(payload, request) -> None:
                 "Invalid min_universal_weight. min_universal_weight must be greater than 0 and less than 1."
             )
         request.min_universal_weight = round(value, 2)
-    if request.min_universal_weight > request.max_weight:
-        raise ValidationError("Invalid constraints. min_weight must be less than max_weight.")
     _parse_max_turnover(constraints, request)
 
 
@@ -362,17 +361,81 @@ def _solver_inputs(request: OptimizationRequest, current: dict) -> tuple:
     return request.max_turnover, tuple(sorted(current.items()))
 
 
+def _check_positions_turnover_feasible(request: OptimizationRequest, current: dict, kept: list) -> None:
+    """Reject a position cap that forces more selling than ``max_turnover`` allows.
+
+    Narrowing to ``kept`` sells every held ticker left out of it, which is a
+    cost of ``max_positions`` rather than of anything the solver chose. The
+    limit used to be applied to the full-universe solve and the truncation
+    then sold past it silently, so the plan broke a limit it reported.
+    """
+    if request.max_turnover is None:
+        return
+    floor, _reasons = _turnover_floor(dataclasses.replace(request, universe=list(kept)), current)
+    if floor <= request.max_turnover + TURNOVER_TOLERANCE:
+        return
+    dropped = sorted(ticker for ticker in current if ticker not in set(kept))
+    reason = (
+        f"max_positions {request.max_positions} narrows the portfolio to {len(kept)} holdings, which forces "
+        f"{floor:.1%} of it to be sold, above max_turnover {request.max_turnover}."
+    )
+    if dropped:
+        reason += f" Dropping {', '.join(dropped)} alone accounts for most of it."
+    # Rounded up, so following the suggestion clears the limit rather than
+    # landing back on this same error one tolerance away.
+    remedy = f"Raise max_positions, or raise max_turnover to at least {math.ceil(floor * 100) / 100}."
+    raise ValidationError(
+        f"Infeasible. {reason} {remedy}",
+        details={
+            "conflicts": [
+                {
+                    "fields": ["constraints.max_positions", "constraints.max_turnover"],
+                    "reason": reason,
+                    "remedy": remedy,
+                }
+            ]
+        },
+    )
+
+
+def _apply_position_cap(request: OptimizationRequest, market: MarketData, current: dict, weights: dict) -> dict:
+    """Re-solve over the ``max_positions`` largest holdings, under the same constraints.
+
+    A cardinality cap cannot be expressed to the solver directly: it is a
+    binary condition, and PyPortfolioOpt's max-Sharpe substitution (``w = k *
+    w_true``) makes the product of ``k`` with a binary indicator non-convex,
+    so ``max_sharpe`` rejects integer constraints outright. The standard
+    stand-in is to let the unconstrained solve rank the names, keep the
+    largest ``max_positions`` of them, and solve again over just those.
+
+    The previous approach kept the same names but merely rescaled their
+    weights to sum to one, which is not a solve and silently broke the other
+    constraints: dividing by a total below one inflates every weight, so a
+    10% cap came back as a 14% position, and positions sold by the
+    truncation pushed realized turnover past its limit. Re-solving enforces
+    ``max_weight``, the weight floor and the turnover limit on the portfolio
+    that is actually returned, and it can only improve the objective, since
+    the rescaled weights remain available to the restricted problem.
+    """
+    kept = [ticker for ticker, _ in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)]
+    kept = kept[: request.max_positions]
+    _check_positions_turnover_feasible(request, current, kept)
+    mu, cov_matrix = market.stats_for(kept)
+    limit = None if request.max_turnover is None else (request.max_turnover, current)
+    return _run_solver(mu, cov_matrix, request, limit)
+
+
 def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current: dict) -> dict:
     """Solved weights for this request, memoized on the market snapshot.
 
     The solve is ~90% of a request, and it depends on nothing but the prices
     and the fields in the key below, so agents repeating a request get the
-    stored answer. Cash, holdings and ``max_positions`` are deliberately
-    absent from the key unless ``max_turnover`` is set: by default they only
-    scale or truncate the weights afterwards, so varying them still hits the
-    same solve. A turnover limit makes the held weights a solver input, so
-    they join the key only then. Anything new that reaches the solver must
-    be added to the key.
+    stored answer. Cash and holdings are deliberately absent from the key
+    unless ``max_turnover`` is set: by default they only scale the weights
+    afterwards, so varying them still hits the same solve. A turnover limit
+    makes the held weights a solver input, so they join the key only then.
+    ``max_positions`` selects and then re-solves over a subset, so it is part
+    of the key too. Anything new that reaches the solver must be added here.
 
     Nothing is stored when the solver fails, so an infeasible request keeps
     reporting its own error rather than a remembered one.
@@ -385,12 +448,17 @@ def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current
         request.min_universal_weight,
         request.risk_free_rate,
         turnover_inputs,
+        request.max_positions,
     )
 
     def compute():
         mu, cov_matrix = market.stats_for(request.universe)
         limit = None if turnover_inputs is None else (request.max_turnover, current)
-        return _run_solver(mu, cov_matrix, request, limit)
+        weights = _run_solver(mu, cov_matrix, request, limit)
+        held = [ticker for ticker, weight in weights.items() if weight != 0]
+        if request.max_positions is None or len(held) <= request.max_positions:
+            return weights
+        return _apply_position_cap(request, market, current, weights)
 
     # Copied on the way out: callers rebuild the dict as they filter it, and a
     # cached value must survive that unchanged for the next request.
@@ -401,10 +469,10 @@ def _return_and_volatility(request: OptimizationRequest, market: MarketData, wei
     """Annual expected return and volatility of ``weights``, memoized on the snapshot.
 
     Both are functions of the weight vector alone, and the key determines
-    that vector in full: everything that drives the solve, plus
-    ``max_positions``, which truncates it. Cash and holdings scale the
-    portfolio without changing its shape, so they are absent here too,
-    except through the turnover inputs when ``max_turnover`` is set.
+    that vector in full: everything that drives the solve, ``max_positions``
+    included. Cash and holdings scale the portfolio without changing its
+    shape, so they are absent here too, except through the turnover inputs
+    when ``max_turnover`` is set.
 
     Worth memoizing separately because slicing the covariance matrix for a
     large universe costs milliseconds, which dominates a request whose solve
@@ -439,10 +507,6 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     _check_turnover_feasible(request, current)
 
     weights = max_sharpe_weights(request, market, current)
-    if request.max_positions is not None:
-        top = sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[: request.max_positions]
-        total_weight = sum(weight for _, weight in top)
-        weights = {asset: weight / total_weight for asset, weight in top}
     weights = {asset: weight for asset, weight in weights.items() if weight != 0}
     weights = _keep_untouched_holdings(weights, current)
 
@@ -469,10 +533,10 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
             market.latest_prices,
         )
     if not request.exclude_metrics:
-        # Describe the portfolio actually returned, including the
-        # max_positions truncation (ef.portfolio_performance() would
-        # describe the untruncated solver output instead). Computed here
-        # rather than above so `exclude_metrics` requests skip it entirely.
+        # Describe the portfolio actually returned, which under a position
+        # cap is the restricted re-solve rather than the first pass
+        # (ef.portfolio_performance() would describe the latter). Computed
+        # here so `exclude_metrics` requests skip it entirely.
         expected_return, volatility = _return_and_volatility(request, market, weights, current)
         # Degenerate history (too few rows, flat prices) gives zero volatility; report
         # the Sharpe ratio as null rather than dividing by zero.
@@ -483,8 +547,9 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
             "annual_volatility": round(volatility, 3),
             "sharpe_ratio": sharpe,
             "num_assets": len(weights),
-            # Measured on the returned portfolio, so it includes anything the
-            # max_positions truncation sold beyond what the solver was allowed.
+            # Measured on the returned portfolio, and now bounded by
+            # max_turnover: a position cap that would sell past the limit is
+            # refused rather than quietly reported above it.
             "turnover": round(turnover(current, weights), 4),
         }
     return result

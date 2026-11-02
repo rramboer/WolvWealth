@@ -55,12 +55,8 @@ def _cash(raw):
     return round(cash, 2)
 
 
-@blueprint.route("/workspace/", methods=["GET"])
-def show_workspace():
-    """Display the open workspace with all its portfolios."""
-    workspace = context.current_workspace()
-    if workspace is None:
-        return _to_picker()
+def render_workspace(workspace: str, **extra):
+    """Render the workspace page. ``extra`` adds template context (e.g. a rejected form to refill)."""
     market = context.market()
     return flask.render_template(
         "workspace.html",
@@ -68,7 +64,17 @@ def show_workspace():
         portfolios=[_priced(p, market) for p in context.repo().list_portfolios(workspace)],
         prices_as_of=str(market.as_of),
         tbill=context.services().market.tbill,
+        **extra,
     )
+
+
+@blueprint.route("/workspace/", methods=["GET"])
+def show_workspace():
+    """Display the open workspace with all its portfolios."""
+    workspace = context.current_workspace()
+    if workspace is None:
+        return _to_picker()
+    return render_workspace(workspace)
 
 
 @blueprint.route("/portfolios/create/", methods=["POST"])

@@ -187,35 +187,40 @@
             <!-- Optimize -->
             <form action="{{ url_for('views.run_optimizer') }}" method="post"
                 class="flex items-end gap-2 flex-wrap border-t border-gray-dark pt-4">
+                {# After a rejected run the submitted values come back so they can be edited, not retyped. #}
+                {% set refill = rejected_form if rejected_portfolio_id == p.id else {} %}
+                {% set chosen = refill.get('universe', 'top100') %}
                 <div>
                     <label class="block mb-1 text-xs font-medium text-white" for="universe-{{ p.id }}">Universe</label>
                     <select name="universe" id="universe-{{ p.id }}"
                         class="bg-gray-50 border text-sm rounded-lg p-2">
-                        <option value="top20">Top 20 stocks</option>
-                        <option value="top50">Top 50 stocks</option>
-                        <option value="top100" selected>Top 100 stocks</option>
-                        <option value="top200">Top 200 stocks</option>
-                        <option value="top500">Top 500 stocks</option>
+                        {% for value, label in [('top20', 'Top 20 stocks'), ('top50', 'Top 50 stocks'),
+                        ('top100', 'Top 100 stocks'), ('top200', 'Top 200 stocks'), ('top500', 'Top 500 stocks')] %}
+                        <option value="{{ value }}" {% if chosen==value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
                     </select>
                 </div>
                 <div>
                     <label class="block mb-1 text-xs font-medium text-white" for="maxpos-{{ p.id }}">Max positions
                         (optional)</label>
                     <input type="number" name="max_positions" id="maxpos-{{ p.id }}" min="1" step="1"
-                        placeholder="10" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
+                        placeholder="10" value="{{ refill.get('max_positions', '') }}"
+                        class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
                 </div>
                 <div>
                     <label class="block mb-1 text-xs font-medium text-white" for="maxw-{{ p.id }}">Max weight
                         (optional)</label>
                     <input type="number" name="max_weight" id="maxw-{{ p.id }}" min="0" max="1" step="0.01"
-                        placeholder="0.25" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
+                        placeholder="0.25" value="{{ refill.get('max_weight', '') }}"
+                        class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
                 </div>
                 <div>
                     <label class="block mb-1 text-xs font-medium text-white" for="maxturn-{{ p.id }}"
                         title="Largest fraction of the portfolio's value the plan may sell. 0 keeps every holding and only invests cash.">Max
                         turnover (optional)</label>
                     <input type="number" name="max_turnover" id="maxturn-{{ p.id }}" min="0" max="1" step="0.01"
-                        placeholder="0.20" class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
+                        placeholder="0.20" value="{{ refill.get('max_turnover', '') }}"
+                        class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
                 </div>
                 <input type="hidden" name="portfolio_id" value="{{ p.id }}" />
                 <button type="submit"
