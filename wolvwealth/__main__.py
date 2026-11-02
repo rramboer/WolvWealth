@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument(
         "--full",
         action="store_true",
-        help="Re-download the entire 2006-to-today history (correct after splits/dividends) "
+        help="Re-download the entire 2006-to-today history (recovers throttled tickers) "
         "instead of appending only the missing recent rows",
     )
 

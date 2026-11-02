@@ -21,6 +21,18 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     #: previously live tickers came back empty (almost always rate limiting).
     MAX_WENT_DARK_FRACTION = 0.15
 
+    #: An incremental refresh re-downloads this many already-cached trading
+    #: days. Yahoo adjusts the whole history retroactively after a split or
+    #: dividend, so if the overlap no longer matches the cache, that ticker's
+    #: cached history is on a stale adjustment basis and must be replaced.
+    OVERLAP_ROWS = 5
+
+    #: Relative disagreement on an overlapping day beyond which a ticker is
+    #: considered re-adjusted. Unchanged tickers come back byte-identical
+    #: (same source, same rounding), while a split or dividend shifts the
+    #: whole history by its ratio, so the margin is not delicate.
+    READJUSTED_TOLERANCE = 0.005
+
     def __init__(
         self,
         store: PriceStore,
@@ -159,8 +171,9 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     def refresh(self, full: bool = False) -> bool:
         """Bring the cache up to today. Return True if anything changed.
 
-        ``full`` re-downloads the entire history, which is the only way to
-        pick up corrected adjusted closes after splits and dividends.
+        ``full`` re-downloads the entire history. An incremental refresh
+        repairs re-adjusted tickers on its own (see ``_readjusted_tickers``),
+        so ``full`` is for recovering tickers that were only throttled.
         """
         self.refresh_tbill()
         if full:
@@ -171,11 +184,12 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
             self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
             return True
         current = self.data
-        start = (current.prices.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
+        last = current.prices.index[-1]
         today = pd.Timestamp.now().strftime("%Y-%m-%d")
-        if start >= today:
+        if (last + timedelta(days=1)).strftime("%Y-%m-%d") >= today:
             return False
-        fresh = self.downloader(list(current.universe), start)
+        overlap_start = current.prices.index[-self.OVERLAP_ROWS :][0]
+        fresh = self.downloader(list(current.universe), overlap_start.strftime("%Y-%m-%d"))
         if fresh.empty:
             return False
         previously_live = current.prices.iloc[-1].dropna().index
@@ -185,11 +199,61 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 f"{len(went_dark)} of {len(previously_live)} live tickers returned no data "
                 "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
             )
-        prices = pd.concat([current.prices, fresh])
+        new_rows = fresh[fresh.index > last]
+        readjusted = self._readjusted_tickers(current.prices, fresh)
+        if new_rows.empty and not readjusted:
+            return False
+        prices = pd.concat([current.prices, new_rows.reindex(columns=current.prices.columns)])
+        if readjusted:
+            prices = self._repair_readjusted(prices, readjusted)
         self.store.save_prices(prices)
         columns = self._stats_columns(current.universe, prices)
         self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices, columns))
         return True
+
+    def _readjusted_tickers(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> list:
+        """Tickers whose freshly served prices contradict the cache on overlapping days.
+
+        Yahoo's adjusted closes are relative to the download date: a split or
+        dividend rescales the entire served history. Appending new rows onto
+        a cache on the old basis fakes a one-day crash (a 10:1 split reads as
+        -90%), which wrecks every statistic downstream. A disagreement on a
+        day both sides have data for is exactly that basis change.
+        """
+        shared = cached.index.intersection(fresh.index)
+        columns = cached.columns.intersection(fresh.columns)
+        if shared.empty or columns.empty:
+            return []
+        old, new = cached.loc[shared, columns], fresh.loc[shared, columns]
+        # NaN on either side (throttled day) compares as False: never a mismatch.
+        mismatched = ((new - old).abs() / old.abs() > self.READJUSTED_TOLERANCE).any()
+        return list(columns[mismatched])
+
+    def _repair_readjusted(self, prices: pd.DataFrame, tickers: list) -> pd.DataFrame:
+        """Replace ``tickers``' full history with a fresh download on today's adjustment basis.
+
+        A handful of tickers split or go ex-dividend on any given day, so
+        this is one small request. A ticker the repair download misses
+        (throttled) is blanked rather than kept: a history that mixes two
+        adjustment bases poisons the optimizer, while an empty column is
+        merely excluded until the next refresh picks it up.
+        """
+        self.log(
+            f"wolvwealth: {len(tickers)} ticker(s) changed adjustment basis (split or dividend); "
+            f"re-downloading their full history: {', '.join(tickers)}"
+        )
+        repaired = self.downloader(list(tickers), self.history_start)
+        prices = prices.copy()
+        for ticker in tickers:
+            if ticker in repaired.columns and not repaired[ticker].isna().all():
+                prices[ticker] = repaired[ticker].reindex(prices.index)
+            else:
+                prices[ticker] = float("nan")
+                self.log(
+                    f"wolvwealth: could not re-download {ticker} after its split/dividend; "
+                    "its history is cleared until a later refresh recovers it."
+                )
+        return prices
 
     def _stale_by(self, max_age_days: int) -> int:
         """Return the cache's age in days if it is past ``max_age_days``, else 0."""
