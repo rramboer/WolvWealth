@@ -71,6 +71,19 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     max_positions: int = None
     min_universal_weight: float = 0.0
     max_turnover: float = None  # fraction of portfolio value that may be sold; None = no limit
+    cash_reserve: float = 0.0  # fraction of portfolio value left in cash, uninvested
+
+    def invested_fraction(self) -> float:
+        """The share of the portfolio the optimizer is allowed to deploy.
+
+        Every weight in a request or a response is a fraction of the *total*
+        portfolio, cash reserve included -- "no stock above 10%" should not
+        quietly mean 10% of the invested part. The solver works on weights
+        that sum to one, so its bounds are divided by this and its answer is
+        multiplied back.
+        """
+        return 1.0 - self.cash_reserve
+
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE
     risk_free_rate_source: str = "default"
     exclude_metrics: bool = False
@@ -203,6 +216,16 @@ def _parse_constraints(payload, request) -> None:
                 "Invalid min_universal_weight. min_universal_weight must be greater than 0 and less than 1."
             )
         request.min_universal_weight = round(value, 2)
+    if "cash_reserve" in constraints:
+        value = constraints["cash_reserve"]
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValidationError("Invalid cash_reserve. cash_reserve must be a number.")
+        if not 0 <= value < 1:
+            raise ValidationError(
+                "Invalid cash_reserve. cash_reserve is the fraction of the portfolio to keep in cash: "
+                "at least 0 and below 1 (keeping everything in cash leaves nothing to optimize)."
+            )
+        request.cash_reserve = round(value, 2)
     _parse_max_turnover(constraints, request)
 
 
@@ -262,11 +285,16 @@ def _keep_untouched_holdings(weights: dict, current: dict) -> dict:
 def _turnover_floor(request: OptimizationRequest, current: dict) -> tuple:
     """Turnover the other constraints force regardless of the solve, and why.
 
-    Returns ``(fraction, reasons)``. Two things make a sale unavoidable:
-    holding a ticker the universe does not contain (it cannot be kept), and
-    holding more of a ticker than ``max_weight`` allows (the excess must go).
-    Catching these here gives a message naming the cause; the solver alone
-    would only say "infeasible".
+    Returns ``(fraction, reasons)``. Three things make selling unavoidable:
+    holding a ticker the universe does not contain (it cannot be kept),
+    holding more of a ticker than ``max_weight`` allows (the excess must go),
+    and a ``cash_reserve`` larger than the cash already held (the shortfall
+    can only come from sales). Catching these here gives a message naming
+    the cause; the solver alone would only say "infeasible".
+
+    The forced sales and the cash shortfall do not add: proceeds from a
+    position that had to go anyway can be kept as the reserve. The floor is
+    whichever is larger.
     """
     in_universe = set(request.universe)
     outside = {ticker: weight for ticker, weight in current.items() if ticker not in in_universe}
@@ -275,6 +303,8 @@ def _turnover_floor(request: OptimizationRequest, current: dict) -> tuple:
         for ticker, weight in current.items()
         if ticker in in_universe and weight > request.max_weight
     }
+    held_cash = max(0.0, 1.0 - sum(current.values()))
+    cash_shortfall = max(0.0, request.cash_reserve - held_cash)
     reasons = []
     if outside:
         names = ", ".join(sorted(outside))
@@ -282,7 +312,12 @@ def _turnover_floor(request: OptimizationRequest, current: dict) -> tuple:
     if excess:
         names = ", ".join(sorted(excess))
         reasons.append(f"max_weight {request.max_weight} forces {sum(excess.values()):.1%} of {names} to be sold")
-    return sum(outside.values()) + sum(excess.values()), reasons
+    if cash_shortfall > 0:
+        reasons.append(
+            f"cash_reserve {request.cash_reserve} requires {cash_shortfall:.1%} more cash than is held, "
+            "which only selling can raise"
+        )
+    return max(sum(outside.values()) + sum(excess.values()), cash_shortfall), reasons
 
 
 def _check_turnover_feasible(request: OptimizationRequest, current: dict) -> None:
@@ -290,9 +325,12 @@ def _check_turnover_feasible(request: OptimizationRequest, current: dict) -> Non
         return
     floor, reasons = _turnover_floor(request, current)
     if floor > request.max_turnover + TURNOVER_TOLERANCE:
+        ways_out = "Raise max_turnover, or add the held tickers to the universe."
+        if request.cash_reserve > 0:
+            ways_out = "Raise max_turnover, lower cash_reserve, or add the held tickers to the universe."
         raise ValidationError(
             f"Infeasible. max_turnover {request.max_turnover} is below the {floor:.1%} the other inputs already "
-            f"force: {'; '.join(reasons)}. Raise max_turnover, or add the held tickers to the universe."
+            f"force: {'; '.join(reasons)}. {ways_out}"
         )
 
 
@@ -301,8 +339,19 @@ def _run_solver(mu, cov_matrix, request: OptimizationRequest, turnover_limit: tu
 
     ``turnover_limit`` is ``(limit, current)`` with ``current`` the held
     weights (ticker -> fraction of total investment), or None for no limit.
+
+    The solver's weights sum to one over the *invested* part of the
+    portfolio, while the request's weight bounds are fractions of the whole,
+    cash reserve included. So the bounds are divided by the invested
+    fraction on the way in and the answer is multiplied by it on the way
+    out: with a 30% reserve, "max_weight 0.1" allows each solver weight up
+    to 0.1 / 0.7 of the invested sleeve, which is 10% of the portfolio. The
+    composition itself is the tangency portfolio either way; only binding
+    bounds and a turnover limit make the reserve a true solver input.
     """
-    max_weight, min_universal_weight = request.max_weight, request.min_universal_weight
+    invested = request.invested_fraction()
+    scaled_max = request.max_weight / invested
+    scaled_min = request.min_universal_weight / invested
     if float(mu.max()) <= request.risk_free_rate:
         # PyPortfolioOpt raises the same complaint in its own words; this one
         # names the number and the field so the fix is obvious.
@@ -312,26 +361,27 @@ def _run_solver(mu, cov_matrix, request: OptimizationRequest, turnover_limit: tu
             "Lower risk_free_rate or widen the universe."
         )
     try:
-        frontier = EfficientFrontier(
-            mu, cov_matrix, verbose=False, weight_bounds=(min_universal_weight, 1), solver=SOLVER
-        )
-        if max_weight != 1:
-            frontier.add_constraint(lambda weights: weights <= max_weight)
+        frontier = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(scaled_min, 1), solver=SOLVER)
+        if scaled_max < 1:
+            frontier.add_constraint(lambda weights: weights <= scaled_max)
         if turnover_limit is not None:
-            frontier.add_constraint(_turnover_constraint(mu.index, *turnover_limit))
+            frontier.add_constraint(_turnover_constraint(mu.index, *turnover_limit, invested))
         frontier.max_sharpe(risk_free_rate=request.risk_free_rate)
-        return frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
+        cleaned = frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
+        return {ticker: weight * invested for ticker, weight in cleaned.items()}
     except Exception as err:  # pylint: disable=broad-except
         # Surface the real solver error; "Infeasible" alone is undiagnosable.
         raise ValidationError(f"Optimization Error. Check your inputs and constraints. {err}") from err
 
 
-def _turnover_constraint(tickers, limit: float, current: dict):
+def _turnover_constraint(tickers, limit: float, current: dict, invested_fraction: float = 1.0):
     """Build the cvxpy constraint capping the fraction of the portfolio sold at ``limit``.
 
     Sold value is ``sum(pos(current - w))`` over the universe, plus every
     held weight the universe does not contain (those positions have no
-    variable and are sold in full).
+    variable and are sold in full). A cash reserve scales every final weight
+    by ``invested_fraction``, so the comparison against the held weights --
+    both sides fractions of the total portfolio -- carries that factor.
 
     Written in a form that survives PyPortfolioOpt's max-Sharpe
     transformation. ``max_sharpe`` substitutes ``w = k * w_true`` and
@@ -340,15 +390,15 @@ def _turnover_constraint(tickers, limit: float, current: dict):
     scaled weights against unscaled ones. Multiplying every constant by
     ``sum(w)`` instead (which the transformed problem pins to ``k``) makes the
     whole constraint homogeneous in ``k``, so dividing through recovers
-    exactly ``sum(pos(current - w_true)) + outside <= limit``.
+    exactly ``sum(pos(current - invested_fraction * w_true)) + outside <= limit``.
     """
     held = np.array([current.get(ticker, 0.0) for ticker in tickers])
     in_universe = set(tickers)
     outside = sum(weight for ticker, weight in current.items() if ticker not in in_universe)
 
     def constraint(weights):
-        invested = cp.sum(weights)
-        sold = cp.sum(cp.pos(held * invested - weights)) + outside * invested
+        scale = cp.sum(weights)
+        sold = cp.sum(cp.pos(held * scale - invested_fraction * weights)) + outside * scale
         return sold <= limit
 
     return constraint
@@ -434,7 +484,8 @@ def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current
     unless ``max_turnover`` is set: by default they only scale the weights
     afterwards, so varying them still hits the same solve. A turnover limit
     makes the held weights a solver input, so they join the key only then.
-    ``max_positions`` selects and then re-solves over a subset, so it is part
+    ``max_positions`` selects and then re-solves over a subset, and
+    ``cash_reserve`` rescales the solver's weight bounds, so both are part
     of the key too. Anything new that reaches the solver must be added here.
 
     Nothing is stored when the solver fails, so an infeasible request keeps
@@ -449,6 +500,7 @@ def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current
         request.risk_free_rate,
         turnover_inputs,
         request.max_positions,
+        request.cash_reserve,
     )
 
     def compute():
@@ -488,12 +540,19 @@ def _return_and_volatility(request: OptimizationRequest, market: MarketData, wei
         request.risk_free_rate,
         _solver_inputs(request, current),
         request.max_positions,
+        request.cash_reserve,
     )
 
     def compute():
         mu, cov_matrix = market.stats_for(request.universe)
         vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
-        return float(vector @ mu), float(np.sqrt(vector @ cov_matrix @ vector))
+        # The cash reserve earns the risk-free rate (that is what the rate
+        # means here) and has no variance, so it adds to the return and
+        # dilutes nothing but the volatility -- which is why the Sharpe
+        # ratio is unchanged by the reserve: both the excess return and the
+        # volatility shrink by the invested fraction.
+        reserve_return = request.cash_reserve * request.risk_free_rate
+        return float(vector @ mu) + reserve_return, float(np.sqrt(vector @ cov_matrix @ vector))
 
     return market.solutions.get_or_compute(key, compute)
 
@@ -525,6 +584,13 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
         "as_of": str(market.as_of),
         "risk_free_rate": _describe_rate(request),
         "optimized_portfolio": portfolio,
+        # Always present, usually zero: uninvested money is part of the plan,
+        # not a leftover, and an agent reconciling value against the holdings
+        # should find the difference stated rather than have to infer it.
+        "cash": {
+            "value": round(request.cash_reserve * total_investment, 2),
+            "percent_weight": round(request.cash_reserve * 100, 2),
+        },
     }
     if not request.exclude_trades:
         result["trades"] = trades.plan(

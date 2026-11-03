@@ -14,6 +14,7 @@ OPTIONAL_NUMBERS = {
     "max_positions": (int, "Max positions must be a whole number."),
     "max_weight": (float, "Max weight must be a number between 0 and 1."),
     "max_turnover": (float, "Max turnover must be a number between 0 and 1."),
+    "cash_reserve": (float, "Cash reserve must be a number: the fraction of the portfolio to keep in cash."),
 }
 
 

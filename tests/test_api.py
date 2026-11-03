@@ -19,12 +19,14 @@ def test_optimize_explicit_body(client):
     )
     assert response.status_code == 200
     body = response.get_json()
-    assert set(body) == {"as_of", "risk_free_rate", "optimized_portfolio", "trades", "metrics"}
+    assert set(body) == {"as_of", "risk_free_rate", "optimized_portfolio", "cash", "trades", "metrics"}
     for position in body["optimized_portfolio"].values():
         assert set(position) == {"shares", "value", "percent_weight"}
     for trade in body["trades"]:
         assert set(trade) == {"ticker", "action", "shares", "price", "value"}
     assert body["metrics"]["portfolio_value"] == 10000
+    # No reserve asked for: the cash line says so explicitly rather than vanishing.
+    assert body["cash"] == {"value": 0, "percent_weight": 0}
 
 
 def test_optimize_without_a_rate_assumes_zero_and_says_so(client):

@@ -74,7 +74,7 @@ def optimize(
 
 
 def payload_for_portfolio(
-    portfolio, universe_alias: str, max_positions=None, max_weight=None, max_turnover=None
+    portfolio, universe_alias: str, max_positions=None, max_weight=None, max_turnover=None, cash_reserve=None
 ) -> dict:
     """Build the request the browser form implies for a stored portfolio.
 
@@ -89,6 +89,8 @@ def payload_for_portfolio(
         constraints["max_weight"] = max_weight
     if max_turnover is not None:
         constraints["max_turnover"] = max_turnover
+    if cash_reserve is not None:
+        constraints["cash_reserve"] = cash_reserve
     return {
         "initial_cash": portfolio.cash,
         "initial_holdings": portfolio.holdings,

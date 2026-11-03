@@ -46,6 +46,7 @@ def test_every_api_endpoint_is_documented(app):
         "max_positions",
         "min_universal_weight",
         "max_turnover",
+        "cash_reserve",
         "risk_free_rate",
         "exclude_metrics",
         "exclude_trades",
@@ -62,7 +63,7 @@ def test_documented_request_fields_are_actually_parsed(field):
 
 def test_documented_response_keys_are_the_ones_sent(client):
     body = client.post("/api/optimize/", json={"initial_cash": 1000, "universe": ["top20"]}).get_json()
-    for key in ("as_of", "risk_free_rate", "optimized_portfolio", "trades", "metrics"):
+    for key in ("as_of", "risk_free_rate", "optimized_portfolio", "cash", "trades", "metrics"):
         assert key in body and key in DOCUMENTED
     for key in ("shares", "value", "percent_weight"):
         assert key in next(iter(body["optimized_portfolio"].values()))

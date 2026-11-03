@@ -75,9 +75,18 @@ def assert_honors(result, market, spec: dict) -> None:
     "the plan obeys what was asked", used by every feasibility test below.
     """
     weights = weights_of(result)
+    reserve = spec.get("cash_reserve", 0.0)
     assert weights, "a feasible request must return a portfolio"
-    assert sum(weights.values()) == pytest.approx(100, abs=0.5), "the portfolio must be fully invested"
+    assert sum(weights.values()) == pytest.approx(
+        (1 - reserve) * 100, abs=0.5
+    ), "everything but the cash reserve must be invested"
+    assert result["cash"]["percent_weight"] == pytest.approx(reserve * 100, abs=0.01)
+    assert result["cash"]["value"] == pytest.approx(
+        reserve * result["metrics"]["portfolio_value"], abs=0.02
+    ), "the cash line and the weights must describe the same money"
     if "max_weight" in spec:
+        # Weight constraints are fractions of the whole portfolio, reserve
+        # included -- "no stock above 10%" must not mean 10% of what is left.
         worst = max(weights.values())
         assert worst <= spec["max_weight"] * 100 + SLACK, f"max_weight {spec['max_weight']} exceeded by {worst}%"
     if "max_positions" in spec:
@@ -108,6 +117,11 @@ def assert_honors(result, market, spec: dict) -> None:
         {"max_weight": 0.2},
         {"min_universal_weight": 0.02},
         {"min_universal_weight": 0.03, "max_weight": 0.2},
+        {"cash_reserve": 0.3},
+        {"cash_reserve": 0.3, "max_weight": 0.1},
+        {"cash_reserve": 0.2, "max_weight": 0.1, "max_positions": 8},
+        {"cash_reserve": 0.2, "min_universal_weight": 0.02},
+        {"cash_reserve": 0.5, "max_positions": 3},
     ],
 )
 def test_feasible_constraints_are_honored_by_the_returned_portfolio(wide, spec):
@@ -175,6 +189,77 @@ def test_capping_positions_can_only_improve_the_objective_it_optimizes(wide):
     cov = cov.reindex(index=wide.prices.columns, columns=wide.prices.columns).fillna(0.0)
     rescaled_sharpe = float(vector @ mu) / float(np.sqrt(vector @ cov @ vector))
     assert capped["metrics"]["sharpe_ratio"] >= rescaled_sharpe - 1e-6
+
+
+# --- the cash reserve: part of the plan, not a leftover ---------------------
+
+
+def test_cash_reserve_leaves_the_money_uninvested_and_says_so(wide):
+    """30% reserve: weights sum to 70%, the cash line carries the other 30%, and the trades only spend 70%."""
+    result = run(wide, {"cash_reserve": 0.3})
+    total = result["metrics"]["portfolio_value"]
+    assert result["cash"] == {"value": pytest.approx(0.3 * total, abs=0.01), "percent_weight": 30.0}
+    assert sum(weights_of(result).values()) == pytest.approx(70, abs=0.5)
+    bought = sum(trade["value"] for trade in result["trades"] if trade["action"] == "buy")
+    assert bought == pytest.approx(0.7 * total, rel=0.01), "buys must not dip into the reserve"
+
+
+def test_max_weight_means_a_fraction_of_the_whole_portfolio_not_the_invested_part(wide):
+    """With a 30% reserve and a 10% cap, the invested 70% needs at least seven names.
+
+    If the cap were quietly measured against the invested sleeve instead,
+    five names at 14% of it would satisfy the solver and break the promise.
+    """
+    result = run(wide, {"cash_reserve": 0.3, "max_weight": 0.1})
+    weights = weights_of(result)
+    assert max(weights.values()) <= 10 + SLACK
+    assert len(weights) >= 7
+
+
+def test_a_reserve_makes_the_once_impossible_example_feasible(wide):
+    """8 holdings at 10% cannot fill a portfolio -- unless 20% stays in cash by design."""
+    spec = {"max_weight": 0.1, "max_positions": 8, "cash_reserve": 0.2}
+    assert_honors(run(wide, spec), wide, spec)
+    # One notch less reserve and the same arithmetic fails again, saying how.
+    error = rejection(wide, {"max_weight": 0.1, "max_positions": 8, "cash_reserve": 0.1})
+    assert "cash_reserve" in error.message
+    assert "raise cash_reserve to at least 0.2" in error.message
+
+
+def test_a_reserve_the_floor_overfills_is_refused_naming_the_reserve(wide):
+    """20 tickers at a 4% floor fit exactly in 80%; a 30% reserve leaves them 10% short."""
+    spec = {"min_universal_weight": 0.04, "cash_reserve": 0.2}
+    assert_honors(run(wide, spec), wide, spec)
+    error = rejection(wide, {"min_universal_weight": 0.04, "cash_reserve": 0.3})
+    fields = {field for conflict in error.details["conflicts"] for field in conflict["fields"]}
+    assert "constraints.cash_reserve" in fields
+    assert "lower cash_reserve to at most 0.2" in error.message
+
+
+def test_raising_a_reserve_out_of_a_full_portfolio_needs_turnover_room(wide):
+    """Fully invested, 20% reserve wanted: that 20% can only come from selling."""
+    holdings = {ticker: 50.0 for ticker in list(wide.universe)[:10]}
+    error = rejection(wide, {"cash_reserve": 0.2, "max_turnover": 0.1}, initial_cash=0.0, initial_holdings=holdings)
+    assert error.message.startswith("Infeasible.")
+    assert "cash_reserve" in error.message and "selling" in error.message
+    # With room to sell, the reserve is raised and the limit still holds.
+    spec = {"cash_reserve": 0.2, "max_turnover": 0.35}
+    result = run(wide, spec, initial_cash=0.0, initial_holdings=holdings)
+    assert_honors(result, wide, spec)
+    assert result["metrics"]["turnover"] >= 0.2 - 1e-3, "raising the reserve is itself selling"
+
+
+def test_the_sharpe_ratio_does_not_depend_on_the_reserve(wide):
+    """Scaling between cash and the tangency portfolio moves along the capital
+    allocation line: return and volatility shrink together, so the ratio holds."""
+    invested = run(wide, {}, risk_free_rate=0.03)
+    reserved = run(wide, {"cash_reserve": 0.4}, risk_free_rate=0.03)
+    assert reserved["metrics"]["sharpe_ratio"] == pytest.approx(invested["metrics"]["sharpe_ratio"], abs=0.02)
+    expected = 0.6 * invested["metrics"]["expected_annual_return"] + 0.4 * 0.03
+    assert reserved["metrics"]["expected_annual_return"] == pytest.approx(expected, abs=0.002)
+    assert reserved["metrics"]["annual_volatility"] == pytest.approx(
+        0.6 * invested["metrics"]["annual_volatility"], abs=0.002
+    )
 
 
 # --- refused: contradictions are caught before the solver -------------------
@@ -323,6 +408,22 @@ def test_browser_refuses_on_the_page_with_the_values_still_filled_in(workspace_c
     assert "Infeasible." in page and "max_weight to at least" in page
     assert 'value="0.1"' in page and 'value="2"' in page
     assert 'value="top20"' in page and "selected" in page
+
+
+def test_browser_cash_reserve_reaches_the_optimizer_and_the_results_page(workspace_client, repo):
+    """The form's reserve becomes the constraint, and the results table shows the cash line."""
+    pid = repo.get_portfolio("tester", name="main").id
+    response = workspace_client.post(
+        "/optimizer/run/", data={"portfolio_id": pid, "universe": "top20", "cash_reserve": "0.25"}
+    )
+    assert response.status_code == 200
+    page = response.data.decode()
+    assert "Cash reserve" in page and "25.0%" in page
+    # A rejected reserve comes back editable like every other constraint.
+    rejected = workspace_client.post(
+        "/optimizer/run/", data={"portfolio_id": pid, "universe": "top20", "cash_reserve": "1.5"}
+    ).data.decode()
+    assert "cash_reserve" in rejected and 'value="1.5"' in rejected
 
 
 def test_browser_refill_does_not_leak_onto_other_portfolios(workspace_client, repo):

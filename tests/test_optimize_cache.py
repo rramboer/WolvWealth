@@ -72,8 +72,11 @@ def test_fields_that_only_scale_the_result_reuse_the_same_solve(market, solves, 
         {"constraints": {"min_universal_weight": 0.1}},
         {"initial_holdings": {"AAA": 5}, "constraints": {"max_turnover": 0.2}},
         {"risk_free_rate": 0.01},
+        # The reserve rescales the solver's weight bounds, so a cached
+        # fully-invested answer must not be served for a reserved request.
+        {"constraints": {"cash_reserve": 0.25}},
     ],
-    ids=["universe", "max_weight", "min_universal_weight", "max_turnover", "risk_free_rate"],
+    ids=["universe", "max_weight", "min_universal_weight", "max_turnover", "risk_free_rate", "cash_reserve"],
 )
 def test_fields_that_reach_the_solver_get_their_own_solve(market, solves, changes):
     optimizer.optimize(BASE, market)

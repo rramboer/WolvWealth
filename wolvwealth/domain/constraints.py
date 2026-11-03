@@ -66,58 +66,92 @@ def _position_cap(request) -> int:
     return min(request.max_positions, universe_size)
 
 
+def _investable(request) -> float:
+    """The share of the portfolio the weights must be able to cover.
+
+    One, less any ``cash_reserve``: money deliberately kept in cash is money
+    the weight constraints do not have to find room for, so a reserve makes
+    otherwise-impossible combinations feasible (8 holdings at 10% cannot
+    fill a portfolio, but they exactly fill one that keeps 20% in cash).
+    """
+    return 1.0 - request.cash_reserve
+
+
+def _describe_investable(request) -> str:
+    """How the reason sentences name the amount that must be allocated."""
+    if request.cash_reserve <= 0:
+        return "the portfolio"
+    return f"the {_investable(request):.0%} to be invested after cash_reserve {request.cash_reserve}"
+
+
 def _max_weight_cannot_fill_the_portfolio(request):
-    """max_weight x the number of holdings allowed must reach 100%."""
-    cap, max_weight = _position_cap(request), request.max_weight
+    """max_weight x the number of holdings allowed must reach everything to be invested."""
+    cap, max_weight, investable = _position_cap(request), request.max_weight, _investable(request)
     reachable = cap * max_weight
-    if reachable >= 1 - TOLERANCE:
+    if reachable >= investable - TOLERANCE:
         return None
     # max_weight is stored to two decimals, so the suggestion must round up to
     # two decimals as well or following it would land back here.
-    enough_weight = math.ceil(100 / cap) / 100
-    enough_positions = math.ceil(1 / max_weight - TOLERANCE)
+    enough_weight = math.ceil(100 * investable / cap) / 100
+    enough_positions = math.ceil(investable / max_weight - TOLERANCE)
+    # The third way out: a reserve big enough that the weights no longer have
+    # to cover the gap. Suggested only when the field is already in play --
+    # otherwise the remedy would introduce a concept the request never used.
+    more_reserve = ""
+    if request.cash_reserve > 0:
+        more_reserve = f", or raise cash_reserve to at least {math.ceil(100 * (1 - reachable)) / 100}"
     if request.max_positions is None or request.max_positions > len(request.universe):
         # The universe, not max_positions, is what limits the holding count.
         return Conflict(
             fields=("constraints.max_weight", "universe"),
             reason=(
                 f"max_weight {max_weight} caps each of the {cap} tickers in the universe at "
-                f"{max_weight:.0%}, which allocates at most {reachable:.0%} of the portfolio."
+                f"{max_weight:.0%}, which allocates at most {reachable:.0%} of {_describe_investable(request)}."
             ),
             remedy=(
                 f"Raise max_weight to at least {enough_weight}, or widen the universe to at least "
-                f"{enough_positions} tickers."
+                f"{enough_positions} tickers{more_reserve}."
             ),
         )
     return Conflict(
         fields=("constraints.max_positions", "constraints.max_weight"),
         reason=(
             f"max_positions {cap} holdings at max_weight {max_weight} each allocates at most "
-            f"{reachable:.0%} of the portfolio, leaving {1 - reachable:.0%} with nowhere to go."
+            f"{reachable:.0%} of the portfolio, leaving {investable - reachable:.0%} of "
+            f"{_describe_investable(request)} with nowhere to go."
         ),
-        remedy=(f"Raise max_positions to at least {enough_positions}, or max_weight to at least {enough_weight}."),
+        remedy=(
+            f"Raise max_positions to at least {enough_positions}, or max_weight to at least "
+            f"{enough_weight}{more_reserve}."
+        ),
     )
 
 
 def _min_weight_overfills_the_portfolio(request):
-    """min_universal_weight applies to every universe ticker, so n x min must fit in 100%."""
+    """min_universal_weight applies to every universe ticker, so n x min must fit in what is invested."""
     minimum, universe_size = request.min_universal_weight, len(request.universe)
+    investable = _investable(request)
     required = minimum * universe_size
-    if minimum <= 0 or required <= 1 + TOLERANCE:
+    if minimum <= 0 or required <= investable + TOLERANCE:
         return None
     # Round down: a suggestion that rounds up would overfill by the same rule.
-    small_enough = math.floor(100 / universe_size) / 100
-    fits = math.floor(1 / minimum + TOLERANCE)
+    small_enough = math.floor(100 * investable / universe_size) / 100
+    fits = math.floor(investable / minimum + TOLERANCE)
+    fields = ("constraints.min_universal_weight", "universe")
+    remedy_tail = f"narrow the universe to at most {fits} tickers"
+    if request.cash_reserve > 0 and required <= 1 + TOLERANCE:
+        # Only the reserve makes it overfill; say so, it is the easiest fix.
+        fields += ("constraints.cash_reserve",)
+        # The tolerance keeps float dust (1 - 0.8 is 0.1999...96) from
+        # shaving a suggestion that is exactly feasible down a notch.
+        remedy_tail += f", or lower cash_reserve to at most {math.floor(100 * (1 - required) + 1e-6) / 100}"
     return Conflict(
-        fields=("constraints.min_universal_weight", "universe"),
+        fields=fields,
         reason=(
             f"min_universal_weight {minimum} is a floor under every one of the {universe_size} tickers in "
-            f"the universe, which requires {required:.0%} of the portfolio."
+            f"the universe, which requires {required:.0%} of {_describe_investable(request)}."
         ),
-        remedy=(
-            f"Lower min_universal_weight to at most {small_enough}, or narrow the universe to at most "
-            f"{fits} tickers."
-        ),
+        remedy=(f"Lower min_universal_weight to at most {small_enough}, or {remedy_tail}."),
     )
 
 

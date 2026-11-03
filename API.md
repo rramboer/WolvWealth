@@ -81,6 +81,7 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | `constraints.max_positions` | integer ≥ 1 | Largest number of holdings. Applied by solving, keeping the N largest names, and re-solving over those under the same constraints | unlimited |
 | `constraints.min_universal_weight` | number 0–1 | Floor applied to **every** asset in the universe | `0` |
 | `constraints.max_turnover` | number 0–1 | Largest fraction of the portfolio's value the plan may **sell**. `0` keeps every holding and only invests cash; `1` is no limit | `1` |
+| `constraints.cash_reserve` | number 0–1 (exclusive) | Fraction of the portfolio's value to leave in cash, uninvested — dry powder for later opportunities. `0.15` invests 85% and reports the other 15% in the response's `cash` block | `0` |
 | `risk_free_rate` | number −1 to 1, or `"tbill"` | Annual yield the idle money earns, as a fraction (`0.04` is 4%). The Sharpe ratio is maximized and reported against it. `"tbill"` means the cached 13-week Treasury yield (see `/api/market/`) | the rate stored on the referenced `portfolio`, else `0` with a `note` in the response |
 | `exclude_metrics` | boolean | Omit the `metrics` block | `false` |
 | `exclude_trades` | boolean | Omit the `trades` block | `false` |
@@ -93,11 +94,11 @@ quietly breaks one of them. The checks:
 
 | Rule | Why |
 |---|---|
-| `max_weight` × the number of holdings allowed ≥ 1 | Otherwise the weights cannot add to 100%. The holding count is `max_positions`, or the universe size when it is unset |
-| `min_universal_weight` × universe size ≤ 1 | The floor applies to **every** universe ticker, so a large universe overfills the portfolio |
+| `max_weight` × the number of holdings allowed ≥ 1 − `cash_reserve` | Otherwise the weights cannot cover everything to be invested. The holding count is `max_positions`, or the universe size when it is unset |
+| `min_universal_weight` × universe size ≤ 1 − `cash_reserve` | The floor applies to **every** universe ticker, so a large universe (or a large reserve) overfills the portfolio |
 | `min_universal_weight` = 0 when `max_positions` < universe size | A positive floor requires every universe ticker to be held, so the holding count cannot also be capped below it |
 | `min_universal_weight` ≤ `max_weight` | No single weight can be under the floor and over the cap |
-| `max_turnover` ≥ the selling the other inputs force | A held ticker outside `universe`, a position already above `max_weight`, or a `max_positions` cap that drops held names |
+| `max_turnover` ≥ the selling the other inputs force | A held ticker outside `universe`, a position already above `max_weight`, a `max_positions` cap that drops held names, or a `cash_reserve` above the cash already held (the shortfall can only come from sales) |
 
 **Every** violated rule is reported in one response, so a contradictory body takes one round
 trip to diagnose rather than one per conflict. The message names the fields and a remedy, and
@@ -123,6 +124,20 @@ trip to diagnose rather than one per conflict. The message names the fields and 
 
 An agent should apply a `remedy` and retry rather than dropping the constraint, and the
 suggested values are chosen to be feasible as written.
+
+### How `cash_reserve` interacts with everything else
+
+Every weight in a request and a response is a fraction of the **total** portfolio value,
+the reserve included: `max_weight: 0.1` with `cash_reserve: 0.3` means no position exceeds
+10% of the portfolio, so the invested 70% needs at least seven names. The composition of
+the invested part is the max-Sharpe portfolio either way (mixing it with cash moves along
+the capital allocation line), which also means the reported `sharpe_ratio` does not depend
+on the reserve — `expected_annual_return` counts the reserve as earning `risk_free_rate`,
+and `annual_volatility` shrinks by the invested fraction. A reserve can make an otherwise
+impossible constraint set feasible (`max_weight: 0.1` with `max_positions: 8` works at
+`cash_reserve: 0.2`, since the weights only have to cover 80%), and it can force sales: a
+fully invested portfolio asked for a 20% reserve must sell 20%, which counts against
+`max_turnover`.
 
 `max_turnover` is a hard constraint inside the solver, not a penalty: the result is the
 best Sharpe ratio reachable while selling no more than that share of what you hold, valued
@@ -155,6 +170,7 @@ never exceeds `max_turnover`.
     "CVX":  { "shares": 20.9378,  "value": 4846.26,  "percent_weight": 19.45 },
     "COST": { "shares": 3.8894,   "value": 3874.15,  "percent_weight": 15.55 }
   },
+  "cash": { "value": 0, "percent_weight": 0 },
   "trades": [
     { "ticker": "AAPL", "action": "sell", "shares": 50.0,     "price": 348.91, "value": 17445.50 },
     { "ticker": "F",    "action": "sell", "shares": 200.0,    "price": 12.36,  "value": 2472.00 },
@@ -189,6 +205,11 @@ An agent should treat `"default"` as a prompt to ask its user where the cash sit
 **`optimized_portfolio`** — the target, keyed by ticker. `shares` is rounded to 4 decimals,
 `value` to cents, `percent_weight` is 0–100. A ticker you hold that is *absent* here should
 be sold off entirely; the `trades` block already says so.
+
+**`cash`** — the uninvested part of the plan, always present: `value` in USD and
+`percent_weight` 0–100, both zero unless `constraints.cash_reserve` was set. The ticker
+weights plus this line account for the whole `portfolio_value`, so reconcile against both
+rather than treating the gap as rounding error.
 
 **`trades`** — what to do, which is usually the only part an agent needs:
 

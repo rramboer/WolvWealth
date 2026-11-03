@@ -70,6 +70,15 @@
                         <td class="py-2">{{ portfolio.holdings.get(ticker, 0) }}</td>
                     </tr>
                     {% endfor %}
+                    {% if result.cash.value > 0 %}
+                    <tr class="border-b border-gray-dark">
+                        <td class="py-2 pr-4 font-medium" style="color: gray;">Cash reserve</td>
+                        <td class="py-2 pr-4">{{ result.cash.percent_weight }}%</td>
+                        <td class="py-2 pr-4">&mdash;</td>
+                        <td class="py-2 pr-4">${{ "%.2f" | format(result.cash.value) }}</td>
+                        <td class="py-2">&mdash;</td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
             <p class="text-xs mt-3" style="color: gray;">

@@ -41,6 +41,10 @@ def test_rejects_non_dict_input(market):
         ({"initial_cash": 100, "constraints": {"max_positions": 2, "max_weight": 0.25}}, "Infeasible"),
         ({"initial_cash": 100, "constraints": {"min_universal_weight": 2}}, "min_universal_weight"),
         ({"initial_cash": 100, "constraints": {"min_universal_weight": 0.5, "max_weight": 0.3}}, "less than"),
+        ({"initial_cash": 100, "constraints": {"cash_reserve": "half"}}, "cash_reserve"),
+        ({"initial_cash": 100, "constraints": {"cash_reserve": True}}, "cash_reserve"),
+        ({"initial_cash": 100, "constraints": {"cash_reserve": -0.1}}, "cash_reserve"),
+        ({"initial_cash": 100, "constraints": {"cash_reserve": 1}}, "nothing to optimize"),
         ({"initial_cash": 100, "exclude_metrics": "yes"}, "exclude_metrics"),
     ],
 )
