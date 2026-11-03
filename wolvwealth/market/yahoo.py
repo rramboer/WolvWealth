@@ -1,6 +1,6 @@
 """Download adjusted closes from Yahoo Finance, politely.
 
-Yahoo rate-limits bulk downloads of the ~2,000-ticker universe, and a
+Yahoo rate-limits bulk downloads of the ~2,600-ticker universe, and a
 rate-limited ticker comes back as an all-NaN column rather than an
 exception. So: download in chunks with pauses, then re-request the all-NaN
 stragglers with backoff, in smaller batches each pass.
@@ -21,7 +21,7 @@ CHUNK_SIZE = 100
 CHUNK_PAUSE_SECONDS = 2
 RETRY_BACKOFF_SECONDS = 30
 #: One retry pass per entry, asking in smaller batches each time. A full
-#: 1982-ticker download leaves a few hundred empty columns; re-requesting 60
+#: full-universe download leaves a few hundred empty columns; re-requesting 60
 #: of them recovered 11, so a meaningful share are throttling rather than
 #: delistings and are worth chasing. Shrinking the batch is a heuristic: a
 #: shorter request is cheaper for Yahoo to answer and costs us less when it

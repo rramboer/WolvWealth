@@ -37,7 +37,7 @@ Price-cache freshness and the symbols a request may use.
 {
   "as_of": "2026-10-29",
   "age_days": 1,
-  "universe_size": 1982,
+  "universe_size": 2591,
   "tradeable_size": 1576,
   "universe_aliases": ["top20", "top50", "top100", "top200", "top300", "top400", "top500"],
   "tickers": ["MSFT", "AAPL", "GOOGL", "..."],

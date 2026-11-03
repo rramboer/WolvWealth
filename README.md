@@ -26,7 +26,7 @@ A **workspace** is one person using the machine (`ryan`, `my-brother`), with no 
 | Max-Sharpe optimization with constraints: per-asset cap, position count, universal floor, **max turnover** (cap on how much of what you hold may be sold) | browser + `POST /api/optimize/` |
 | Trade list: the buy/sell share deltas from what you hold to the target, sells first so cash is freed before it is spent | in every optimize response |
 | Market freshness and symbol validation for agents, including the current 13-week T-bill yield as a risk-free-rate reference | `GET /api/market/` |
-| Market data: daily adjusted closes for 1,982 US tickers, 2006 to today, refreshed in the background when stale | `var/` cache, `wolvwealth refresh-data` |
+| Market data: daily adjusted closes for 2,591 US tickers, 2006 to today, refreshed in the background when stale | `var/` cache, `wolvwealth refresh-data` |
 | Walk-forward backtest | `scripts/backtest.py`, standalone |
 
 The full JSON contract is **[API.md](API.md)**, written to be handed to an agent as-is and contract-tested so it cannot drift from the code (`tests/test_api_contract.py`).

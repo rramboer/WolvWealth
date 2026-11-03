@@ -78,13 +78,18 @@ when you are changing code:
 - `wolvwealth serve` refreshes in the background when the cache is more than
   `auto_refresh_max_age_days` (7) days old, so startup never blocks on it, and failures are
   non-fatal. `WOLVWEALTH_NO_AUTO_REFRESH=1` disables it. `create_app()` itself never refreshes.
-- `wolvwealth refresh-data` appends; `--full` re-downloads everything. Run `--full`
-  occasionally, because the append path never corrects earlier closes after splits and
-  dividends. Expect several minutes, longer when Yahoo throttles.
-- To change the universe, edit `wolvwealth/data/ticker_universe.csv` (sorted by market cap,
-  largest first) and run `--full`. Tickers that stop trading are handled automatically. Never
-  prune the file because tickers came back empty: Yahoo returns the same nothing for a
-  delisted company as for a throttled request, so pruning deletes live companies.
+- `wolvwealth refresh-data` appends, detecting and repairing tickers whose adjusted history
+  changed (splits, dividends) along the way; `--full` re-downloads everything, which is
+  mainly for recovering tickers an earlier download lost to throttling. Expect several
+  minutes, longer when Yahoo throttles.
+- To refresh the universe against today's listings, run `python scripts/build_universe.py`
+  (use `--dry-run` first) and then `wolvwealth refresh-data --full` so the new tickers get
+  price history; until then they are simply untradeable. The script adds and re-ranks but
+  never removes. To hand-edit instead, keep `wolvwealth/data/ticker_universe.csv` sorted by
+  market cap, largest first — the file order is the `top500` ranking. Tickers that stop
+  trading are handled automatically. Never prune the file because tickers came back empty:
+  Yahoo returns the same nothing for a delisted company as for a throttled request, so
+  pruning deletes live companies.
 
 ### Importing the package has no side effects; building Services does
 

@@ -129,7 +129,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
 
         Covering the whole ticker list would be quadratic work for names no
         default request touches -- ``exp_cov`` loops over every pair, so all
-        1982 tickers take ~17 minutes against ~1 minute for 500. Every
+        ~2,600 tickers take tens of minutes against ~1 minute for 500. Every
         universe alias tops out at ``top500``, so this covers them all plus
         the default universe; anything else falls back to computing its own
         statistics in ``MarketData.stats_for``.
