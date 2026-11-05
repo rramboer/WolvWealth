@@ -6,7 +6,7 @@ from datetime import timedelta
 import pandas as pd
 
 from wolvwealth.domain.market import UNIVERSE_ALIASES, MarketData
-from wolvwealth.domain.stats import MarketStats
+from wolvwealth.domain.stats import ESTIMATOR, MarketStats
 from wolvwealth.market import yahoo
 from wolvwealth.storage.price_store import PriceStore
 
@@ -213,8 +213,18 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
 
     @staticmethod
     def _stats_meta(prices, columns) -> dict:
-        """Return what the statistics cache must match to be served against ``prices``."""
-        return {"as_of": str(prices.index[-1].date()), "price_rows": len(prices), "tickers": len(columns)}
+        """Return what the statistics cache must match to be served against ``prices``.
+
+        The estimator's name is part of it: a cache built under another
+        estimator holds different expected returns for the same prices, and
+        serving it would silently price every request the old way.
+        """
+        return {
+            "as_of": str(prices.index[-1].date()),
+            "price_rows": len(prices),
+            "tickers": len(columns),
+            "estimator": ESTIMATOR,
+        }
 
     def _load_or_compute_stats(self, universe, prices) -> MarketStats:
         """Return the cached statistics if they were computed from ``prices``; rebuild them otherwise."""
@@ -226,7 +236,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         if cached is not None:
             meta, mu, cov = cached
             if meta == self._stats_meta(prices, columns) and list(cov.columns) == columns:
-                return MarketStats(mu, cov)
+                return MarketStats(mu, cov, meta["estimator"])
         return self._compute_and_save_stats(prices, columns)
 
     def _compute_and_save_stats(self, prices, columns) -> MarketStats:

@@ -113,7 +113,9 @@ def test_max_positions_caps_the_holding_count_and_stays_fully_invested(market):
 
 def test_metrics_describe_the_returned_portfolio(market):
     """Regression: metrics used to come from the untruncated solver output."""
-    from pypfopt import expected_returns, risk_models
+    from pypfopt import risk_models
+
+    from wolvwealth.domain import stats
 
     result = optimizer.optimize({"initial_cash": 10000, "constraints": {"max_positions": 1}}, market)
     portfolio = result["optimized_portfolio"]
@@ -121,7 +123,7 @@ def test_metrics_describe_the_returned_portfolio(market):
     weights = pd.Series({t: p["percent_weight"] / 100 for t, p in portfolio.items()}, dtype=float).reindex(
         market.prices.columns, fill_value=0.0
     )
-    mu = expected_returns.mean_historical_return(market.prices)
+    mu = stats.expected_return(market.prices)  # whichever estimator the app uses
     cov = risk_models.exp_cov(market.prices)
     expected_return = float(weights @ mu)
     volatility = float(np.sqrt(weights @ cov @ weights))
@@ -260,10 +262,14 @@ def test_buying_with_cash_is_not_turnover(market):
 
 def test_an_untouched_holding_does_not_become_a_dust_sell(market):
     """Regression: weight rounding left a kept position 0.0001 shares short, which the trade list reported as a sell."""
-    body = {"initial_cash": 5000, "initial_holdings": {"AAA": 10}, "constraints": {"max_turnover": 0}}
+    # Hold almost everything in the name with the lowest expected return, so the
+    # solver has no reason to add to it and must hand back exactly what is held.
+    mu, _ = market.stats_for(market.universe)
+    worst = mu.idxmin()
+    body = {"initial_cash": 100, "initial_holdings": {worst: 10}, "constraints": {"max_turnover": 0}}
     result = optimizer.optimize(body, market)
     assert all(trade["action"] == "buy" for trade in result["trades"])
-    assert result["optimized_portfolio"]["AAA"]["shares"] == 10
+    assert result["optimized_portfolio"][worst]["shares"] == 10
     assert sum(p["percent_weight"] for p in result["optimized_portfolio"].values()) == pytest.approx(100, abs=0.05)
 
 

@@ -12,7 +12,7 @@ import functools
 import pandas as pd
 
 from wolvwealth.domain.cache import LRUCache
-from wolvwealth.domain.stats import MarketStats
+from wolvwealth.domain.stats import ESTIMATOR, ESTIMATORS, MarketStats
 
 #: "top20" expands to the 20 largest tickers by market cap, etc.
 UNIVERSE_ALIASES = {f"top{n}": n for n in (20, 50, 100, 200, 300, 400, 500)}
@@ -25,15 +25,39 @@ class MarketData:
     universe: tuple
     prices: pd.DataFrame
     stats: MarketStats = None
+    #: Which expected-return estimator this snapshot's statistics use, for
+    #: the ones computed on demand as much as the precomputed ones. The app
+    #: always uses the default; backtests compare alternatives.
+    estimator: str = ESTIMATOR
     #: Memoized optimizer solutions for exactly these prices. Not part of the
     #: snapshot's identity, so it is excluded from equality and repr; a
     #: refreshed snapshot starts empty and cannot serve stale solutions.
     solutions: LRUCache = dataclasses.field(default_factory=LRUCache, compare=False, repr=False)
 
     @classmethod
-    def build(cls, universe, prices: pd.DataFrame, stats: MarketStats = None) -> "MarketData":
-        """Normalize the universe to a tuple of upper-case tickers."""
-        return cls(tuple(str(t).upper() for t in universe), prices, stats)
+    def build(cls, universe, prices: pd.DataFrame, stats: MarketStats = None, estimator: str = None) -> "MarketData":
+        """Normalize the universe to a tuple of upper-case tickers.
+
+        The estimator defaults to the one ``stats`` were computed with, and
+        may not contradict it: a snapshot that sliced one estimator's cache
+        for some universes and computed another for the rest would price
+        two requests on different assumptions.
+        """
+        estimator = estimator or (stats.estimator if stats is not None else ESTIMATOR)
+        if estimator not in ESTIMATORS:
+            raise ValueError(f"Unknown expected-return estimator {estimator!r}; choose from {', '.join(ESTIMATORS)}.")
+        if stats is not None and stats.estimator != estimator:
+            raise ValueError(f"stats were computed with {stats.estimator!r}, not {estimator!r}")
+        return cls(tuple(str(t).upper() for t in universe), prices, stats, estimator)
+
+    def with_estimator(self, estimator: str) -> "MarketData":
+        """Return a snapshot of the same prices under another estimator, with no statistics and no memo carried over.
+
+        Both must start empty: the cached statistics and the memoized
+        solutions were produced under the old estimator, and a fresh
+        instance is the only way to be sure nothing of them is reused.
+        """
+        return MarketData.build(self.universe, self.prices, estimator=estimator)
 
     @functools.cached_property
     def tickers(self) -> frozenset:
@@ -100,7 +124,7 @@ class MarketData:
         Precomputed stats are dropped: they describe the full history, and a
         truncated snapshot reading them would be lookahead.
         """
-        return MarketData(self.universe, self.prices[:end_date])
+        return MarketData(self.universe, self.prices[:end_date], estimator=self.estimator)
 
     def stats_for(self, tickers) -> tuple:
         """Return the expected returns and covariance for ``tickers`` as ``(mu, cov)``.
@@ -112,7 +136,7 @@ class MarketData:
         tickers = list(tickers)
         if self.stats is not None and self.stats.covers(tickers):
             return self.stats.slice(tickers)
-        return MarketStats.compute(self.prices[tickers]).slice(tickers)
+        return MarketStats.compute(self.prices[tickers], self.estimator).slice(tickers)
 
     def expand_universe(self, entries) -> list:
         """Expand aliases and tickers into a deduplicated, tradeable ticker list.

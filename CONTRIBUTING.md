@@ -157,12 +157,32 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 | Add or change a web page | `wolvwealth/web/views/<page>.py` + `wolvwealth/web/templates/<page>.html` (extend `base.html`); import the module in `web/views/__init__.py` |
 | Change workspace/portfolio storage | `wolvwealth/storage/repository.py` (SQL), `wolvwealth/domain/models.py` (entities), `wolvwealth/storage/sql/` (schema), then `wolvwealth reset-db` |
 | Change the optimizer maths | `wolvwealth/domain/optimizer.py` — plain dict in, plain dict out, only reads a `MarketData`. `scripts/backtest.py` reuses it |
+| Change the expected-return estimator | `wolvwealth/domain/stats.py`: add it to `ESTIMATORS` (it must be per-ticker separable; `tests/test_stats.py` checks), run `scripts/backtest.py --estimator NAME` against the current one, and only then point `ESTIMATOR` at it. Update the table below |
 | Change the browser optimize flow | `wolvwealth/web/views/optimizer.py` + `templates/results.html`, forms live in `templates/workspace.html` |
 | Change where files live or a tunable | `wolvwealth/config.py` (`Settings`) |
 | Add a bolt-on feature | A module in `wolvwealth/services/` for the use case, a blueprint or CLI command to expose it, tests. See AGENTS.md "Where things go" |
 | Add a CLI command | `wolvwealth/__main__.py` (argparse subcommand + `cmd_*` function), tests in `tests/test_cli.py` |
 | Add or change an MCP tool | `wolvwealth/mcp/tools.py` (a `Tool`: name, description the model reads, JSON schema, handler calling a service), tests in `tests/test_mcp.py`, the tool table in `MCP.md` |
 | Change the installer | `install.sh`; test it with a sandbox `HOME` so your real user site and shell rc are untouched |
+
+## The backtest and the expected-return estimator
+
+`python scripts/backtest.py [--estimator NAME] [--start YYYY-MM-DD] [--frequencies quarterly,monthly] [--verbose]` walks the optimizer forward over the cached prices: at each rebalance it sees only the data up to that date, holds the result until the next one, and values the holdings daily. It prints realized Sharpe, CAGR, volatility, max drawdown and mean turnover per rebalance for the max-Sharpe strategy and for an equal-weight (1/N) portfolio over the same names. The universe at each date is the 50 largest names with at least a year of history (a company listed last week has no statistics worth optimizing on), capped at 10 positions. The output is bracketed by a survivorship warning for good reason: the cache holds only companies still listed today, ranked by today's market cap, and the walk charges no commissions, spreads or taxes. Compare strategies against each other, never against reality.
+
+That is how the estimator in `domain/stats.py` was chosen (November 2026, prices 2006 to 2026-10-29, four start dates: 2012, 2016, 2019, 2022; quarterly and monthly rebalancing, eight windows in all):
+
+| Expected-return estimator | Mean realized Sharpe | Windows beating 1/N | Turnover per quarterly rebalance |
+|---|---|---|---|
+| `mean_historical` (CAGR over the whole history; the original) | 1.02 | 0 of 8 | 23 to 25% |
+| `mean_5y` (CAGR over the last five years) | 1.22 | 1 of 8 | not measured |
+| `ema_1000` (exponentially weighted, 1000-day span) | 1.22 | 0 of 8 | not measured |
+| **`ema_500`** (500-day span; **chosen**) | **1.39** | **5 of 8** | 40 to 45% |
+| `ema_250` (250-day span) | 1.46 | 5 of 8 | 49 to 54% |
+| equal weight, for reference | 1.35 | | 6% |
+
+The whole-history mean came last in every one of the eight windows, and realized Sharpe rose monotonically with recency weighting. `ema_500` beat it everywhere, by 0.26 to 0.69, and cleared the 1/N hurdle more often than not. `ema_250` scored a little higher but sold about a quarter more of the portfolio at each rebalance, in a walk that charges nothing for trading, and the two are within noise of each other on windows that all end on the same day. 500 days is also PyPortfolioOpt's own default span, so it is a conventional choice rather than a fitted one. The max-Sharpe portfolios under every estimator turn over far more than 1/N does; `constraints.max_turnover` exists for that.
+
+What this does not show: how any of it would have done including the companies that failed along the way, or in a decade where recent winners stopped winning. Treat it as evidence that the whole-history mean was the wrong default, not as a forecast.
 
 ## Security notes
 

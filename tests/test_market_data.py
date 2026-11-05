@@ -9,6 +9,7 @@ import pytest
 from conftest import synthetic_market
 from wolvwealth.domain import optimizer
 from wolvwealth.domain.market import MarketData
+from wolvwealth.domain import stats as stats_module
 from wolvwealth.domain.stats import MarketStats
 from wolvwealth.services.market_data import MarketDataService
 from wolvwealth.storage.price_store import PriceStore
@@ -32,7 +33,12 @@ def test_first_load_computes_and_persists_stats(tmp_path):
     data = service.data
     assert data.stats is not None and data.stats.covers(data.universe)
     meta, mu, cov = store.load_stats()
-    assert meta == {"as_of": str(data.as_of), "price_rows": len(data.prices), "tickers": len(data.universe)}
+    assert meta == {
+        "as_of": str(data.as_of),
+        "price_rows": len(data.prices),
+        "tickers": len(data.universe),
+        "estimator": stats_module.ESTIMATOR,
+    }
     expected = MarketStats.compute(data.prices)
     assert np.allclose(mu, expected.mu) and np.allclose(cov, expected.cov)
 
@@ -56,6 +62,17 @@ def test_stats_not_matching_prices_are_rebuilt(tmp_path):
     assert json.loads(store.stats_meta_path.read_text(encoding="utf-8")) == meta
 
 
+def test_stats_from_another_estimator_are_rebuilt_not_served(tmp_path):
+    """Changing ESTIMATOR must never serve expected returns computed the old way for the same prices."""
+    first, store = build_service(tmp_path)
+    first.data  # pylint: disable=pointless-statement  # populate the stats cache
+    meta = json.loads(store.stats_meta_path.read_text(encoding="utf-8"))
+    store.stats_meta_path.write_text(json.dumps({**meta, "estimator": "ema_250"}), encoding="utf-8")
+    second, _ = build_service(tmp_path)
+    assert second.data.stats.estimator == stats_module.ESTIMATOR
+    assert json.loads(store.stats_meta_path.read_text(encoding="utf-8"))["estimator"] == stats_module.ESTIMATOR
+
+
 def test_refresh_recomputes_stats_for_the_new_rows(tmp_path):
     service, store = build_service(tmp_path)
     last = service.data.prices.index[-1]
@@ -68,7 +85,12 @@ def test_refresh_recomputes_stats_for_the_new_rows(tmp_path):
     assert service.refresh()
     meta, _mu, cov = store.load_stats()
     data = service.data
-    assert meta == {"as_of": str(data.as_of), "price_rows": len(data.prices), "tickers": len(data.universe)}
+    assert meta == {
+        "as_of": str(data.as_of),
+        "price_rows": len(data.prices),
+        "tickers": len(data.universe),
+        "estimator": stats_module.ESTIMATOR,
+    }
     assert list(cov.columns) == list(data.prices.columns)
 
 

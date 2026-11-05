@@ -238,7 +238,7 @@ your broker requires whole shares, accepting the small drift that introduces.
 | Field | Meaning |
 |---|---|
 | `portfolio_value` | Total being allocated: cash + holdings valued at `as_of`, USD |
-| `expected_annual_return` | Annualized expected return as a fraction (`0.124` is 12.4%) |
+| `expected_annual_return` | Annualized expected return as a fraction (`0.124` is 12.4%): the exponentially weighted mean of daily returns (500-day span, so the last two years weigh most), annualized |
 | `annual_volatility` | Annualized standard deviation, same units |
 | `sharpe_ratio` | `(expected_annual_return − risk_free_rate.value) / annual_volatility`, the same rate the solver maximized against. `null` when volatility is zero (degenerate history) rather than dividing by zero |
 | `num_assets` | Positions in the returned portfolio |
@@ -250,7 +250,7 @@ your broker requires whole shares, accepting the small drift that introduces.
   you own, and the first run on a real portfolio often sells most of it. Set
   `constraints.max_turnover` to cap how much is sold, and include held tickers in `universe`
   so the optimizer is allowed to keep them at all.
-- **Mean-variance optimization over historical returns is a model, not a forecast.**
+- **Mean-variance optimization over historical returns is a model, not a forecast.** Expected returns weight the last two years most, so a name that has run up recently looks attractive until it stops.
 - **The risk-free rate shapes the answer, not just the score.** Max-Sharpe picks the frontier
   portfolio tangent to a line from the risk-free rate, so a higher rate tilts toward higher-return,
   higher-volatility, more concentrated portfolios. There is no universal right value: it is whatever

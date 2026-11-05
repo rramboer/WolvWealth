@@ -1,27 +1,50 @@
-"""Walk-forward backtest of the optimizer over the cached price history.
+"""Walk-forward backtest of the optimizer over the cached price history, against a 1/N baseline.
 
-Usage: python scripts/backtest.py
+Usage: python scripts/backtest.py [--estimator NAME] [--start YYYY-MM-DD] [--frequencies quarterly,monthly]
 
 Reuses the app's optimizer (no duplicated maths). At each step the market
 snapshot is truncated to the current date, so every solve only sees data
-available at that time (no lookahead). Nothing global is mutated.
+available at that time (no lookahead). Holdings stay fixed between
+rebalances and are valued daily, so volatility and drawdown are measured
+on what was actually held, not just on the rebalance dates. Nothing global
+is mutated.
+
+``--estimator`` picks the expected-return estimator (one of
+``domain.stats.ESTIMATORS``; default the one the app uses), which is how
+candidates are compared. The equal-weight line is the hurdle: a max-Sharpe
+portfolio that does not beat 1/N on realized Sharpe is not earning its
+estimation error.
 
 The results are survivorship-biased, and the output says so: see
 ``SURVIVORSHIP_WARNING``.
 """
 
+import argparse
+import dataclasses
 import datetime
+import math
 import sys
 
+import pandas as pd
+
+from wolvwealth.config import Settings
 from wolvwealth.domain import optimizer
 from wolvwealth.domain.market import MarketData
-from wolvwealth.services.container import Services
+from wolvwealth.domain.stats import ESTIMATOR, ESTIMATORS, TRADING_DAYS
+from wolvwealth.storage.price_store import PriceStore
 
 INITIAL_CASH = 100_000.0
-UNIVERSE = ["top50"]
+UNIVERSE_SIZE = 50
+#: A name needs this many days of prices before the walk may buy it. The
+#: universe is ranked by today's market cap, so a newly listed company can
+#: be "top 50" on its first trading day, when its return history is one
+#: number and its covariance is NaN; a year of data is the least that makes
+#: the statistics meaningful (and is what an investor at the time had).
+MIN_HISTORY_DAYS = TRADING_DAYS
 MAX_POSITIONS = 10
 START_DATE = "2019-01-01"
 FREQUENCIES = {"yearly": 365, "semiannually": 182, "quarterly": 91, "monthly": 30, "weekly": 7}
+STRATEGIES = ("max_sharpe", "equal_weight")
 #: Printed before and after the numbers. Yahoo serves no history at all for a
 #: symbol once it is delisted, so the cache holds only companies that were
 #: still listed on the download date: every bankruptcy and failed merger that
@@ -37,17 +60,55 @@ SURVIVORSHIP_WARNING = (
 )
 
 
-def optimize_at(market: MarketData, date, cash, holdings):
-    """Optimize with only the data known on `date`; return the result dict."""
+@dataclasses.dataclass
+class Walk:
+    """One strategy walked forward: its daily value and the dates it rebalanced on."""
+
+    values: pd.Series  # daily portfolio value, from the first rebalance to the end of the data
+    rebalances: list  # "YYYY-MM-DD" strings
+    turnovers: list  # per rebalance after the first: value sold as a fraction of the portfolio's value that day
+
+
+def seasoned_universe(known: MarketData) -> list:
+    """The ``UNIVERSE_SIZE`` largest tradeable names with at least ``MIN_HISTORY_DAYS`` of prices by ``known``'s end."""
+    history = known.prices.count()
+    names = [ticker for ticker in known.tradeable if history[ticker] >= MIN_HISTORY_DAYS][:UNIVERSE_SIZE]
+    if not names:
+        raise ValueError(f"no ticker has {MIN_HISTORY_DAYS} days of history by {known.as_of}; start the walk later")
+    return names
+
+
+def optimize_at(known: MarketData, universe: list, cash, holdings):
+    """Optimize over ``universe`` plus the held names with only the data in ``known``; return the result dict."""
     return optimizer.optimize(
         {
             "initial_cash": cash,
             "initial_holdings": holdings,
-            "universe": UNIVERSE + list(holdings),
+            "universe": universe + [ticker for ticker in holdings if ticker not in universe],
             "constraints": {"max_positions": MAX_POSITIONS},
         },
-        market.truncated(date),
+        known,
     )
+
+
+def target_shares(market: MarketData, date, cash, holdings, strategy: str) -> dict:
+    """Shares to hold from ``date`` on, under ``strategy``, given the cash and holdings arriving there."""
+    known = market.truncated(date)
+    names = seasoned_universe(known)
+    if strategy == "max_sharpe":
+        result = optimize_at(known, names, cash, holdings)
+        return {ticker: row["shares"] for ticker, row in result["optimized_portfolio"].items()}
+    if strategy == "equal_weight":
+        value = cash + known.value(holdings)
+        return {ticker: value / len(names) / known.price(ticker) for ticker in names}
+    raise ValueError(f"unknown strategy {strategy!r}")
+
+
+def turnover(before: dict, after: dict, prices: pd.Series) -> float:
+    """Fraction of the portfolio's value sold going from ``before`` to ``after`` at ``prices``."""
+    value = sum(shares * prices[ticker] for ticker, shares in before.items())
+    sold = sum(max(0.0, shares - after.get(ticker, 0.0)) * prices[ticker] for ticker, shares in before.items())
+    return sold / value if value else 0.0
 
 
 def next_trading_day(index, date_string, delta_days):
@@ -59,41 +120,104 @@ def next_trading_day(index, date_string, delta_days):
     return str(index[position].date())
 
 
-def run_backtest(market: MarketData, start_date, frequency_days, initial_cash=INITIAL_CASH):
-    """Walk forward from start_date, reoptimizing every frequency_days. Return {date: value}."""
-    index = market.prices.index
-    date = next_trading_day(index, start_date, 0)
-    result = optimize_at(market, date, initial_cash, {})
-    values = {date: result["metrics"]["portfolio_value"]}
+def run_backtest(market: MarketData, start_date, frequency_days, initial_cash=INITIAL_CASH, strategy="max_sharpe"):
+    """Walk forward from start_date, rebalancing every frequency_days. Return a ``Walk``."""
+    # Forward-filled so a name whose quotes stop mid-period keeps its last price until the next rebalance.
+    prices = market.prices.ffill()
+    date = next_trading_day(prices.index, start_date, 0)
+    holdings = target_shares(market, date, initial_cash, {}, strategy)
+    rebalances, turnovers, pieces = [date], [], []
     while True:
-        date = next_trading_day(index, date, frequency_days)
-        if date is None:
+        following = next_trading_day(prices.index, date, frequency_days)
+        window = prices.loc[date:following] if following else prices.loc[date:]
+        pieces.append(window[list(holdings)].mul(pd.Series(holdings)).sum(axis=1))
+        if following is None:
             break
-        holdings = {ticker: row["shares"] for ticker, row in result["optimized_portfolio"].items()}
-        result = optimize_at(market, date, 0, holdings)
-        values[date] = result["metrics"]["portfolio_value"]
-    return values
+        date = following
+        previous, holdings = holdings, target_shares(market, date, 0, holdings, strategy)
+        turnovers.append(turnover(previous, holdings, prices.loc[date]))
+        rebalances.append(date)
+    values = pd.concat(pieces)
+    return Walk(values[~values.index.duplicated(keep="last")], rebalances, turnovers)
 
 
-def main(market: MarketData = None, frequencies: dict = None, out=print, start_date: str = START_DATE):
-    """Run the backtest at every frequency and print per-period values, bracketed by the bias warning.
+def metrics(values: pd.Series, turnovers=()) -> dict:
+    """Total return, CAGR, annualized volatility, realized Sharpe (0% risk-free), max drawdown, and mean turnover.
 
-    ``market``, ``frequencies``, ``out`` and ``start_date`` are injectable so a
-    test can run the whole report against a synthetic snapshot without the real cache.
+    Turnover is the average fraction of the portfolio sold per rebalance.
+    The walk charges no commissions, spreads or taxes, so two strategies
+    with similar Sharpe ratios are not equal if one churns twice as much.
     """
-    market = market if market is not None else Services.build().market.data
+    years = (values.index[-1] - values.index[0]).days / 365.25
+    daily = values.pct_change().dropna()
+    volatility = float(daily.std() * math.sqrt(TRADING_DAYS))
+    cagr = float((values.iloc[-1] / values.iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
+    return {
+        "total_return": float(values.iloc[-1] / values.iloc[0] - 1),
+        "cagr": cagr,
+        "volatility": volatility,
+        "sharpe": float(daily.mean() * TRADING_DAYS / volatility) if volatility > 0 else None,
+        "max_drawdown": float((values / values.cummax() - 1).min()),
+        "turnover": float(sum(turnovers) / len(turnovers)) if turnovers else 0.0,
+    }
+
+
+def format_row(label: str, figures: dict) -> str:
+    """One strategy's line of the summary table."""
+    sharpe = "   n/a" if figures["sharpe"] is None else f"{figures['sharpe']:6.2f}"
+    return (
+        f"  {label:<14}{figures['total_return']:>+9.1%}{figures['cagr']:>8.1%}{figures['volatility']:>8.1%}"
+        f"{sharpe:>8}{figures['max_drawdown']:>9.1%}{figures['turnover']:>10.1%}"
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Flags: which estimator, where to start, which rebalance frequencies."""
+    parser = argparse.ArgumentParser(description="Walk-forward backtest of the optimizer against a 1/N baseline.")
+    parser.add_argument("--estimator", default=ESTIMATOR, choices=sorted(ESTIMATORS), help=f"default {ESTIMATOR}")
+    parser.add_argument("--start", default=START_DATE, metavar="YYYY-MM-DD", help=f"default {START_DATE}")
+    parser.add_argument(
+        "--frequencies",
+        default=",".join(FREQUENCIES),
+        metavar="LIST",
+        help=f"comma-separated subset of {', '.join(FREQUENCIES)} (default all)",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Also print the portfolio value at every rebalance")
+    return parser
+
+
+def load_market() -> MarketData:
+    """The cached prices, without the app's precomputed statistics (every step computes its own, truncated)."""
+    settings = Settings.from_env()
+    store = PriceStore(settings.prices_path, settings.ticker_universe_path, settings.legacy_csv_paths)
+    return MarketData.build(store.load_universe(), store.load_prices())
+
+
+def main(argv=None, market: MarketData = None, out=print) -> int:
+    """Run every strategy at every requested frequency and print a summary table, bracketed by the bias warning.
+
+    ``market`` and ``out`` are injectable so a test can run the whole report
+    against a synthetic snapshot without the real cache.
+    """
+    args = build_parser().parse_args(argv)
+    frequencies = {name: FREQUENCIES[name] for name in args.frequencies.split(",")}
+    market = (market if market is not None else load_market()).with_estimator(args.estimator)
     out(SURVIVORSHIP_WARNING)
     out("")
-    for name, days in (frequencies or FREQUENCIES).items():
+    out(
+        f"Universe: the {UNIVERSE_SIZE} largest names with {MIN_HISTORY_DAYS}+ days of history at each rebalance; "
+        f"max {MAX_POSITIONS} positions; expected returns: {args.estimator}; from {args.start}"
+    )
+    for name, days in frequencies.items():
         out(f"=====  FREQUENCY: {name}  =====")
-        values = run_backtest(market, start_date, days)
-        previous = None
-        for date, value in values.items():
-            change = f" ({(value - previous) / previous * 100:+.2f}%)" if previous else ""
-            out(f"{date}: {value:.2f}{change}")
-            previous = value
-        series = list(values.values())
-        out(f"=====  TOTAL RETURN: {(series[-1] - series[0]) / series[0] * 100:.2f}%  (survivorship-biased)  =====\n")
+        out(f"  {'strategy':<14}{'total':>9}{'CAGR':>8}{'vol':>8}{'Sharpe':>8}{'max DD':>9}{'turnover':>10}")
+        for strategy in STRATEGIES:
+            walk = run_backtest(market, args.start, days, strategy=strategy)
+            out(format_row(strategy, metrics(walk.values, walk.turnovers)))
+            if args.verbose:
+                for date in walk.rebalances:
+                    out(f"    {date}: {walk.values.loc[date]:.2f}")
+        out("  (survivorship-biased; see the warning)\n")
     out(SURVIVORSHIP_WARNING)
     return 0
 
