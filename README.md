@@ -27,7 +27,7 @@ A **workspace** is one person using the machine (`ryan`, `my-brother`), with no 
 | Trade list: the buy/sell share deltas from what you hold to the target, sells first so cash is freed before it is spent | in every optimize response |
 | Market freshness and symbol validation for agents, including the current 13-week T-bill yield as a risk-free-rate reference | `GET /api/market/` |
 | Market data: daily adjusted closes for 2,591 US tickers, 2006 to today, refreshed in the background when stale | `var/` cache, `wolvwealth refresh-data` |
-| Walk-forward backtest | `scripts/backtest.py`, standalone |
+| Walk-forward backtest (survivorship-biased, and its output says so) | `scripts/backtest.py`, standalone |
 
 The full JSON contract is **[API.md](API.md)**, written to be handed to an agent as-is and contract-tested so it cannot drift from the code (`tests/test_api_contract.py`).
 
@@ -141,7 +141,6 @@ Deliberately **not** in scope, now or later:
 
 Known gaps, easiest first:
 
-- **The backtest does not say its numbers are survivorship-biased.** Yahoo serves no history for delisted symbols, so the cache only contains companies that survived to the download date and `scripts/backtest.py` returns flatter-than-reality numbers. The README says so; the script's own output should too. (A data source that includes delisted companies would fix the bias itself, but no free one exists, so that is not planned.)
 - **No human-friendly CLI for optimization.** The CLI covers admin (serve, refresh, reset); a `wolvwealth optimize` subcommand with readable terminal output (and a `--json` flag) would serve shell users and shell-based agents without a running server. It also builds the out-of-process plumbing the MCP server needs.
 - **An MCP server.** The JSON API works for agents, but an agent only finds it if a human pastes API.md into its context. A stdio MCP server (`wolvwealth mcp`) exposing the same use cases as self-describing tools is the plan, as an optional extra (`pip install -e ".[mcp]"`) so the core dependency list stays minimal.
 - **Expected returns are mean historical returns.** The simplest estimator, and the weakest link in mean-variance optimization. Swapping it is one line in `domain/stats.py` (plus versioning the statistics cache so a stale `mu` is not served); knowing whether an alternative (exponentially weighted, shrinkage, CAPM-implied) is actually better is the work, and the survivorship-biased backtest is a weak judge. Any replacement must stay separable per ticker, because the statistics are computed once over the 500 largest names and sliced per request.

@@ -32,3 +32,14 @@ def test_run_backtest_walks_forward(market):
 def test_run_backtest_leaves_market_untouched(market):
     backtest.run_backtest(market, "2020-06-01", 182)
     assert len(market.prices) == 400  # truncation happens on copies, never in place
+
+
+def test_report_warns_about_survivorship_bias_before_and_after_the_numbers(market):
+    """The README says the numbers are flattering; the output a reader actually looks at must say so too."""
+    lines = []
+    assert backtest.main(market, frequencies={"quarterly": 91}, out=lines.append, start_date="2020-06-01") == 0
+    text = "\n".join(lines)
+    assert text.startswith("WARNING: survivorship-biased")
+    assert "TOTAL RETURN" in text and "(survivorship-biased)" in text
+    assert lines[-1] == backtest.SURVIVORSHIP_WARNING, "the warning closes the report so it cannot scroll away"
+    assert text.count(backtest.SURVIVORSHIP_WARNING) == 2

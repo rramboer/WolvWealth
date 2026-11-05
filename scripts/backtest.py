@@ -5,6 +5,9 @@ Usage: python scripts/backtest.py
 Reuses the app's optimizer (no duplicated maths). At each step the market
 snapshot is truncated to the current date, so every solve only sees data
 available at that time (no lookahead). Nothing global is mutated.
+
+The results are survivorship-biased, and the output says so: see
+``SURVIVORSHIP_WARNING``.
 """
 
 import datetime
@@ -19,6 +22,19 @@ UNIVERSE = ["top50"]
 MAX_POSITIONS = 10
 START_DATE = "2019-01-01"
 FREQUENCIES = {"yearly": 365, "semiannually": 182, "quarterly": 91, "monthly": 30, "weekly": 7}
+#: Printed before and after the numbers. Yahoo serves no history at all for a
+#: symbol once it is delisted, so the cache holds only companies that were
+#: still listed on the download date: every bankruptcy and failed merger that
+#: the optimizer would have bought along the way is missing. The universe
+#: itself is ranked by *today's* market cap, so "top50" in 2019 is really the
+#: fifty biggest names of today, picked with hindsight. Both effects flatter
+#: the result; the true figure is lower, by an amount this script cannot know.
+SURVIVORSHIP_WARNING = (
+    "WARNING: survivorship-biased. The price cache only holds companies still listed when it was\n"
+    "downloaded, and the universe is ranked by today's market cap, so the optimizer never sees the\n"
+    "names that failed and picks from winners chosen with hindsight. Returns below are overstated\n"
+    "by an unknown amount. Compare strategies against each other, not against reality."
+)
 
 
 def optimize_at(market: MarketData, date, cash, holdings):
@@ -59,19 +75,26 @@ def run_backtest(market: MarketData, start_date, frequency_days, initial_cash=IN
     return values
 
 
-def main():
-    """Run the backtest at every frequency and print per-period values."""
-    market = Services.build().market.data
-    for name, days in FREQUENCIES.items():
-        print(f"=====  FREQUENCY: {name}  =====")
-        values = run_backtest(market, START_DATE, days)
+def main(market: MarketData = None, frequencies: dict = None, out=print, start_date: str = START_DATE):
+    """Run the backtest at every frequency and print per-period values, bracketed by the bias warning.
+
+    ``market``, ``frequencies``, ``out`` and ``start_date`` are injectable so a
+    test can run the whole report against a synthetic snapshot without the real cache.
+    """
+    market = market if market is not None else Services.build().market.data
+    out(SURVIVORSHIP_WARNING)
+    out("")
+    for name, days in (frequencies or FREQUENCIES).items():
+        out(f"=====  FREQUENCY: {name}  =====")
+        values = run_backtest(market, start_date, days)
         previous = None
         for date, value in values.items():
             change = f" ({(value - previous) / previous * 100:+.2f}%)" if previous else ""
-            print(f"{date}: {value:.2f}{change}")
+            out(f"{date}: {value:.2f}{change}")
             previous = value
         series = list(values.values())
-        print(f"=====  TOTAL RETURN: {(series[-1] - series[0]) / series[0] * 100:.2f}%  =====\n")
+        out(f"=====  TOTAL RETURN: {(series[-1] - series[0]) / series[0] * 100:.2f}%  (survivorship-biased)  =====\n")
+    out(SURVIVORSHIP_WARNING)
     return 0
 
 
