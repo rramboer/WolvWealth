@@ -74,7 +74,7 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     cash_reserve: float = 0.0  # fraction of portfolio value left in cash, uninvested
 
     def invested_fraction(self) -> float:
-        """The share of the portfolio the optimizer is allowed to deploy.
+        """Return the share of the portfolio the optimizer is allowed to deploy.
 
         Every weight in a request or a response is a fraction of the *total*
         portfolio, cash reserve included -- "no stock above 10%" should not

@@ -48,7 +48,7 @@ class Conflict:
     remedy: str
 
     def as_dict(self) -> dict:
-        """The JSON-serializable form published in an error payload."""
+        """Return the JSON-serializable form published in an error payload."""
         return {"fields": list(self.fields), "reason": self.reason, "remedy": self.remedy}
 
 
@@ -67,7 +67,7 @@ def _position_cap(request) -> int:
 
 
 def _investable(request) -> float:
-    """The share of the portfolio the weights must be able to cover.
+    """Return the share of the portfolio the weights must be able to cover.
 
     One, less any ``cash_reserve``: money deliberately kept in cash is money
     the weight constraints do not have to find room for, so a reserve makes
@@ -156,7 +156,7 @@ def _min_weight_overfills_the_portfolio(request):
 
 
 def _min_weight_forces_every_ticker_to_be_held(request):
-    """A floor over the whole universe is incompatible with capping the holding count.
+    """Reject a floor over the whole universe combined with a cap on the holding count.
 
     ``min_universal_weight`` is a bound on every asset in the universe, not
     on the ones that happen to be chosen, so a positive floor means every
