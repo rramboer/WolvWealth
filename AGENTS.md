@@ -18,16 +18,16 @@ CI runs exactly these five on every push (`.github/workflows/ci.yml`). All five 
 
 ## Layering (enforced, not aspirational)
 
-`tests/test_architecture.py` parses every module's imports and fails the build on a violation. Direction: `web/` and `__main__.py` → `services/` → `storage/`, `market/` → `domain/`. Also `services/`, `web/`, `__main__.py` → `config.py`.
+`tests/test_architecture.py` parses every module's imports and fails the build on a violation. Direction: `web/`, `mcp/` and `__main__.py` → `services/` → `storage/`, `market/` → `domain/`. Also `services/`, `web/`, `mcp/`, `__main__.py` → `config.py`.
 
 | Layer | Contains | Must never import |
 |---|---|---|
 | `domain/` | The maths and entities: optimizer, trades, MarketData, parsing, errors | Flask, sqlite3, yfinance, requests, file paths |
 | `storage/`, `market/` | SQLite + Parquet persistence; the Yahoo downloader | Flask, each other |
 | `services/` | Use cases: wire a repo + MarketData into one operation | Flask (`request`, `session`, `g`) |
-| `web/`, `__main__.py` | Thin adapters: parse input, call a service, render | SQL text, solver calls |
+| `web/`, `mcp/`, `__main__.py` | Thin adapters: parse input, call a service, render | SQL text, solver calls |
 
-A new feature is: logic in `domain/` (if any), a use case in `services/`, a ~dozen-line adapter (API route, view + template, or CLI subcommand), and tests. If you need a new top-level package, add it to the layer map in `tests/test_architecture.py`.
+A new feature is: logic in `domain/` (if any), a use case in `services/`, a ~dozen-line adapter per surface (API route, MCP tool, view + template, or CLI subcommand), and tests. The API, the MCP tools and the CLI must call the *same* service function for the same operation; `tests/test_mcp.py` and `tests/test_cli.py` compare their outputs to the API's. If you need a new top-level package, add it to the layer map in `tests/test_architecture.py`.
 
 ## Invariants that have already bitten people
 
@@ -40,6 +40,7 @@ A new feature is: logic in `domain/` (if any), a use case in `services/`, a ~doz
 - **Never prune `data/ticker_universe.csv` because tickers came back empty.** Yahoo returns identical nothing for a delisted company and a throttled request; pruning deletes live companies. `MarketData.tradeable` already handles dead tickers dynamically.
 - **Tests must not touch the network or real `var/`.** `conftest.py` builds everything on a temp dir with a deterministic 4-ticker market, and an autouse fixture makes the T-bill fetch behave offline. Downloaders are injectable — stub them, never call Yahoo.
 - **Mutations are POSTs.** `web/security.py` rejects cross-site requests; a state-changing GET breaks that model.
+- **Nothing may print to stdout while `wolvwealth mcp` runs.** stdout is the MCP protocol stream; one stray line ends the session. The server redirects Python-level stdout to stderr as a backstop and the CLI builds its services with a stderr logger, but new code should log through the injected `log` callable, never bare `print`. `tests/test_mcp.py` has a stray-print test; extend it if you add output anywhere a tool can reach.
 - **GET-like reads of the price cache are fine; writes must be atomic.** `PriceStore` writes through a temp file + `os.replace` because a background refresh runs while requests are served. Follow that pattern for any new cache file.
 - **Every change ships with tests.** A bug fix includes a regression test that fails without it. The suite runs in seconds; there is no excuse.
 
@@ -52,6 +53,7 @@ A new feature is: logic in `domain/` (if any), a use case in `services/`, a ~doz
 | Optimizer maths | `domain/optimizer.py` — plain dict in, plain dict out; update the memo keys and `tests/test_optimize*.py` |
 | Storage | `storage/repository.py` + `domain/models.py` + `storage/sql/schema.sql` + `MIGRATIONS` |
 | CLI subcommand | `__main__.py` (argparse + `cmd_*`), tests in `tests/test_cli.py` |
+| MCP tool | A `Tool` in `mcp/tools.py` (schema + description + handler calling a `services/` function); tests in `tests/test_mcp.py`; keep MCP.md's tool table current |
 | Tunables / paths | `config.py` (`Settings`) |
 | Styling | Tailwind classes in templates, then `npm run css` and commit the rebuilt `output.css` (palette in `tailwind.config.js`; no ad-hoc hex colors) |
 
@@ -59,5 +61,6 @@ A new feature is: logic in `domain/` (if any), a use case in `services/`, a ~doz
 
 - `README.md` — what the project is, how it works, known limitations. Keep it current when behavior changes.
 - `API.md` — the agent-facing JSON contract. Contract-tested; written to be pasted into an agent's context whole.
+- `MCP.md` — how to connect an AI app to `wolvwealth mcp`, written to be pasted into the assistant so it does the setup. Keep the tool table and troubleshooting list current.
 - `CONTRIBUTING.md` — human setup, environment, conventions.
 - Docstrings explain *why* (constraints, trade-offs), not *what the next line does*.

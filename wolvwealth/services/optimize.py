@@ -73,6 +73,33 @@ def optimize(
     return optimizer.solve(request, market)
 
 
+def universe_with_held(payload: dict) -> list:
+    """Return the request's universe (or the default) plus every held ticker, so keeping a holding is possible.
+
+    The raw API leaves this to the caller and documents the consequence: a
+    held name outside the universe is sold in full. The browser form, the
+    CLI and the MCP tools all add the held names instead, which is the
+    safer default when a person or a model is about to act on the trades.
+    """
+    universe = list(payload.get("universe") or [f"top{optimizer.DEFAULT_UNIVERSE_SIZE}"])
+    return universe + [ticker for ticker in payload.get("initial_holdings", {}) if ticker not in universe]
+
+
+def optimize_keeping_held(payload, market: MarketData, repo: PortfolioRepository, tbill: dict = None) -> tuple:
+    """Resolve a stored-portfolio reference, add the held tickers to the universe, and solve.
+
+    Returns ``(result, universe, portfolio)``: the API response body, the
+    universe entries actually used, and the stored portfolio drawn on (or
+    None). Shared by the CLI and the MCP ``optimize`` tool.
+    """
+    if not isinstance(payload, dict):
+        raise ValidationError("Parse Error. Request body must be a JSON object.")
+    payload, portfolio = resolve_portfolio_reference(payload, repo)
+    payload = dict(payload, universe=universe_with_held(payload))
+    result = optimize(payload, market, portfolio=portfolio, tbill=tbill)
+    return result, payload["universe"], portfolio
+
+
 def payload_for_portfolio(
     portfolio, universe_alias: str, max_positions=None, max_weight=None, max_turnover=None, cash_reserve=None
 ) -> dict:

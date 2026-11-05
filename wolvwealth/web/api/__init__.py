@@ -7,8 +7,7 @@ with 400 (validation) or 404 (not found).
 import flask
 
 from wolvwealth.domain.errors import DomainError, NotFoundError
-from wolvwealth.domain.market import UNIVERSE_ALIASES
-from wolvwealth.services import holdings_import, optimize
+from wolvwealth.services import holdings_import, market_data, optimize, workspaces as workspace_service
 from wolvwealth.web import context
 
 blueprint = flask.Blueprint("api", __name__)
@@ -59,42 +58,16 @@ def market():
     ``tickers`` to validate symbols without a round trip per guess.
     """
     data = context.market()
-    tbill = context.services().market.tbill
-    return flask.jsonify(
-        {
-            "as_of": str(data.as_of),
-            "age_days": data.age_days(),
-            "universe_size": len(data.universe),
-            "tradeable_size": len(data.tradeable),
-            "universe_aliases": sorted(UNIVERSE_ALIASES),
-            "tickers": list(data.tradeable),
-            # A reference for choosing a portfolio's risk_free_rate; null
-            # until the first refresh has fetched it. Never applied for you.
-            "tbill_rate": None if tbill is None else tbill["rate"],
-            "tbill_as_of": None if tbill is None else tbill["as_of"],
-        }
-    )
+    services = context.services()
+    report = market_data.status(data, services.market.tbill, services.settings.auto_refresh_max_age_days)
+    report["tickers"] = list(data.tradeable)
+    return flask.jsonify(report)
 
 
 @blueprint.route("/workspaces/", methods=["GET"])
 def workspaces():
     """Every workspace with its portfolios and holdings."""
-    repo = context.repo()
-    return flask.jsonify(
-        {
-            "workspaces": [
-                {
-                    "name": workspace.name,
-                    "created": workspace.created,
-                    "portfolios": [
-                        {"name": p.name, "cash": p.cash, "risk_free_rate": p.risk_free_rate, "holdings": p.holdings}
-                        for p in repo.list_portfolios(workspace.name)
-                    ],
-                }
-                for workspace in repo.list_workspaces()
-            ]
-        }
-    )
+    return flask.jsonify(workspace_service.list_all(context.repo()))
 
 
 @blueprint.route("/optimize/", methods=["POST"])
@@ -118,40 +91,11 @@ def import_holdings():
     holdings (object) OR csv (string), cash, risk_free_rate (number or "tbill"),
     mode ("merge"|"replace"), skip_unknown.
     """
-    body = _json_body()
-    repo = context.repo()
-    if "holdings" in body and "csv" in body:
-        raise DomainError('Pass either "holdings" (object) or "csv" (string), not both.')
-    if "holdings" not in body and "csv" not in body:
-        raise DomainError('Missing input. Pass "holdings" (object) or "csv" (string).')
-    portfolio = holdings_import.resolve_target(
-        repo,
-        body.get("workspace", flask.session.get("workspace")),
-        body.get("portfolio"),
-        create=body.get("create_portfolio") is True,
-    )
-    outcome = holdings_import.import_holdings(
-        repo,
+    result = holdings_import.run(
+        context.repo(),
         context.market(),
-        portfolio,
-        text=body.get("csv"),
-        holdings=body.get("holdings"),
-        cash=body.get("cash"),
-        mode=body.get("mode", "merge"),
-        skip_unknown=body.get("skip_unknown", False),
-        risk_free_rate=body.get("risk_free_rate"),
+        _json_body(),
         tbill=context.services().market.tbill,
+        default_workspace=flask.session.get("workspace"),
     )
-    return flask.jsonify(
-        {
-            "workspace": outcome.portfolio.workspace,
-            "portfolio": outcome.portfolio.name,
-            "mode": "replace" if outcome.replaced else "merge",
-            "imported": outcome.imported,
-            "skipped_unknown": outcome.skipped_unknown,
-            "ignored_lines": outcome.ignored_lines,
-            "cash": outcome.portfolio.cash,
-            "risk_free_rate": outcome.portfolio.risk_free_rate,
-            "holdings": outcome.portfolio.holdings,
-        }
-    )
+    return flask.jsonify(result)

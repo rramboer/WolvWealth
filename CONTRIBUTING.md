@@ -41,7 +41,10 @@ wolvwealth reset-db
 wolvwealth serve --dev      # Flask debug server with auto-reload, http://localhost:8000, opens a browser tab
 wolvwealth serve            # what a household member runs; --no-browser and --port N also exist
 wolvwealth optimize --cash 5000 --universe top50      # one optimization in the terminal, no server; --json for the API body
+wolvwealth mcp --config                               # the MCP configuration for an AI app; `wolvwealth mcp` itself is what the app runs
 ```
+
+To poke at the MCP server by hand: run `wolvwealth mcp`, paste `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` and press Enter; every tool and its schema comes back on one line. Ctrl-D ends the session. `claude mcp add wolvwealth -- $(which python3) -m wolvwealth mcp` wires it into Claude Code for an end-to-end try.
 
 `flask --app wolvwealth --debug run --port 8000` still works if you prefer the Flask CLI.
 
@@ -158,6 +161,7 @@ The suite covers the optimizer core, the JSON API contract, and the workspace/po
 | Change where files live or a tunable | `wolvwealth/config.py` (`Settings`) |
 | Add a bolt-on feature | A module in `wolvwealth/services/` for the use case, a blueprint or CLI command to expose it, tests. See AGENTS.md "Where things go" |
 | Add a CLI command | `wolvwealth/__main__.py` (argparse subcommand + `cmd_*` function), tests in `tests/test_cli.py` |
+| Add or change an MCP tool | `wolvwealth/mcp/tools.py` (a `Tool`: name, description the model reads, JSON schema, handler calling a service), tests in `tests/test_mcp.py`, the tool table in `MCP.md` |
 | Change the installer | `install.sh`; test it with a sandbox `HOME` so your real user site and shell rc are untouched |
 
 ## Security notes

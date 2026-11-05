@@ -127,3 +127,47 @@ def import_holdings(  # pylint: disable=too-many-arguments  # keyword-only knobs
         cash_set=final_cash,
         risk_free_rate_set=rate,
     )
+
+
+def run(repo: PortfolioRepository, market: MarketData, body: dict, tbill: dict = None, default_workspace=None) -> dict:
+    """Perform the import an API-shaped ``body`` describes and return the API's response dict.
+
+    One entry point for the JSON API and the MCP tool, so the two accept the
+    same fields and answer in the same shape. ``default_workspace`` is the
+    browser session's open workspace, if there is one.
+    """
+    if not isinstance(body, dict):
+        raise ValidationError("Parse Error. Request body must be a JSON object.")
+    if "holdings" in body and "csv" in body:
+        raise ValidationError('Pass either "holdings" (object) or "csv" (string), not both.')
+    if "holdings" not in body and "csv" not in body:
+        raise ValidationError('Missing input. Pass "holdings" (object) or "csv" (string).')
+    portfolio = resolve_target(
+        repo,
+        body.get("workspace", default_workspace),
+        body.get("portfolio"),
+        create=body.get("create_portfolio") is True,
+    )
+    outcome = import_holdings(
+        repo,
+        market,
+        portfolio,
+        text=body.get("csv"),
+        holdings=body.get("holdings"),
+        cash=body.get("cash"),
+        mode=body.get("mode", "merge"),
+        skip_unknown=body.get("skip_unknown", False),
+        risk_free_rate=body.get("risk_free_rate"),
+        tbill=tbill,
+    )
+    return {
+        "workspace": outcome.portfolio.workspace,
+        "portfolio": outcome.portfolio.name,
+        "mode": "replace" if outcome.replaced else "merge",
+        "imported": outcome.imported,
+        "skipped_unknown": outcome.skipped_unknown,
+        "ignored_lines": outcome.ignored_lines,
+        "cash": outcome.portfolio.cash,
+        "risk_free_rate": outcome.portfolio.risk_free_rate,
+        "holdings": outcome.portfolio.holdings,
+    }

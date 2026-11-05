@@ -5,13 +5,54 @@ from datetime import timedelta
 
 import pandas as pd
 
-from wolvwealth.domain.market import MarketData
+from wolvwealth.domain.market import UNIVERSE_ALIASES, MarketData
 from wolvwealth.domain.stats import MarketStats
 from wolvwealth.market import yahoo
 from wolvwealth.storage.price_store import PriceStore
 
 #: Marks the T-bill reference as not yet read from disk (None means read, and absent).
 _UNLOADED = object()
+
+
+def status(data: MarketData, tbill, max_age_days: int) -> dict:
+    """Describe the price snapshot's freshness: the report the API and the MCP server both publish.
+
+    ``stale`` is the same judgement the startup refresh makes, so a reader
+    can act on it without knowing the threshold.
+    """
+    age = data.age_days()
+    report = {
+        "as_of": str(data.as_of),
+        "age_days": age,
+        "stale": age > max_age_days,
+        "universe_size": len(data.universe),
+        "tradeable_size": len(data.tradeable),
+        "universe_aliases": sorted(UNIVERSE_ALIASES),
+        # A reference for choosing a portfolio's risk_free_rate; null until
+        # the first refresh has fetched it. Never applied for you.
+        "tbill_rate": None if tbill is None else tbill["rate"],
+        "tbill_as_of": None if tbill is None else tbill["as_of"],
+    }
+    if report["stale"]:
+        report["refresh_hint"] = (
+            f"Prices are {age} days old. Run `wolvwealth refresh-data` in a terminal for current ones; "
+            "the web app also refreshes in the background when started."
+        )
+    return report
+
+
+def classify_tickers(data: MarketData, tickers) -> dict:
+    """Sort symbols into tradeable, known-but-priceless, and unknown, so a caller can validate many at once."""
+    report = {"tradeable": [], "no_current_price": [], "unknown": []}
+    for raw in tickers:
+        ticker = str(raw).upper()
+        if data.has_price(ticker):
+            report["tradeable"].append(ticker)
+        elif ticker in data:
+            report["no_current_price"].append(ticker)
+        else:
+            report["unknown"].append(ticker)
+    return report
 
 
 class MarketDataService:  # pylint: disable=too-many-instance-attributes
@@ -53,6 +94,10 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self._tbill = _UNLOADED
         self.stats_universe_size = stats_universe_size
         self._data = None
+        #: ``PriceStore.prices_stamp()`` of the file the snapshot was loaded
+        #: from (or that this process last wrote), so ``reload_if_changed``
+        #: can tell another process's refresh from its own.
+        self._loaded_stamp = None
         #: Held for the duration of a background refresh so a second trigger
         #: does not start a duplicate download.
         self._refresh_lock = threading.Lock()
@@ -67,6 +112,30 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     def set_data(self, data: MarketData) -> None:
         """Replace the snapshot in memory (tests, backtests). Does not write to disk."""
         self._data = data
+
+    def loaded(self) -> bool:
+        """Return true once a snapshot is in memory (reading ``data`` before then loads or builds the cache)."""
+        return self._data is not None
+
+    def cache_exists(self) -> bool:
+        """Return true if reading ``data`` would load from disk rather than download the whole history."""
+        return self.store.has_prices() or any(path.exists() for path in self.store.legacy_csv_paths)
+
+    def reload_if_changed(self) -> bool:
+        """Reload the snapshot if another process replaced the price cache since this one loaded it.
+
+        A web server or MCP server can run for days while ``refresh-data``
+        (or the other server) rewrites the cache underneath it. Comparing
+        the file's stamp is one ``stat`` call, cheap enough for every
+        request, and a mismatch means the prices in memory are no longer
+        the prices on disk. Returns whether a reload happened.
+        """
+        if self._data is None or self.store.prices_stamp() == self._loaded_stamp:
+            return False
+        self.log("wolvwealth: the price cache changed on disk; reloading it")
+        self._data = self._load()
+        self._tbill = _UNLOADED
+        return True
 
     @property
     def tbill(self):
@@ -103,8 +172,14 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
             else:
                 self.log("wolvwealth: no price history cache, downloading 2006 -> today (this takes a while)...")
                 self.store.save_prices(self._download(universe, self.history_start))
+        self._loaded_stamp = self.store.prices_stamp()
         prices = self.store.load_prices()
         return MarketData.build(universe, prices, self._load_or_compute_stats(universe, prices))
+
+    def _save_prices(self, prices) -> None:
+        """Write the cache and remember the result as this process's own, so it is not re-read as foreign."""
+        self.store.save_prices(prices)
+        self._loaded_stamp = self.store.prices_stamp()
 
     def _download(self, tickers, start_date):
         """Download prices and say how much of the universe came back empty.
@@ -178,7 +253,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self.refresh_tbill()
         if full:
             prices = self._download(self.data.universe, self.history_start)
-            self.store.save_prices(prices)
+            self._save_prices(prices)
             universe = self.data.universe
             columns = self._stats_columns(universe, prices)
             self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
@@ -206,7 +281,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         prices = pd.concat([current.prices, new_rows.reindex(columns=current.prices.columns)])
         if readjusted:
             prices = self._repair_readjusted(prices, readjusted)
-        self.store.save_prices(prices)
+        self._save_prices(prices)
         columns = self._stats_columns(current.universe, prices)
         self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices, columns))
         return True

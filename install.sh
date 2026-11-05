@@ -114,6 +114,9 @@ cat <<MSG
   Start it:    wolvwealth serve${PATH_NOTE:-}
   Then open:   http://localhost:8000/   (opens automatically)
 
+  Using Claude Desktop, Claude Code, or Cursor?  wolvwealth mcp --config
+  prints the setup for using WolvWealth as tools there (details: MCP.md).
+
   Everything stays on this computer under $INSTALL_DIR/var/.
   To update later, run this installer again.
 MSG

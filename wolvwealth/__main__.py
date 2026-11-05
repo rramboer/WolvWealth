@@ -4,6 +4,7 @@ Works from any directory; data files are resolved from the install location.
 
     wolvwealth serve            start the app on http://localhost:8000 and open a browser
     wolvwealth optimize         max-Sharpe allocation and trade list, printed to the terminal (or --json)
+    wolvwealth mcp              serve the MCP tools over stdio for an AI app (--config prints the setup snippet)
     wolvwealth refresh-data     pull market prices up to today
     wolvwealth reset-db         erase every workspace and start from the demo seed
     wolvwealth dump-db          print all workspaces, portfolios, and holdings
@@ -19,7 +20,7 @@ import textwrap
 import threading
 import webbrowser
 
-from wolvwealth.domain import holdings_parse, optimizer
+from wolvwealth.domain import holdings_parse
 from wolvwealth.domain.errors import DomainError, ValidationError
 from wolvwealth.services import optimize, risk_free
 from wolvwealth.services.container import Services
@@ -55,6 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Re-download the entire 2006-to-today history (recovers throttled tickers) "
         "instead of appending only the missing recent rows",
     )
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="Serve the MCP tools over stdio for an AI app (Claude Desktop, Claude Code, Cursor, ...)",
+        description="Speaks the Model Context Protocol on stdin/stdout. AI apps start this themselves from their "
+        "configuration; you do not run it by hand. `wolvwealth mcp --config` prints that configuration.",
+    )
+    mcp.add_argument("--config", action="store_true", help="Print the JSON an AI app needs to start this server")
 
     sub.add_parser("reset-db", help="Delete var/wolvwealth.sqlite3 and recreate it with the demo seed")
     sub.add_parser("dump-db", help="Print every workspace, portfolio, and holding")
@@ -184,16 +193,6 @@ def _optimize_payload(args) -> dict:
     return payload
 
 
-def _with_held_tickers(payload: dict) -> list:
-    """Return the universe plus every held ticker, as the browser form does, so keeping a holding is possible.
-
-    Without this a held name outside the universe is sold in full, which the
-    API documents as a gotcha; a person at a shell gets the safer default.
-    """
-    universe = list(payload.get("universe") or [f"top{optimizer.DEFAULT_UNIVERSE_SIZE}"])
-    return universe + [ticker for ticker in payload.get("initial_holdings", {}) if ticker not in universe]
-
-
 def _money(value: float) -> str:
     return f"${value:,.2f}"
 
@@ -253,9 +252,8 @@ def cmd_optimize(args, services: Services) -> int:
     try:
         payload = _optimize_payload(args)
         with services.database.connect() as connection:
-            payload, portfolio = optimize.resolve_portfolio_reference(payload, services.repository(connection))
-        payload["universe"] = _with_held_tickers(payload)
-        result = optimize.optimize(payload, market, portfolio=portfolio, tbill=services.market.tbill)
+            repo = services.repository(connection)
+            result, universe, portfolio = optimize.optimize_keeping_held(payload, market, repo, services.market.tbill)
     except DomainError as error:
         return _report_error(error, args.json)
     age = market.age_days()
@@ -269,7 +267,7 @@ def cmd_optimize(args, services: Services) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(render_report(result, payload["universe"], portfolio))
+        print(render_report(result, universe, portfolio))
     return 0
 
 
@@ -286,6 +284,18 @@ def cmd_refresh_data(args, services: Services) -> int:
     if market.tbill is not None:
         print(f"13-week T-bill yield: {market.tbill['rate']:.2%} as of {market.tbill['as_of']}.")
     return 0
+
+
+def cmd_mcp(args, services: Services) -> int:
+    """Serve MCP over stdio, or print the client configuration."""
+    from wolvwealth.mcp import server  # pylint: disable=import-outside-toplevel
+
+    if args.config:
+        print(json.dumps(server.client_config(), indent=2))
+        sys.stdout.flush()  # keep the JSON above the guidance when both reach one terminal
+        print(server.config_guidance(), file=sys.stderr)
+        return 0
+    return server.run(services)
 
 
 def cmd_reset_db(_args, services: Services) -> int:
@@ -309,16 +319,25 @@ def cmd_dump_db(_args, services: Services) -> int:
 COMMANDS = {
     "serve": cmd_serve,
     "optimize": cmd_optimize,
+    "mcp": cmd_mcp,
     "refresh-data": cmd_refresh_data,
     "reset-db": cmd_reset_db,
     "dump-db": cmd_dump_db,
 }
 
 
+def _log_to_stderr(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
 def main(argv=None, services: Services = None) -> int:
     """Parse arguments and dispatch to a command."""
     args = build_parser().parse_args(argv)
-    return COMMANDS[args.command](args, services or Services.build())
+    if services is None:
+        # Under MCP, stdout is the protocol stream; every diagnostic (refresh
+        # progress, download shortfalls) must go to stderr or it corrupts it.
+        services = Services.build(log=_log_to_stderr if args.command == "mcp" else print)
+    return COMMANDS[args.command](args, services)
 
 
 if __name__ == "__main__":

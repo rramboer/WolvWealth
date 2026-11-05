@@ -15,6 +15,9 @@ pasted into an agent's context whole: nothing here requires reading the source.
 - **No server needed for one-off runs.** `wolvwealth optimize --json ...` prints the same body as
   `POST /api/optimize/`, with one flag per request field (`wolvwealth optimize --help`). Useful for
   agents that run shell commands rather than make HTTP requests.
+- **MCP clients get the same operations as tools.** `wolvwealth mcp` serves `market_status`,
+  `list_portfolios`, `optimize` and `import_holdings` over stdio, with input schemas that mirror the
+  request bodies below and results identical to the responses. Setup is in [MCP.md](MCP.md).
 
 ## The usual agent loop
 

@@ -3,7 +3,7 @@
 domain            -> (nothing in wolvwealth outside domain)
 storage, market   -> domain
 services          -> domain, storage, market, config
-web, __main__     -> everything above
+web, mcp, __main__ -> everything above
 """
 
 import ast
@@ -19,8 +19,9 @@ ALLOWED = {
     "market": {"market", "domain"},
     "services": {"services", "domain", "storage", "market", "config"},
     "web": {"web", "services", "domain", "storage", "market", "config"},
+    "mcp": {"mcp", "services", "domain", "storage", "market", "config"},
     "config": set(),
-    "__main__": {"services", "web", "config", "domain"},
+    "__main__": {"services", "web", "mcp", "config", "domain"},
     "__init__": {"web"},
 }
 

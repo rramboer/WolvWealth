@@ -9,7 +9,7 @@ Everything runs on your own machine: a single-process Flask app bound to localho
 ## Why local-first
 
 1. **Your holdings are financial data.** Keeping them in a local file removes the entire problem class of hosting, authenticating, and securing other people's money records.
-2. **AI agents work best against local tools.** With broker MCP servers available (e.g. the Robinhood MCP, which lets an agent place real trades), the intended loop is: your agent calls the local WolvWealth API (`POST http://localhost:8000/api/optimize/` — plain JSON, no auth), reads back the target allocation **and the trade list the app already computed**, and places those trades through the broker MCP. That only works cleanly when the optimizer runs on the same machine as the agent, with no credentials in the way.
+2. **AI agents work best against local tools.** With broker MCP servers available (e.g. the Robinhood MCP, which lets an agent place real trades), the intended loop is: your agent calls WolvWealth (as MCP tools from a desktop app, from the shell with `wolvwealth optimize`, or over the local API at `POST http://localhost:8000/api/optimize/` — plain JSON, no auth), reads back the target allocation **and the trade list the app already computed**, and places those trades through the broker MCP. That only works cleanly when the optimizer runs on the same machine as the agent, with no credentials in the way.
 
 This is also why the package installs into the **global interpreter** (no venv): the optimizer and its API must be runnable from anywhere on the device — by you at a shell, or by an agent spawned from any working directory — without activating an environment first.
 
@@ -27,6 +27,7 @@ A **workspace** is one person using the machine (`ryan`, `my-brother`), with no 
 | Trade list: the buy/sell share deltas from what you hold to the target, sells first so cash is freed before it is spent | in every optimize response |
 | Market freshness and symbol validation for agents, including the current 13-week T-bill yield as a risk-free-rate reference | `GET /api/market/` |
 | Market data: daily adjusted closes for 2,591 US tickers, 2006 to today, refreshed in the background when stale | `var/` cache, `wolvwealth refresh-data` |
+| MCP server: the four use cases above as self-describing tools for Claude Desktop, Claude Code, Cursor and any MCP client; stdio, no port, no extra packages | `wolvwealth mcp`, setup in [MCP.md](MCP.md) |
 | Walk-forward backtest (survivorship-biased, and its output says so) | `scripts/backtest.py`, standalone |
 
 The full JSON contract is **[API.md](API.md)**, written to be handed to an agent as-is and contract-tested so it cannot drift from the code (`tests/test_api_contract.py`).
@@ -42,7 +43,7 @@ wolvwealth serve            # http://localhost:8000, opens in your browser
 
 Or from a clone: `./install.sh` then `wolvwealth serve`. The installer checks for Python, clones to `~/WolvWealth` if needed, installs editably into your user-level global interpreter so `wolvwealth` and `import wolvwealth` work from any directory, downloads the price history (several minutes; `--no-data` defers it to first start), and adds the command to your PATH. Run it again to update.
 
-Other commands: `wolvwealth optimize` runs an optimization from the shell with no server (see below), `wolvwealth refresh-data [--full]` pulls prices up to today, `wolvwealth reset-db` erases every workspace, `wolvwealth dump-db` prints them. `python -m wolvwealth ...` is equivalent.
+Other commands: `wolvwealth optimize` runs an optimization from the shell with no server (see below), `wolvwealth mcp --config` prints what an AI app needs to use WolvWealth as tools (see below), `wolvwealth refresh-data [--full]` pulls prices up to today, `wolvwealth reset-db` erases every workspace, `wolvwealth dump-db` prints them. `python -m wolvwealth ...` is equivalent.
 
 On first start the app creates its local database (seeded with a deletable `demo` workspace) and a per-install session key under gitignored `var/`. If the price history is more than a week old it refreshes in the background, so the app is usable immediately and picks up fresher prices when they land (`WOLVWEALTH_NO_AUTO_REFRESH=1` skips this, e.g. offline).
 
@@ -59,6 +60,16 @@ wolvwealth optimize --holdings-file ~/Downloads/positions.csv --json      # brok
 ```
 
 Every flag is a field of the API request below, one for one. The report shows the price date, the rate assumed and where it came from, the target allocation, the trades (sells first), and the metrics; `--json` prints exactly the `POST /api/optimize/` response body instead. Held tickers always join the universe, as in the browser, so keeping a position is possible. Errors exit 1 with the message on stderr (or as the API's error object with `--json`). Prices are never refreshed by this command; it says so on stderr when the cache is more than a week old.
+
+## For AI apps (MCP)
+
+Claude Desktop, Claude Code, Cursor, and other MCP clients can use WolvWealth as tools: `market_status`, `list_portfolios`, `optimize`, and `import_holdings`, each described well enough that the model needs no documentation pasted in. It is a **stdio** server: the app starts `wolvwealth mcp` itself as a child process and talks to it over pipes, so there is no port, no URL, nothing to keep running, and nothing another program on the network could reach. It needs no extra packages and works whether or not `wolvwealth serve` is up.
+
+```bash
+wolvwealth mcp --config     # prints the JSON for your app's MCP settings, and where to put it
+```
+
+The fastest setup is to paste **[MCP.md](MCP.md)** into your assistant and ask it to do it for you; the file is written for exactly that, covers each app's config location, and has the troubleshooting list. The server answers the handshake before loading any data, picks up a refreshed price cache without a restart, and never starts the first price download on a model's behalf (a tool call says to run `wolvwealth refresh-data` instead). Everything it prints goes to stderr, because on stdio a stray line on stdout would end the session.
 
 ## The API
 
@@ -115,14 +126,14 @@ Two things to understand before trusting the numbers:
 The package is concentric layers, and the dependency direction is enforced by a test (`tests/test_architecture.py`) that parses every module's imports:
 
 ```
-web/ (Flask app, API + views)  and  __main__.py (CLI)     ← thin adapters
+web/ (Flask app, API + views),  mcp/ (stdio tools),  __main__.py (CLI)     ← thin adapters
   └── services/     use cases: optimize, holdings import, market data lifecycle
         └── storage/ (SQLite, Parquet caches)  and  market/ (Yahoo downloader)
               └── domain/   the maths: optimizer, trades, MarketData, parsing, errors
                             (no Flask, no SQL, no files, no network)
 ```
 
-A new feature is a function in `services/` plus a dozen-line adapter, and everything in `domain/` and `services/` is testable without a server. `import wolvwealth` has no side effects; the database and price cache are created on first use. Paths resolve from the install location, so everything works from any directory.
+A new feature is a function in `services/` plus a dozen-line adapter per surface (API route, MCP tool, CLI subcommand); the three surfaces call the same service functions, so they cannot drift apart, and everything in `domain/` and `services/` is testable without a server. `import wolvwealth` has no side effects; the database and price cache are created on first use. Paths resolve from the install location, so everything works from any directory.
 
 Points of the design worth knowing:
 
@@ -130,7 +141,7 @@ Points of the design worth knowing:
 - **Repeated requests are cheap.** Solved weights and metrics are memoized per price snapshot, keyed on exactly what reaches the solver (~190 ms cold, under 1 ms repeated). A price refresh builds a new snapshot and drops the memo with it, so stale prices can never serve a cached portfolio. The return/covariance statistics are precomputed once per data refresh for the 500 largest tradeable tickers and sliced per request; larger universes compute their own.
 - **Market data** is a Parquet cache under `var/`, refreshed incrementally (`refresh-data`) or fully (`--full`). An incremental refresh re-downloads the last five cached trading days and compares them with the cache; a ticker that disagrees has been re-adjusted for a split or dividend, so its whole history is re-downloaded on the new basis (`--full` is for recovering tickers that were only throttled). Yahoo throttles bulk downloads and returns the same empty column for a throttled ticker as for a delisted one, so the ticker list is never pruned automatically; `MarketData.tradeable` recomputes which tickers are usable on every snapshot, and the refresh reports how many came back empty rather than pretending a short universe is the whole market.
 - **Storage** is three SQLite tables — workspaces, portfolios (cash, nullable risk-free rate), holdings — with cascading deletes, every query scoped by workspace, and all SQL in one repository module. Columns added after first release are applied to existing databases on their next connection.
-- **Startup never blocks on a refresh.** A stale cache refreshes on a daemon thread while the cached prices serve; the new snapshot swaps in atomically. All cache writes go through a temp file and an atomic rename, so a refresh can run while requests are served.
+- **Startup never blocks on a refresh.** A stale cache refreshes on a daemon thread while the cached prices serve; the new snapshot swaps in atomically. All cache writes go through a temp file and an atomic rename, so a refresh can run while requests are served. A long-lived process (the web app, an MCP server an AI app keeps open for days) also notices when *another* process replaced the cache and reloads it, so no surface ever serves prices older than the file on disk.
 - **No Node at runtime.** The Tailwind CSS build is committed; contributors who change styling rebuild it with `npm run css`.
 
 How to set up a development environment and make changes is in [CONTRIBUTING.md](CONTRIBUTING.md); the rules and invariants for working on the code (human or AI) are in [AGENTS.md](AGENTS.md).
@@ -151,9 +162,8 @@ Deliberately **not** in scope, now or later:
 
 ## Still to address
 
-Known gaps, easiest first:
+Known gaps:
 
-- **An MCP server.** The JSON API works for agents, but an agent only finds it if a human pastes API.md into its context. A stdio MCP server (`wolvwealth mcp`) exposing the same use cases as self-describing tools is the plan, as an optional extra (`pip install -e ".[mcp]"`) so the core dependency list stays minimal.
 - **Expected returns are mean historical returns.** The simplest estimator, and the weakest link in mean-variance optimization. Swapping it is one line in `domain/stats.py` (plus versioning the statistics cache so a stale `mu` is not served); knowing whether an alternative (exponentially weighted, shrinkage, CAPM-implied) is actually better is the work, and the survivorship-biased backtest is a weak judge. Any replacement must stay separable per ticker, because the statistics are computed once over the 500 largest names and sliced per request.
 
 ## License

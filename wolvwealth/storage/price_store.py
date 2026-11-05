@@ -61,6 +61,20 @@ class PriceStore:
         """Return true if a price cache exists."""
         return self.prices_path.exists()
 
+    def prices_stamp(self):
+        """Return an identity for the price file as it is on disk right now, or None if there is none.
+
+        Modification time plus size: enough to notice that another process
+        (the web app, ``refresh-data``, a second MCP server) replaced the
+        cache, which a long-lived process must notice to stop serving stale
+        prices. Both change on every atomic replace.
+        """
+        try:
+            stat = self.prices_path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
     def migrate_legacy_prices(self) -> bool:
         """Convert the first price CSV left behind by an older install (numbers preserved, no re-download)."""
         if self.has_prices():
