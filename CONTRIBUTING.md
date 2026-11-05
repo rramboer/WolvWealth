@@ -40,6 +40,7 @@ wolvwealth reset-db
 ```bash
 wolvwealth serve --dev      # Flask debug server with auto-reload, http://localhost:8000, opens a browser tab
 wolvwealth serve            # what a household member runs; --no-browser and --port N also exist
+wolvwealth optimize --cash 5000 --universe top50      # one optimization in the terminal, no server; --json for the API body
 ```
 
 `flask --app wolvwealth --debug run --port 8000` still works if you prefer the Flask CLI.

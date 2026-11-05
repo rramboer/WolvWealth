@@ -70,3 +70,134 @@ def test_refresh_data_reports_up_to_date(services, capsys):
     assert "T-bill yield: 4.12% as of 2026-10-30" in out
     assert services.market.tbill == {"rate": 0.0412, "as_of": "2026-10-30"}
     assert services.price_store.load_tbill() == {"rate": 0.0412, "as_of": "2026-10-30"}
+
+
+# --- optimize ---------------------------------------------------------------
+
+
+def test_optimize_parser_maps_every_api_field():
+    args = cli.build_parser().parse_args(
+        [
+            "optimize",
+            "--workspace", "ryan", "--portfolio", "long-term",
+            "--cash", "100", "--holdings", "AAA=10",
+            "--universe", "top20", "BBB",
+            "--max-positions", "3", "--max-weight", "0.5", "--min-universal-weight", "0.01",
+            "--max-turnover", "0.2", "--cash-reserve", "0.1",
+            "--risk-free-rate", "tbill", "--json",
+        ]
+    )  # fmt: skip
+    assert args.command == "optimize" and args.json and args.risk_free_rate == "tbill"
+    assert args.universe == ["top20", "BBB"] and args.max_positions == 3 and args.cash_reserve == 0.1
+    assert cli.build_parser().parse_args(["optimize", "--risk-free-rate", "0.04"]).risk_free_rate == 0.04
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["optimize", "--risk-free-rate", "four"])
+
+
+def test_optimize_prints_a_readable_report(services, capsys):
+    code = cli.main(
+        [
+            "optimize",
+            "--cash",
+            "1000",
+            "--holdings",
+            "AAA=10, BBB=5",
+            "--universe",
+            "top20",
+            "--risk-free-rate",
+            "0.02",
+        ],
+        services,
+    )
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert "Max-Sharpe allocation for the given cash and holdings, priced at the 2021-" in out
+    assert "Universe: top20, AAA, BBB" in out
+    assert "Risk-free rate: 2.00% (from --risk-free-rate)" in out
+    assert "Target allocation" in out and "TICKER" in out and "Portfolio value $" in out
+    assert "Trades to get there, sells first" in out or "No trades" in out
+    assert "cached prices are" in err and "refresh-data" in err, "the synthetic market is years old; say so"
+
+
+def test_optimize_without_a_rate_says_zero_was_assumed(services, capsys):
+    assert cli.main(["optimize", "--cash", "1000"], services) == 0
+    out = capsys.readouterr().out
+    assert "Risk-free rate: 0.00% (none given, so 0% assumed)" in out
+    assert "0% was assumed" in out
+
+
+def test_optimize_json_is_the_api_response_body(services, client, capsys):
+    import json
+
+    code = cli.main(["optimize", "--cash", "1000", "--holdings", "AAA=10", "--universe", "top20", "--json"], services)
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    via_api = client.post(
+        "/api/optimize/", json={"initial_cash": 1000, "initial_holdings": {"AAA": 10}, "universe": ["top20", "AAA"]}
+    ).get_json()
+    assert body == via_api
+
+
+def test_optimize_stored_portfolio_uses_its_rate_and_keeps_held_tickers_allowed(services, repo, capsys):
+    repo.create_workspace("ryan")
+    pid = repo.create_portfolio("ryan", "long-term", cash=2000).id
+    repo.set_holding("ryan", pid, "DDD", 7)
+    repo.set_risk_free_rate("ryan", pid, 0.035)
+    code = cli.main(
+        ["optimize", "--workspace", "ryan", "--portfolio", "long-term", "--universe", "AAA", "BBB"], services
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "for ryan/long-term" in out
+    assert "Universe: AAA, BBB, DDD" in out, "held tickers join the universe so keeping them is possible"
+    assert "Risk-free rate: 3.50% (stored on the portfolio)" in out
+
+
+def test_optimize_portfolio_flags_need_each_other(services, capsys):
+    assert cli.main(["optimize", "--portfolio", "x"], services) == 1
+    assert "--portfolio needs --workspace" in capsys.readouterr().err
+    assert cli.main(["optimize", "--workspace", "x"], services) == 1
+    assert "--workspace does nothing without --portfolio" in capsys.readouterr().err
+
+
+def test_optimize_errors_go_to_stderr_or_json(services, capsys):
+    assert cli.main(["optimize", "--cash", "1000", "--universe", "FAKE"], services) == 1
+    out, err = capsys.readouterr()
+    assert out == "" and "Invalid symbol in universe: FAKE" in err
+
+    import json
+
+    args = ["optimize", "--cash", "1000", "--max-positions", "2", "--max-weight", "0.1", "--json"]
+    assert cli.main(args, services) == 1
+    out, err = capsys.readouterr()
+    body = json.loads(out)
+    assert "Infeasible" in body["error"]["message"] and body["error"]["payload"]["conflicts"]
+    assert err == ""
+
+
+def test_optimize_holdings_file_accepts_a_brokerage_export_with_cash(services, tmp_path, capsys):
+    export = tmp_path / "positions.csv"
+    export.write_text("Symbol,Description,Quantity,Last Price\nAAA,Alpha,12,$10\nCASH,Sweep,750,$1\n", encoding="utf-8")
+    assert cli.main(["optimize", "--holdings-file", str(export), "--universe", "top20", "--json"], services) == 0
+    import json
+
+    body = json.loads(capsys.readouterr().out)
+    expected = 750 + 12 * services.market.data.price("AAA")
+    assert body["metrics"]["portfolio_value"] == round(expected, 2)
+
+    assert cli.main(["optimize", "--holdings-file", str(tmp_path / "missing.csv")], services) == 1
+    assert "Cannot read --holdings-file" in capsys.readouterr().err
+    assert cli.main(["optimize", "--holdings", "AAA ten"], services) == 1
+    assert "Could not read the holdings" in capsys.readouterr().err
+
+
+def test_optimize_tbill_rate_and_cash_reserve_show_in_the_report(services, capsys):
+    services.market.set_tbill(0.0412, "2026-10-30")
+    code = cli.main(
+        ["optimize", "--cash", "1000", "--universe", "top20", "--risk-free-rate", "tbill", "--cash-reserve", "0.2"],
+        services,
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Risk-free rate: 4.12% (the current 13-week T-bill yield)" in out
+    assert "CASH      20.00%" in out and "$200.00" in out

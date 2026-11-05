@@ -3,20 +3,37 @@
 Works from any directory; data files are resolved from the install location.
 
     wolvwealth serve            start the app on http://localhost:8000 and open a browser
+    wolvwealth optimize         max-Sharpe allocation and trade list, printed to the terminal (or --json)
     wolvwealth refresh-data     pull market prices up to today
     wolvwealth reset-db         erase every workspace and start from the demo seed
     wolvwealth dump-db          print all workspaces, portfolios, and holdings
 """
 
 import argparse
+import json
 import os
+import pathlib
+import re
 import sys
+import textwrap
 import threading
 import webbrowser
 
+from wolvwealth.domain import holdings_parse, optimizer
+from wolvwealth.domain.errors import DomainError, ValidationError
+from wolvwealth.services import optimize, risk_free
 from wolvwealth.services.container import Services
 
 DEFAULT_PORT = 8000
+#: ``optimize`` flags that map one-to-one onto ``constraints.<name>`` in the API body.
+CONSTRAINT_FLAGS = ("max_positions", "max_weight", "min_universal_weight", "max_turnover", "cash_reserve")
+#: How the report describes where the risk-free rate came from.
+RATE_SOURCE_LABELS = {
+    "request": "from --risk-free-rate",
+    "tbill": "the current 13-week T-bill yield",
+    "portfolio": "stored on the portfolio",
+    "default": "none given, so 0% assumed",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--no-browser", action="store_true", help="Do not open a browser tab")
     serve.add_argument("--dev", action="store_true", help="Flask debug mode: auto-reload on code changes")
 
+    _add_optimize_parser(sub)
+
     refresh = sub.add_parser("refresh-data", help="Pull market prices up to today into var/historical_prices.parquet")
     refresh.add_argument(
         "--full",
@@ -40,6 +59,60 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reset-db", help="Delete var/wolvwealth.sqlite3 and recreate it with the demo seed")
     sub.add_parser("dump-db", help="Print every workspace, portfolio, and holding")
     return parser
+
+
+def _rate_argument(raw: str):
+    """Accept a decimal fraction or the word ``tbill`` for --risk-free-rate."""
+    if raw.strip().lower() == risk_free.TBILL:
+        return risk_free.TBILL
+    try:
+        return float(raw)
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number (0.04 means 4%) or 'tbill'") from err
+
+
+def _add_optimize_parser(sub) -> None:
+    """Add the ``optimize`` subparser: the API's request body, one flag per field."""
+    parser = sub.add_parser(
+        "optimize",
+        help="Max-Sharpe allocation and the trades to reach it, printed to the terminal",
+        description="Optimize a stored portfolio, or cash and holdings given here, without a running server. "
+        "Flags mirror the fields of POST /api/optimize/ (see API.md); --json prints that same response body. "
+        "Prices come from the local cache (run `wolvwealth refresh-data` for current ones).",
+    )
+    what = parser.add_argument_group("what to optimize")
+    what.add_argument("--workspace", help="Workspace holding --portfolio")
+    what.add_argument("--portfolio", help="Name of a stored portfolio to load cash and holdings from")
+    what.add_argument("--cash", type=float, metavar="USD", help="Cash to invest (overrides the stored amount)")
+    what.add_argument("--holdings", metavar="LIST", help='Held shares as TICKER=SHARES pairs, e.g. "AAPL=10,MSFT=5"')
+    what.add_argument(
+        "--holdings-file",
+        metavar="FILE",
+        help="Holdings from a file: TICKER,SHARES lines or a brokerage positions CSV; a CASH row sets cash",
+    )
+    parser.add_argument(
+        "--universe",
+        nargs="+",
+        metavar="ENTRY",
+        help="Aliases (top20 ... top500) and/or tickers to allocate across; held tickers are always added so "
+        "keeping them is possible. Default: top500",
+    )
+    constraints = parser.add_argument_group("constraints (same meaning and ranges as the API)")
+    constraints.add_argument("--max-positions", type=int, metavar="N", help="Largest number of holdings")
+    constraints.add_argument("--max-weight", type=float, metavar="F", help="Per-asset cap, 0-1")
+    constraints.add_argument("--min-universal-weight", type=float, metavar="F", help="Floor on every universe ticker")
+    constraints.add_argument(
+        "--max-turnover", type=float, metavar="F", help="Largest fraction of the portfolio the plan may sell, 0-1"
+    )
+    constraints.add_argument("--cash-reserve", type=float, metavar="F", help="Fraction to leave in cash, 0-1")
+    parser.add_argument(
+        "--risk-free-rate",
+        type=_rate_argument,
+        metavar="RATE",
+        help="Annual yield the idle cash earns, as a fraction (0.04 is 4%%), or 'tbill'. "
+        "Default: the stored portfolio's rate, else 0%% (the report says so)",
+    )
+    parser.add_argument("--json", action="store_true", help="Print the API response body instead of a report")
 
 
 def cmd_serve(args, services: Services) -> int:
@@ -60,6 +133,143 @@ def cmd_serve(args, services: Services) -> int:
     if not args.no_browser and not in_reloader_child:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     app.run(host="127.0.0.1", port=args.port, debug=args.dev)
+    return 0
+
+
+def _holdings_argument(args) -> tuple:
+    """Parse --holdings / --holdings-file into ``(holdings, cash)``; cash is set only by a CASH row."""
+    if args.holdings and args.holdings_file:
+        raise ValidationError("Pass --holdings or --holdings-file, not both.")
+    if args.holdings_file:
+        try:
+            text = pathlib.Path(args.holdings_file).read_text(encoding="utf-8")
+        except OSError as err:
+            raise ValidationError(f"Cannot read --holdings-file {args.holdings_file}: {err.strerror}.") from err
+    elif args.holdings:
+        # One pair per line is what the parser reads; pairs arrive on one line
+        # here, separated by commas or spaces.
+        text = "\n".join(re.split(r"[,\s]+", args.holdings.strip()))
+    else:
+        return {}, None
+    parsed = holdings_parse.parse_holdings(text)
+    if parsed.errors:
+        problems = "; ".join(parsed.errors + parsed.ignored)
+        raise ValidationError(f"Could not read the holdings ({problems}). Expected TICKER=SHARES pairs or a CSV.")
+    return parsed.holdings, parsed.cash
+
+
+def _optimize_payload(args) -> dict:
+    """Translate the flags into the API's request body, so the CLI and the API cannot mean different things."""
+    payload = {}
+    if args.portfolio is not None:
+        if args.workspace is None:
+            raise ValidationError("--portfolio needs --workspace: the shell has no open workspace to fall back on.")
+        payload["workspace"], payload["portfolio"] = args.workspace, args.portfolio
+    elif args.workspace is not None:
+        raise ValidationError("--workspace does nothing without --portfolio.")
+    holdings, cash = _holdings_argument(args)
+    if holdings:
+        payload["initial_holdings"] = holdings
+    if args.cash is not None:
+        cash = args.cash
+    if cash is not None:
+        payload["initial_cash"] = cash
+    if args.universe:
+        payload["universe"] = list(args.universe)
+    constraints = {name: getattr(args, name) for name in CONSTRAINT_FLAGS if getattr(args, name) is not None}
+    if constraints:
+        payload["constraints"] = constraints
+    if args.risk_free_rate is not None:
+        payload["risk_free_rate"] = args.risk_free_rate
+    return payload
+
+
+def _with_held_tickers(payload: dict) -> list:
+    """Return the universe plus every held ticker, as the browser form does, so keeping a holding is possible.
+
+    Without this a held name outside the universe is sold in full, which the
+    API documents as a gotcha; a person at a shell gets the safer default.
+    """
+    universe = list(payload.get("universe") or [f"top{optimizer.DEFAULT_UNIVERSE_SIZE}"])
+    return universe + [ticker for ticker in payload.get("initial_holdings", {}) if ticker not in universe]
+
+
+def _money(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def render_report(result: dict, universe: list, portfolio=None) -> str:
+    """Lay out an optimize response for a person reading a terminal."""
+    what = f"{portfolio.workspace}/{portfolio.name}" if portfolio is not None else "the given cash and holdings"
+    rate = result["risk_free_rate"]
+    lines = [
+        f"Max-Sharpe allocation for {what}, priced at the {result['as_of']} close (cached, not live quotes).",
+        f"Universe: {', '.join(universe)}",
+        f"Risk-free rate: {rate['value']:.2%} ({RATE_SOURCE_LABELS[rate['source']]})",
+    ]
+    if "note" in rate:
+        lines.append(textwrap.fill(rate["note"], 110, initial_indent="  ", subsequent_indent="  "))
+    lines += ["", "Target allocation", f"  {'TICKER':<8}{'WEIGHT':>8}{'SHARES':>12}{'VALUE':>14}"]
+    rows = sorted(result["optimized_portfolio"].items(), key=lambda kv: kv[1]["value"], reverse=True)
+    for ticker, row in rows:
+        lines.append(f"  {ticker:<8}{row['percent_weight']:>7.2f}%{row['shares']:>12.4f}{_money(row['value']):>14}")
+    cash = result["cash"]
+    if cash["value"] > 0:
+        lines.append(f"  {'CASH':<8}{cash['percent_weight']:>7.2f}%{'':>12}{_money(cash['value']):>14}")
+    lines.append("")
+    lines.append("Trades to get there, sells first" if result["trades"] else "No trades: already at the target.")
+    for move in result["trades"]:
+        lines.append(
+            f"  {move['action'].upper():<6}{move['ticker']:<8}{move['shares']:>12.4f}"
+            f" @ {_money(move['price']):>10} = {_money(move['value']):>14}"
+        )
+    metrics = result["metrics"]
+    sharpe = "n/a" if metrics["sharpe_ratio"] is None else f"{metrics['sharpe_ratio']:.2f}"
+    lines += [
+        "",
+        f"Portfolio value {_money(metrics['portfolio_value'])}   "
+        f"expected annual return {metrics['expected_annual_return']:.1%}   "
+        f"volatility {metrics['annual_volatility']:.1%}   Sharpe {sharpe}   "
+        f"assets {metrics['num_assets']}   sold {metrics['turnover']:.1%}",
+    ]
+    return "\n".join(lines)
+
+
+def _report_error(error: DomainError, as_json: bool) -> int:
+    """Print a domain error the way the chosen output mode expects, and return the exit status."""
+    if as_json:
+        body = {"error": {"message": error.message}}
+        if error.details:
+            body["error"]["payload"] = error.details
+        print(json.dumps(body, indent=2))
+    else:
+        print(f"wolvwealth: {error.message}", file=sys.stderr)
+    return 1
+
+
+def cmd_optimize(args, services: Services) -> int:
+    """Solve against the cached prices and print a report (or the API body). Never refreshes."""
+    market = services.market.data
+    try:
+        payload = _optimize_payload(args)
+        with services.database.connect() as connection:
+            payload, portfolio = optimize.resolve_portfolio_reference(payload, services.repository(connection))
+        payload["universe"] = _with_held_tickers(payload)
+        result = optimize.optimize(payload, market, portfolio=portfolio, tbill=services.market.tbill)
+    except DomainError as error:
+        return _report_error(error, args.json)
+    age = market.age_days()
+    if age > services.settings.auto_refresh_max_age_days:
+        # On stderr, so --json output stays parseable; as_of is in the body too.
+        print(
+            f"wolvwealth: cached prices are {age} days old (as of {market.as_of}); "
+            "run `wolvwealth refresh-data` for current ones.",
+            file=sys.stderr,
+        )
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(render_report(result, payload["universe"], portfolio))
     return 0
 
 
@@ -98,6 +308,7 @@ def cmd_dump_db(_args, services: Services) -> int:
 
 COMMANDS = {
     "serve": cmd_serve,
+    "optimize": cmd_optimize,
     "refresh-data": cmd_refresh_data,
     "reset-db": cmd_reset_db,
     "dump-db": cmd_dump_db,

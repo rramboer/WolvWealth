@@ -23,7 +23,7 @@ A **workspace** is one person using the machine (`ryan`, `my-brother`), with no 
 |---|---|
 | Workspaces and portfolios: create, edit, value at the last cached price | browser, `/workspace/` |
 | Bulk holdings import: paste `TICKER, shares` lines or upload a brokerage positions CSV (Fidelity, Schwab, Vanguard, Robinhood exports work as-is; a `CASH` row sets cash) | browser + `POST /api/holdings/import/` |
-| Max-Sharpe optimization with constraints: per-asset cap, position count, universal floor, **max turnover** (cap on how much of what you hold may be sold) | browser + `POST /api/optimize/` |
+| Max-Sharpe optimization with constraints: per-asset cap, position count, universal floor, **max turnover** (cap on how much of what you hold may be sold) | browser + `POST /api/optimize/` + `wolvwealth optimize` |
 | Trade list: the buy/sell share deltas from what you hold to the target, sells first so cash is freed before it is spent | in every optimize response |
 | Market freshness and symbol validation for agents, including the current 13-week T-bill yield as a risk-free-rate reference | `GET /api/market/` |
 | Market data: daily adjusted closes for 2,591 US tickers, 2006 to today, refreshed in the background when stale | `var/` cache, `wolvwealth refresh-data` |
@@ -42,11 +42,23 @@ wolvwealth serve            # http://localhost:8000, opens in your browser
 
 Or from a clone: `./install.sh` then `wolvwealth serve`. The installer checks for Python, clones to `~/WolvWealth` if needed, installs editably into your user-level global interpreter so `wolvwealth` and `import wolvwealth` work from any directory, downloads the price history (several minutes; `--no-data` defers it to first start), and adds the command to your PATH. Run it again to update.
 
-Other commands: `wolvwealth refresh-data [--full]` pulls prices up to today, `wolvwealth reset-db` erases every workspace, `wolvwealth dump-db` prints them. `python -m wolvwealth ...` is equivalent.
+Other commands: `wolvwealth optimize` runs an optimization from the shell with no server (see below), `wolvwealth refresh-data [--full]` pulls prices up to today, `wolvwealth reset-db` erases every workspace, `wolvwealth dump-db` prints them. `python -m wolvwealth ...` is equivalent.
 
 On first start the app creates its local database (seeded with a deletable `demo` workspace) and a per-install session key under gitignored `var/`. If the price history is more than a week old it refreshes in the background, so the app is usable immediately and picks up fresher prices when they land (`WOLVWEALTH_NO_AUTO_REFRESH=1` skips this, e.g. offline).
 
 Then in the browser: open `http://localhost:8000/workspaces/`, create your workspace, add a portfolio with your cash and holdings (use **Import holdings in bulk** for more than a handful), set its **risk-free rate** (a *Use T-bill* button fills in the current Treasury yield; until you set one, 0% is assumed and every result says so), and hit **Optimize**.
+
+## From the shell
+
+The same optimization without a server, for people at a terminal and for agents that run commands:
+
+```bash
+wolvwealth optimize --workspace ryan --portfolio long-term --universe top100 --max-positions 10 --max-turnover 0.2
+wolvwealth optimize --cash 5000 --holdings "AAPL=10,MSFT=5" --risk-free-rate tbill
+wolvwealth optimize --holdings-file ~/Downloads/positions.csv --json      # brokerage export in, API body out
+```
+
+Every flag is a field of the API request below, one for one. The report shows the price date, the rate assumed and where it came from, the target allocation, the trades (sells first), and the metrics; `--json` prints exactly the `POST /api/optimize/` response body instead. Held tickers always join the universe, as in the browser, so keeping a position is possible. Errors exit 1 with the message on stderr (or as the API's error object with `--json`). Prices are never refreshed by this command; it says so on stderr when the cache is more than a week old.
 
 ## The API
 
@@ -141,7 +153,6 @@ Deliberately **not** in scope, now or later:
 
 Known gaps, easiest first:
 
-- **No human-friendly CLI for optimization.** The CLI covers admin (serve, refresh, reset); a `wolvwealth optimize` subcommand with readable terminal output (and a `--json` flag) would serve shell users and shell-based agents without a running server. It also builds the out-of-process plumbing the MCP server needs.
 - **An MCP server.** The JSON API works for agents, but an agent only finds it if a human pastes API.md into its context. A stdio MCP server (`wolvwealth mcp`) exposing the same use cases as self-describing tools is the plan, as an optional extra (`pip install -e ".[mcp]"`) so the core dependency list stays minimal.
 - **Expected returns are mean historical returns.** The simplest estimator, and the weakest link in mean-variance optimization. Swapping it is one line in `domain/stats.py` (plus versioning the statistics cache so a stale `mu` is not served); knowing whether an alternative (exponentially weighted, shrinkage, CAPM-implied) is actually better is the work, and the survivorship-biased backtest is a weak judge. Any replacement must stay separable per ticker, because the statistics are computed once over the 500 largest names and sliced per request.
 

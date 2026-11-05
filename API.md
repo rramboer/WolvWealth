@@ -12,6 +12,9 @@ pasted into an agent's context whole: nothing here requires reading the source.
   before acting on a trade list.
 - **No execution.** This service produces target allocations and trade lists. Placing orders
   is the caller's job (for an agent, usually a broker MCP).
+- **No server needed for one-off runs.** `wolvwealth optimize --json ...` prints the same body as
+  `POST /api/optimize/`, with one flag per request field (`wolvwealth optimize --help`). Useful for
+  agents that run shell commands rather than make HTTP requests.
 
 ## The usual agent loop
 
