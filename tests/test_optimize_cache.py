@@ -138,7 +138,7 @@ def test_a_refreshed_snapshot_never_serves_the_old_one_s_weights(market, solves)
 
 def test_truncated_backtest_snapshots_have_their_own_cache(market, solves):
     optimizer.optimize(BASE, market)
-    past = market.truncated(market.prices.index[200])
+    past = market.truncated(market.prices.index[300])  # still a year of history, so the universe is unchanged
     assert len(past.solutions) == 0
     optimizer.optimize(BASE, past)
     assert len(solves) == 2

@@ -143,7 +143,12 @@ def test_market_status_reports_freshness_and_classifies_tickers(mcp, services):
     assert report["as_of"].startswith("2021-") and report["age_days"] > 365 and report["stale"] is True
     assert "refresh-data" in report["refresh_hint"]
     assert report["tbill_rate"] == 0.0412 and report["universe_aliases"][0] == "top100"
-    assert report["tickers"] == {"tradeable": ["AAA"], "no_current_price": ["BBB"], "unknown": ["ZZZ"]}
+    assert report["tickers"] == {
+        "tradeable": ["AAA"],
+        "short_history": [],
+        "no_current_price": ["BBB"],
+        "unknown": ["ZZZ"],
+    }
     assert "tickers" not in tool_result(mcp, "market_status")["structuredContent"]
     wrong = tool_result(mcp, "market_status", {"tickers": "AAA"})
     assert wrong["isError"] is True and "list of strings" in text_of(wrong)

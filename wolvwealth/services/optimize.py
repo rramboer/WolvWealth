@@ -111,14 +111,22 @@ def optimize_keeping_held(payload, market: MarketData, repo: PortfolioRepository
     return result, payload["universe"], portfolio
 
 
-def payload_for_portfolio(
-    portfolio, universe_alias: str, max_positions=None, max_weight=None, max_turnover=None, cash_reserve=None
+def payload_for_portfolio(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    portfolio,
+    universe_alias: str,
+    max_positions=None,
+    max_weight=None,
+    max_turnover=None,
+    cash_reserve=None,
+    min_history_days=None,
 ) -> dict:
     """Build the request the browser form implies for a stored portfolio.
 
     Held tickers join the universe so the optimizer is allowed to keep them.
     The stored risk-free rate is not copied in: ``optimize`` reads it from
     the portfolio itself so the response can say that is where it came from.
+    ``min_history_days`` is the form's override of the domain's default
+    seasoning rule; None leaves the default in force.
     """
     constraints = {}
     if max_positions is not None:
@@ -129,9 +137,12 @@ def payload_for_portfolio(
         constraints["max_turnover"] = max_turnover
     if cash_reserve is not None:
         constraints["cash_reserve"] = cash_reserve
-    return {
+    payload = {
         "initial_cash": portfolio.cash,
         "initial_holdings": portfolio.holdings,
         "universe": [universe_alias] + list(portfolio.holdings),
         "constraints": constraints,
     }
+    if min_history_days is not None:
+        payload["min_history_days"] = min_history_days
+    return payload

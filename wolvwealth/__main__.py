@@ -114,6 +114,13 @@ def _add_optimize_parser(sub) -> None:
         help="Aliases (top20 ... top500) and/or tickers to allocate across; held tickers are always added so "
         "keeping them is possible. Default: top500",
     )
+    parser.add_argument(
+        "--min-history-days",
+        type=int,
+        metavar="N",
+        help="Trading days of price history a ticker needs to be in the universe. Default 252 (a year): a newly "
+        "listed name's few weeks of returns, extrapolated to a year, would otherwise dominate the result",
+    )
     constraints = parser.add_argument_group("constraints (same meaning and ranges as the API)")
     constraints.add_argument("--max-positions", type=int, metavar="N", help="Largest number of holdings")
     constraints.add_argument("--max-weight", type=float, metavar="F", help="Per-asset cap, 0-1")
@@ -197,6 +204,8 @@ def _optimize_payload(args) -> dict:
         payload["initial_cash"] = cash
     if args.universe:
         payload["universe"] = list(args.universe)
+    if args.min_history_days is not None:
+        payload["min_history_days"] = args.min_history_days
     constraints = {name: getattr(args, name) for name in CONSTRAINT_FLAGS if getattr(args, name) is not None}
     if constraints:
         payload["constraints"] = constraints

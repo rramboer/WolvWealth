@@ -15,6 +15,7 @@ OPTIONAL_NUMBERS = {
     "max_weight": (float, "Max weight must be a number between 0 and 1."),
     "max_turnover": (float, "Max turnover must be a number between 0 and 1."),
     "cash_reserve": (float, "Cash reserve must be a number: the fraction of the portfolio to keep in cash."),
+    "min_history_days": (int, "Min history must be a whole number of trading days."),
 }
 
 

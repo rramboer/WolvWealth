@@ -240,6 +240,14 @@
                         placeholder="0.15" value="{{ refill.get('cash_reserve', '') }}"
                         class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
                 </div>
+                <div>
+                    <label class="block mb-1 text-xs font-medium text-white" for="minhist-{{ p.id }}"
+                        title="Trading days of price history a ticker needs before it can be allocated to. Default 252 (a year): a newly listed name's few weeks of returns, extrapolated to a year, would otherwise dominate the result.">Min
+                        history, days (optional)</label>
+                    <input type="number" name="min_history_days" id="minhist-{{ p.id }}" min="2" step="1"
+                        placeholder="252" value="{{ refill.get('min_history_days', '') }}"
+                        class="bg-gray-50 border text-sm rounded-lg p-2 w-28">
+                </div>
                 <input type="hidden" name="portfolio_id" value="{{ p.id }}" />
                 <button type="submit"
                     class="text-white font-medium rounded-lg text-sm px-5 py-2 bg-green text-black">Optimize</button>

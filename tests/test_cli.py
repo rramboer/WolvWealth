@@ -114,7 +114,7 @@ def test_optimize_parser_maps_every_api_field():
             "optimize",
             "--workspace", "ryan", "--portfolio", "long-term",
             "--cash", "100", "--holdings", "AAA=10",
-            "--universe", "top20", "BBB",
+            "--universe", "top20", "BBB", "--min-history-days", "60",
             "--max-positions", "3", "--max-weight", "0.5", "--min-universal-weight", "0.01",
             "--max-turnover", "0.2", "--cash-reserve", "0.1",
             "--risk-free-rate", "tbill", "--json",
@@ -122,6 +122,7 @@ def test_optimize_parser_maps_every_api_field():
     )  # fmt: skip
     assert args.command == "optimize" and args.json and args.risk_free_rate == "tbill"
     assert args.universe == ["top20", "BBB"] and args.max_positions == 3 and args.cash_reserve == 0.1
+    assert args.min_history_days == 60 and cli._optimize_payload(args)["min_history_days"] == 60
     assert cli.build_parser().parse_args(["optimize", "--risk-free-rate", "0.04"]).risk_free_rate == 0.04
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["optimize", "--risk-free-rate", "four"])

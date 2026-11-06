@@ -50,7 +50,16 @@ OPTIMIZE_SCHEMA = {
             "items": {"type": "string"},
             "description": "Tickers and/or aliases (top20, top50, top100, top200, top300, top400, top500: the N "
             "largest US names by market cap) to allocate across. Default top500. Held tickers are added "
-            "automatically so keeping them is possible.",
+            "automatically so keeping them is possible. Names with fewer than min_history_days of prices are "
+            "skipped by aliases and refused by name.",
+        },
+        "min_history_days": {
+            "type": "integer",
+            "minimum": 2,
+            "description": "Trading days of price history a ticker needs to be in the universe. Default 252 (one "
+            "year). Lower it only knowingly: a newly listed name's few weeks of returns, extrapolated to a year, "
+            "look like an enormous expected return at almost no risk, and the optimizer puts the maximum weight "
+            "there. market_status lists the excluded names under short_history.",
         },
         "constraints": {
             "type": "object",
@@ -222,7 +231,8 @@ TOOLS = (
             "Check the local price data before trusting any result. Returns as_of (the date every price and trade "
             "is computed from; prices are a local cache, never live quotes), age_days, stale (true when older than "
             "a week, with a refresh_hint to pass to the user), the current 13-week T-bill yield (tbill_rate) as a "
-            "reference risk-free rate, and the universe aliases. Pass `tickers` to validate symbols in one call."
+            "reference risk-free rate, the universe aliases, and under short_history any tradeable name with "
+            "too little price history to be optimized on by default. Pass `tickers` to validate symbols in one call."
         ),
         input_schema=MARKET_STATUS_SCHEMA,
         handler=market_status,

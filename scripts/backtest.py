@@ -30,18 +30,12 @@ import pandas as pd
 from wolvwealth.config import Settings
 from wolvwealth.domain import optimizer
 from wolvwealth.domain.errors import DataError
-from wolvwealth.domain.market import MarketData
+from wolvwealth.domain.market import MIN_HISTORY_DAYS, MarketData
 from wolvwealth.domain.stats import ESTIMATOR, ESTIMATORS, TRADING_DAYS
 from wolvwealth.storage.price_store import PriceStore
 
 INITIAL_CASH = 100_000.0
 UNIVERSE_SIZE = 50
-#: A name needs this many days of prices before the walk may buy it. The
-#: universe is ranked by today's market cap, so a newly listed company can
-#: be "top 50" on its first trading day, when its return history is one
-#: number and its covariance is NaN; a year of data is the least that makes
-#: the statistics meaningful (and is what an investor at the time had).
-MIN_HISTORY_DAYS = TRADING_DAYS
 MAX_POSITIONS = 10
 START_DATE = "2019-01-01"
 FREQUENCIES = {"yearly": 365, "semiannually": 182, "quarterly": 91, "monthly": 30, "weekly": 7}
@@ -71,9 +65,15 @@ class Walk:
 
 
 def seasoned_universe(known: MarketData) -> list:
-    """The ``UNIVERSE_SIZE`` largest tradeable names with at least ``MIN_HISTORY_DAYS`` of prices by ``known``'s end."""
-    history = known.prices.count()
-    names = [ticker for ticker in known.tradeable if history[ticker] >= MIN_HISTORY_DAYS][:UNIVERSE_SIZE]
+    """The ``UNIVERSE_SIZE`` largest tradeable names with at least ``MIN_HISTORY_DAYS`` of prices by ``known``'s end.
+
+    The universe is ranked by today's market cap, so a newly listed company
+    can be "top 50" on its first trading day, when its return history is one
+    number and its covariance is NaN. The app's own seasoning rule (the
+    domain's ``MIN_HISTORY_DAYS``, a year) is applied as of ``known``'s end,
+    which is also what an investor at the time had.
+    """
+    names = known.top(UNIVERSE_SIZE)
     if not names:
         raise ValueError(f"no ticker has {MIN_HISTORY_DAYS} days of history by {known.as_of}; start the walk later")
     return names

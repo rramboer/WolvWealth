@@ -6,7 +6,7 @@ from datetime import timedelta
 import pandas as pd
 
 from wolvwealth.domain.errors import DataError
-from wolvwealth.domain.market import UNIVERSE_ALIASES, MarketData, clean_prices, implausible_moves
+from wolvwealth.domain.market import MIN_HISTORY_DAYS, UNIVERSE_ALIASES, MarketData, clean_prices, implausible_moves
 from wolvwealth.domain.numbers import TBILL_RATE_RANGE, is_plausible_tbill_rate
 from wolvwealth.domain.stats import ESTIMATOR, MarketStats
 from wolvwealth.market import yahoo
@@ -33,6 +33,10 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None) 
         "universe_size": len(data.universe),
         "tradeable_size": len(data.tradeable),
         "universe_aliases": sorted(UNIVERSE_ALIASES),
+        # Days of prices a ticker needs before a universe may include it,
+        # unless the request lowers it. Stated so a reader can tell why a
+        # name in the tradeable list is still absent from every allocation.
+        "min_history_days": MIN_HISTORY_DAYS,
         # A reference for choosing a portfolio's risk_free_rate; null until
         # the first refresh has fetched it. Never applied for you.
         "tbill_rate": None if tbill is None else tbill["rate"],
@@ -42,6 +46,9 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None) 
         # Unattended runs (agents, schedules) read this report, not the logs:
         # an excluded name must be visible where the decision is made.
         report["quarantined"] = quarantine
+    short = data.short_history()
+    if short:
+        report["short_history"] = short
     if report["stale"]:
         report["refresh_hint"] = (
             f"Prices are {age} days old. Run `wolvwealth refresh-data` in a terminal for current ones; "
@@ -51,11 +58,18 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None) 
 
 
 def classify_tickers(data: MarketData, tickers) -> dict:
-    """Sort symbols into tradeable, known-but-priceless, and unknown, so a caller can validate many at once."""
-    report = {"tradeable": [], "no_current_price": [], "unknown": []}
+    """Sort symbols into tradeable, short-history, known-but-priceless, and unknown, to validate many at once.
+
+    A short-history name can be held and valued, but a universe refuses it
+    unless the request lowers ``min_history_days``; it goes in its own
+    bucket so the caller learns that before building the request.
+    """
+    report = {"tradeable": [], "short_history": [], "no_current_price": [], "unknown": []}
     for raw in tickers:
         ticker = str(raw).upper()
-        if data.has_price(ticker):
+        if data.has_price(ticker) and data.history_days[ticker] < MIN_HISTORY_DAYS:
+            report["short_history"].append(ticker)
+        elif data.has_price(ticker):
             report["tradeable"].append(ticker)
         elif ticker in data:
             report["no_current_price"].append(ticker)
@@ -301,8 +315,16 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         universe alias tops out at ``top500``, so this covers them all plus
         the default universe; anything else falls back to computing its own
         statistics in ``MarketData.stats_for``.
+
+        Two lists are joined: the largest names with the default minimum
+        history (the default universe and every alias) and the largest names
+        regardless of history, so a request that lowers ``min_history_days``
+        to admit a recent listing among the top 500 is served from the cache
+        too. The second list is rarely more than a handful of extra columns.
         """
-        return MarketData.build(universe, prices).top(self.stats_universe_size)
+        data = MarketData.build(universe, prices)
+        size = self.stats_universe_size
+        return list(dict.fromkeys(list(data.tradeable[:size]) + data.top(size)))
 
     @staticmethod
     def _stats_meta(prices, columns) -> dict:

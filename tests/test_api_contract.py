@@ -42,6 +42,7 @@ def test_every_api_endpoint_is_documented(app):
         "initial_cash",
         "initial_holdings",
         "universe",
+        "min_history_days",
         "max_weight",
         "max_positions",
         "min_universal_weight",

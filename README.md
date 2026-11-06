@@ -119,6 +119,7 @@ Sells are listed first so the cash exists before the buys. An agent can hand thi
 Two things to understand before trusting the numbers:
 
 - **By default your holdings are fully reallocated.** Set `constraints.max_turnover` to cap selling, and include held tickers in `universe` so keeping them is possible (the browser flow adds them automatically). A held ticker missing from the result means "sell it all".
+- **Recent listings are excluded until they have a year of prices.** The estimators annualize whatever history exists, so a company listed three weeks ago that rose 15% shows an expected return in the thousands of percent at almost no measured risk, and the optimizer puts the maximum weight there. Aliases skip tickers with fewer than `min_history_days` of prices (default 252, a trading year) and naming one is refused with the count it has; pass a lower `min_history_days` to include it knowingly. `GET /api/market/` lists the excluded names under `short_history`. A held ticker that is too young cannot be kept by the browser, CLI or MCP flows (which add held names to the universe) without lowering the minimum; the API will sell it as a name outside the universe.
 - **Prices come from the local cache, not live quotes.** Every number is priced at `as_of`; check it before acting on a trade list.
 
 ## How it is built
@@ -164,7 +165,7 @@ Deliberately **not** in scope, now or later:
 
 Known gaps:
 
-- **A newly listed company enters the universe with days of history.** `MarketData.tradeable` requires only a current price, so a large IPO or spin-off that reaches the top 500 by market cap is optimizable from its first week, when its annualized expected return is a handful of daily moves extrapolated and its covariance is noise. The backtest had to add a one-year minimum to walk through 2012 (the quarter after Meta listed); the app has no such rule. The current cache has three live tickers under a year old, all small, but the next large listing will not be. A minimum history for the statistics (a year, say) is the fix; it changes what `tradeable_size` and the universe aliases mean, so API.md moves with it.
+- **A young ticker is excluded, not shrunk.** A ticker under the minimum history is left out of the universe entirely rather than given a tempered estimate. Institutional risk models instead proxy a new listing's risk through its factor exposures (industry, size) until it has its own history, and Bayesian estimators shrink a short sample's mean toward a prior in proportion to how little data it has. Both are cross-sectional, which the per-ticker statistics cache cannot express (see `domain/stats.py`), so the rule here is a seasoning period with an explicit override. A held ticker under the minimum cannot currently be kept at its present size while the rest is optimized; it is either admitted with its noisy statistics or sold.
 
 ## License
 

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from wolvwealth.domain.cache import LRUCache
-from wolvwealth.domain.stats import ESTIMATOR, ESTIMATORS, MarketStats
+from wolvwealth.domain.stats import ESTIMATOR, ESTIMATORS, TRADING_DAYS, MarketStats
 
 #: "top20" expands to the 20 largest tickers by market cap, etc.
 UNIVERSE_ALIASES = {f"top{n}": n for n in (20, 50, 100, 200, 300, 400, 500)}
@@ -27,6 +27,17 @@ MAX_PRICE = 1e7
 #: essentially never does this; a poisoned or unadjusted download does, and
 #: one such spike is enough to drag the optimizer toward or away from a name.
 MAX_DAILY_MOVE = 5.0
+#: Days of prices a ticker needs before the optimizer may allocate to it,
+#: unless a request says otherwise: one trading year. The estimators
+#: annualize whatever history exists, so a company listed three weeks ago
+#: that rose 15% shows an expected return in the thousands of percent, and
+#: a covariance estimated from the same fifteen returns is mostly noise, so
+#: the solver sees the best return in the universe at almost no risk and
+#: puts the maximum allowed weight there. The standard remedy, and the one
+#: institutional risk models use before they trust an asset's own history,
+#: is to require a seasoning period; a year is the usual one, and is what
+#: the walk-forward backtest already needed to get through 2012.
+MIN_HISTORY_DAYS = TRADING_DAYS
 
 
 def clean_prices(prices, minimum_rows: int = 2, latest=None) -> pd.DataFrame:
@@ -161,9 +172,46 @@ class MarketData:
         """
         return tuple(ticker for ticker in self.universe if ticker in self.latest_prices)
 
-    def top(self, count: int) -> list:
-        """Return the ``count`` largest tradeable tickers by market cap."""
-        return list(self.tradeable[:count])
+    @functools.cached_property
+    def history_days(self) -> dict:
+        """Ticker -> number of days with a price, which is how much history its statistics rest on."""
+        return {str(ticker): int(days) for ticker, days in self.prices.count().items()}
+
+    @functools.cached_property
+    def _seasoned_by_default(self) -> tuple:
+        return self._seasoned(MIN_HISTORY_DAYS)
+
+    def _seasoned(self, min_history_days: int) -> tuple:
+        return tuple(ticker for ticker in self.tradeable if self.history_days[ticker] >= min_history_days)
+
+    def seasoned(self, min_history_days: int = MIN_HISTORY_DAYS) -> tuple:
+        """Return the tradeable universe in market-cap order, minus names with under ``min_history_days`` of prices.
+
+        These are the tickers a universe alias expands to and the only ones
+        an entry may name without lowering the minimum. The default is
+        memoized because every request without an explicit universe builds
+        its default from it.
+        """
+        if min_history_days == MIN_HISTORY_DAYS:
+            return self._seasoned_by_default
+        return self._seasoned(min_history_days)
+
+    def short_history(self, min_history_days: int = MIN_HISTORY_DAYS) -> dict:
+        """Tradeable tickers with fewer than ``min_history_days`` of prices, each with its count.
+
+        For the market report: a symbol that is in the tradeable list and
+        still refused in a universe needs to be explained where the
+        decision is made, not in a log.
+        """
+        return {
+            ticker: self.history_days[ticker]
+            for ticker in self.tradeable
+            if self.history_days[ticker] < min_history_days
+        }
+
+    def top(self, count: int, min_history_days: int = MIN_HISTORY_DAYS) -> list:
+        """Return the ``count`` largest tradeable tickers by market cap with at least ``min_history_days`` of prices."""
+        return list(self.seasoned(min_history_days)[:count])
 
     @property
     def as_of(self):
@@ -209,22 +257,29 @@ class MarketData:
             return self.stats.slice(tickers)
         return MarketStats.compute(self.prices[tickers], self.estimator).slice(tickers)
 
-    def expand_universe(self, entries) -> list:
-        """Expand aliases and tickers into a deduplicated, tradeable ticker list.
+    def expand_universe(self, entries, min_history_days: int = MIN_HISTORY_DAYS) -> list:
+        """Expand aliases and tickers into a deduplicated, tradeable, seasoned ticker list.
 
         Raises ValueError naming the first entry that is neither an alias nor
-        a ticker in the universe, or that names a ticker with no current
-        price. Aliases skip untradeable names rather than failing, so
-        ``top500`` is the 500 largest names that can actually be bought.
+        a ticker in the universe, that names a ticker with no current price,
+        or that names one with fewer than ``min_history_days`` of prices.
+        Aliases skip untradeable and short-history names rather than failing,
+        so ``top500`` is the 500 largest names that can actually be bought
+        and have statistics worth optimizing on. A named short-history ticker
+        is refused rather than skipped: the entry was deliberate, and the
+        reader must learn why it is missing and how to include it anyway.
         """
         expanded = []
         for entry in entries:
             if not isinstance(entry, str):
                 raise ValueError("universe must be list of strings.")
             if entry in UNIVERSE_ALIASES:
-                expanded.extend(self.top(UNIVERSE_ALIASES[entry]))
+                expanded.extend(self.top(UNIVERSE_ALIASES[entry], min_history_days))
             elif entry.upper() in self.latest_prices:
-                expanded.append(entry.upper())
+                ticker = entry.upper()
+                if self.history_days[ticker] < min_history_days:
+                    raise ValueError(self.describe_short_history(ticker, min_history_days))
+                expanded.append(ticker)
             elif entry.upper() in self.tickers:
                 raise ValueError(
                     f"No current price for {entry.upper()}: delisted, renamed, " "or missed by the last price refresh."
@@ -232,3 +287,12 @@ class MarketData:
             else:
                 raise ValueError(f"Invalid symbol in universe: {entry}.")
         return list(dict.fromkeys(expanded))
+
+    def describe_short_history(self, ticker: str, min_history_days: int = MIN_HISTORY_DAYS) -> str:
+        """Say why ``ticker`` is refused in a universe and what would admit it."""
+        days = self.history_days[ticker]
+        return (
+            f"{ticker} has only {days} day(s) of price history; at least {min_history_days} are needed to estimate "
+            f"its return and risk (a few weeks of moves extrapolated to a year is noise the optimizer would act "
+            f"on). Leave it out, or pass min_history_days of {days} or less to include it anyway."
+        )

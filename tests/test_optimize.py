@@ -379,6 +379,7 @@ def test_degenerate_history_reports_null_sharpe_instead_of_crashing():
     frame = pd.DataFrame(
         {"AAA": [100.0, 101.0], "BBB": [200.0, 201.0]}, index=pd.to_datetime(["2026-10-23", "2026-10-24"])
     )
-    result = optimizer.optimize({"initial_cash": 1000}, MarketData.build(["AAA", "BBB"], frame))
+    # min_history_days lowered on purpose: the seasoning rule would otherwise refuse such a short cache.
+    result = optimizer.optimize({"initial_cash": 1000, "min_history_days": 2}, MarketData.build(["AAA", "BBB"], frame))
     assert result["metrics"]["sharpe_ratio"] is None
     assert result["metrics"]["portfolio_value"] == 1000

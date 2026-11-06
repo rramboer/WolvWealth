@@ -16,7 +16,7 @@ from pypfopt.efficient_frontier import EfficientFrontier
 from wolvwealth.domain import constraints as constraint_rules
 from wolvwealth.domain import trades
 from wolvwealth.domain.errors import DataError, ValidationError
-from wolvwealth.domain.market import MarketData
+from wolvwealth.domain.market import MIN_HISTORY_DAYS, MarketData
 from wolvwealth.domain.numbers import MAX_AMOUNT, is_number
 
 #: Annual risk-free rate assumed when the request names none: zero, because
@@ -73,6 +73,10 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     min_universal_weight: float = 0.0
     max_turnover: float = None  # fraction of portfolio value that may be sold; None = no limit
     cash_reserve: float = 0.0  # fraction of portfolio value left in cash, uninvested
+    #: Days of prices a ticker needs to be in the universe. Shapes the universe
+    #: and nothing else, so it is deliberately absent from the memo keys: two
+    #: requests that resolve to the same ticker list share a solve.
+    min_history_days: int = MIN_HISTORY_DAYS
 
     def invested_fraction(self) -> float:
         """Return the share of the portfolio the optimizer is allowed to deploy.
@@ -98,15 +102,15 @@ def parse_request(payload, market: MarketData) -> OptimizationRequest:
     """
     if not isinstance(payload, dict):
         raise ValidationError("Parse Error. Request body must be a JSON object.")
-    request = OptimizationRequest(universe=market.top(DEFAULT_UNIVERSE_SIZE))
+    request = OptimizationRequest()
+    # Before the universe: the default universe and every alias are filtered by it.
+    _parse_min_history_days(payload, request)
+    request.universe = market.top(DEFAULT_UNIVERSE_SIZE, request.min_history_days)
     _parse_cash(payload, request)
     _parse_risk_free_rate(payload, request)
     _parse_universe(payload, request, market)
     if not request.universe:
-        raise DataError(
-            "No ticker in the list has a current price, so there is nothing to optimize over. "
-            "Run `wolvwealth refresh-data --full` to download prices for the whole list."
-        )
+        _raise_empty_universe(request, market, explicit="min_history_days" in payload)
     _parse_holdings(payload, request, market)
     _parse_output_flags(payload, request)
     _parse_constraints(payload, request)
@@ -114,6 +118,41 @@ def parse_request(payload, market: MarketData) -> OptimizationRequest:
     # in one module, checked once everything is known.
     constraint_rules.check(request)
     return request
+
+
+def _raise_empty_universe(request, market, explicit: bool) -> None:
+    """Say why nothing is left to optimize over: no prices at all, or none with enough history.
+
+    A minimum the request set is the request's problem (ValidationError);
+    the default minimum finding nothing means the cache itself is too short
+    (DataError), which no change to the request should be asked to fix.
+    """
+    if not market.tradeable:
+        raise DataError(
+            "No ticker in the list has a current price, so there is nothing to optimize over. "
+            "Run `wolvwealth refresh-data --full` to download prices for the whole list."
+        )
+    longest = max(market.history_days[ticker] for ticker in market.tradeable)
+    message = (
+        f"No tradeable ticker has {request.min_history_days} days of price history (the longest in the cache "
+        f"is {longest} days), so there is nothing to optimize over."
+    )
+    if explicit:
+        raise ValidationError(f"Invalid min_history_days. {message} Pass a lower min_history_days.")
+    raise DataError(f"{message} Run `wolvwealth refresh-data --full` to download the whole history.")
+
+
+def _parse_min_history_days(payload, request) -> None:
+    if "min_history_days" not in payload:
+        return
+    value = payload["min_history_days"]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValidationError("Invalid min_history_days. min_history_days must be an integer (trading days).")
+    if value < 2:
+        raise ValidationError(
+            "Invalid min_history_days. min_history_days must be at least 2: a return needs two prices."
+        )
+    request.min_history_days = value
 
 
 def _parse_cash(payload, request) -> None:
@@ -151,7 +190,7 @@ def _parse_universe(payload, request, market) -> None:
     if not entries:  # empty means "use the default"
         return
     try:
-        request.universe = market.expand_universe(entries)
+        request.universe = market.expand_universe(entries, request.min_history_days)
     except ValueError as err:
         raise ValidationError(f"Invalid universe. {err}" if "list of strings" in str(err) else str(err)) from err
 
@@ -498,6 +537,8 @@ def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current
     ``max_positions`` selects and then re-solves over a subset, and
     ``cash_reserve`` rescales the solver's weight bounds, so both are part
     of the key too. Anything new that reaches the solver must be added here.
+    ``min_history_days`` is not here on purpose: it only decides which
+    tickers make up ``request.universe``, which is.
 
     Nothing is stored when the solver fails, so an infeasible request keeps
     reporting its own error rather than a remembered one.

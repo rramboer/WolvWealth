@@ -46,6 +46,8 @@ Price-cache freshness and the symbols a request may use.
   "universe_size": 2591,
   "tradeable_size": 1576,
   "universe_aliases": ["top20", "top50", "top100", "top200", "top300", "top400", "top500"],
+  "min_history_days": 252,
+  "short_history": {"SPCX": 23},
   "tickers": ["MSFT", "AAPL", "GOOGL", "..."],
   "tbill_rate": 0.0412,
   "tbill_as_of": "2026-10-29"
@@ -59,7 +61,9 @@ Price-cache freshness and the symbols a request may use.
 | `universe_size` | Tickers in the shipped list, including ones no longer trading |
 | `tradeable_size` | Tickers with a current price — the ones you may actually name |
 | `universe_aliases` | Shorthands accepted in `universe` |
-| `tickers` | The full tradeable list, so symbols can be validated without a round trip |
+| `min_history_days` | Trading days of price history a ticker needs before a universe includes it, unless the request lowers it (see `POST /api/optimize/`) |
+| `short_history` | Present only when some tradeable tickers have fewer than `min_history_days` of prices: `{ticker: days}`. Aliases skip them and naming one is refused unless the request lowers `min_history_days`. They can still be held and valued |
+| `tickers` | The full tradeable list, so symbols can be validated without a round trip. Includes the `short_history` names |
 | `tbill_rate` | 13-week US Treasury bill yield as a fraction, fetched from Yahoo at the last price refresh. A reference for choosing a `risk_free_rate`; the app never applies it on its own. `null` until the first refresh |
 | `tbill_as_of` | Date of that yield, or `null` |
 | `quarantined` | Present only when some tickers were excluded because their downloaded prices were implausible (a one-day move beyond 5x either way): `{ticker: {"reason", "detected"}}`. They are untradeable until `wolvwealth refresh-data --full` downloads a believable history. Check this before acting on trades, especially in unattended runs |
@@ -83,7 +87,8 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | `initial_cash` | number ≥ 0 | Cash to invest, USD | `0` |
 | `initial_holdings` | object | Ticker → share count. Valued at the `as_of` close and pooled with cash | `{}` |
 | `workspace` + `portfolio` | string | Load cash and holdings from a stored portfolio instead. `workspace` falls back to the browser session. Explicit `initial_cash`/`initial_holdings` still win | — |
-| `universe` | array | Tickers and/or aliases to allocate across | `top500` |
+| `universe` | array | Tickers and/or aliases to allocate across. Aliases skip tickers with fewer than `min_history_days` of prices; naming one is refused with the days it has and the override that would admit it | `top500` |
+| `min_history_days` | integer ≥ 2 | Trading days of price history a ticker needs to be in the universe. The estimators annualize whatever history exists, so a company listed three weeks ago that rose 15% shows an expected return in the thousands of percent at almost no measured risk, and the solver puts the maximum weight there. Lower this only knowingly; `GET /api/market/` lists the excluded names under `short_history` | `252` (one trading year) |
 | `constraints.max_weight` | number 0–1 | Per-asset cap | `1` |
 | `constraints.max_positions` | integer ≥ 1 | Largest number of holdings. Applied by solving, keeping the N largest names, and re-solving over those under the same constraints | unlimited |
 | `constraints.min_universal_weight` | number 0–1 | Floor applied to **every** asset in the universe | `0` |
@@ -337,6 +342,9 @@ Messages name the offending field or symbol and are safe to surface verbatim. Tw
 when working from a real brokerage export:
 
 - `Invalid symbol in universe: XYZ.` — not in the ticker list at all.
+- `SPCX has only 23 day(s) of price history; at least 252 are needed to estimate its return and risk ...` —
+  a recent listing. Leave it out, or pass `min_history_days` at or below its count to include it
+  anyway, knowing its statistics are noise.
 - `No current price for PXD: delisted, renamed, or missed by the last price refresh.` — the
   symbol is in the ticker list but has no price at the end of the cached history. Usually it
   stopped trading (acquired, renamed), so map it to its successor symbol or drop it. It can
