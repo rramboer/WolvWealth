@@ -53,6 +53,16 @@
                 </div>
             </div>
 
+            {% if p.problems %}
+            <div class="mb-4 rounded-lg border border-red p-2.5 text-sm text-red" role="alert">
+                <p class="font-medium">Some stored values for this portfolio could not be used and are left out
+                    below. Optimizing it is disabled until they are fixed:</p>
+                <ul>
+                    {% for problem in p.problems %}<li>- {{ problem }}</li>{% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
             <!-- Holdings table -->
             {% if p.holding_rows %}
             <table class="w-full text-sm text-left text-white">

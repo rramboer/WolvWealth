@@ -39,17 +39,11 @@ def slices(monkeypatch):
     return calls
 
 
-def test_identical_request_is_served_without_solving_again(market, solves):
+def test_an_identical_request_is_served_without_solving_or_reslicing_again(market, solves, slices):
     first = optimizer.optimize(BASE, market)
+    sliced = len(slices)
     assert optimizer.optimize(BASE, market) == first
-    assert len(solves) == 1
-
-
-def test_repeated_request_does_not_reslice_the_statistics(market, slices):
-    optimizer.optimize(BASE, market)
-    before = len(slices)
-    optimizer.optimize(BASE, market)
-    assert len(slices) == before
+    assert len(solves) == 1 and len(slices) == sliced
 
 
 @pytest.mark.parametrize(
@@ -84,21 +78,24 @@ def test_fields_that_reach_the_solver_get_their_own_solve(market, solves, change
     assert len(solves) == 2
 
 
-def test_max_positions_gets_its_own_solve(market, solves):
+def test_max_positions_solves_on_its_own_and_leaves_the_full_entry_intact(market, solves):
     """It selects a subset and re-solves over it, so it cannot share the full solve.
 
     Regression: while ``max_positions`` only truncated the solved weights it
     was deliberately absent from the cache key. Now that it changes what the
-    solver is asked, a cached full-universe answer must not be served for it.
+    solver is asked, a cached full-universe answer must not be served for it,
+    its metrics must describe the capped portfolio, and the capped solve must
+    not corrupt the entry the plain request reuses.
     """
-    optimizer.optimize(BASE, market)
-    capped = optimizer.optimize({**BASE, "constraints": {"max_positions": 2}}, market)
-    assert len(capped["optimized_portfolio"]) <= 2
-    assert len(solves) > 1
-    repeated = optimizer.optimize({**BASE, "constraints": {"max_positions": 2}}, market)
+    full = optimizer.optimize(BASE, market)
+    capped = optimizer.optimize({**BASE, "constraints": {"max_positions": 1}}, market)
+    assert len(capped["optimized_portfolio"]) == 1 and len(solves) > 1
     before = len(solves)
-    assert repeated == capped
+    assert optimizer.optimize({**BASE, "constraints": {"max_positions": 1}}, market) == capped
     assert len(solves) == before, "the capped request is itself memoized"
+    assert capped["metrics"]["num_assets"] == 1
+    assert capped["metrics"]["annual_volatility"] != full["metrics"]["annual_volatility"]
+    assert optimizer.optimize(BASE, market) == full and len(solves) == before
 
 
 def test_a_portfolio_rate_and_an_equal_request_rate_share_a_solve(market, solves):
@@ -128,22 +125,6 @@ def test_a_turnover_limit_of_one_shares_the_unconstrained_solve(market, solves):
     optimizer.optimize(BASE, market)
     optimizer.optimize({**BASE, "initial_holdings": {"AAA": 5}, "constraints": {"max_turnover": 1}}, market)
     assert len(solves) == 1
-
-
-def test_cached_weights_survive_a_max_positions_solve(market):
-    """The capped request must not corrupt the entry the plain request reuses."""
-    full = optimizer.optimize(BASE, market)
-    capped = optimizer.optimize({**BASE, "constraints": {"max_positions": 1}}, market)
-    assert len(capped["optimized_portfolio"]) == 1
-    assert optimizer.optimize(BASE, market) == full
-
-
-def test_metrics_follow_the_capped_portfolio_not_the_cached_full_one(market):
-    """max_positions is in the metrics key, so a capped portfolio reports its own numbers."""
-    full = optimizer.optimize(BASE, market)
-    capped = optimizer.optimize({**BASE, "constraints": {"max_positions": 1}}, market)
-    assert capped["metrics"]["num_assets"] == 1
-    assert capped["metrics"]["annual_volatility"] != full["metrics"]["annual_volatility"]
 
 
 def test_a_refreshed_snapshot_never_serves_the_old_one_s_weights(market, solves):

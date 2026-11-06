@@ -82,7 +82,7 @@ if ! "$PYTHON" -m pip install --quiet --user --break-system-packages -e ".${EXTR
 fi
 
 # The `wolvwealth` command lands in the user script dir; make sure it is on PATH.
-USER_BIN="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("scripts", f"{__import__("os").name}_user"))')"
+USER_BIN="$("$PYTHON" -c 'import os, sysconfig; print(sysconfig.get_path("scripts", os.name + "_user"))')"
 case ":$PATH:" in
   *":$USER_BIN:"*) ;;
   *)

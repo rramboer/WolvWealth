@@ -1,12 +1,13 @@
 """JSON API on localhost. No auth; machine-readable errors.
 
 DomainError subclasses become ``{"error": {"message", "status_code", "payload"?}}``
-with 400 (validation) or 404 (not found).
+with 400 (validation), 404 (not found), 409 (a stored portfolio that must be fixed first)
+or 500 (unreadable stored data, or a bug).
 """
 
 import flask
 
-from wolvwealth.domain.errors import DomainError, NotFoundError
+from wolvwealth.domain.errors import ConflictError, DataError, DomainError, NotFoundError
 from wolvwealth.services import holdings_import, market_data, optimize, workspaces as workspace_service
 from wolvwealth.web import context
 
@@ -16,11 +17,26 @@ blueprint = flask.Blueprint("api", __name__)
 @blueprint.errorhandler(DomainError)
 def handle_domain_error(error: DomainError):
     """Serialize a domain error as JSON."""
-    status = 404 if isinstance(error, NotFoundError) else 400
+    status = 400
+    for kind, code in ((NotFoundError, 404), (ConflictError, 409), (DataError, 500)):
+        if isinstance(error, kind):
+            status = code
     body = {"error": {"message": error.message, "status_code": status}}
     if error.details:
         body["error"]["payload"] = error.details
     return flask.jsonify(body), status
+
+
+@blueprint.errorhandler(Exception)
+def handle_unexpected_error(error: Exception):
+    """Keep the JSON contract even for a bug: an agent parsing the body must never get an HTML page.
+
+    HTTP errors (404, 405...) never arrive here: the app-level handler in
+    ``web/__init__.py`` is more specific and answers them for /api/ paths.
+    """
+    flask.current_app.logger.exception("unhandled error in %s", flask.request.path)
+    body = {"error": {"message": f"Internal error: {type(error).__name__}: {error}", "status_code": 500}}
+    return flask.jsonify(body), 500
 
 
 def _json_body() -> dict:
@@ -59,7 +75,9 @@ def market():
     """
     data = context.market()
     services = context.services()
-    report = market_data.status(data, services.market.tbill, services.settings.auto_refresh_max_age_days)
+    report = market_data.status(
+        data, services.market.tbill, services.settings.auto_refresh_max_age_days, services.market.quarantine
+    )
     report["tickers"] = list(data.tradeable)
     return flask.jsonify(report)
 

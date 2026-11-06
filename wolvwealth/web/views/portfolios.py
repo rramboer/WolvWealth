@@ -4,6 +4,7 @@ import flask
 
 from wolvwealth.domain.errors import DomainError
 from wolvwealth.domain.models import NAME_RULE, valid_name
+from wolvwealth.domain.numbers import MAX_AMOUNT, is_amount
 from wolvwealth.services import holdings_import, risk_free
 from wolvwealth.web import context
 from wolvwealth.web.views import blueprint
@@ -32,6 +33,7 @@ def _priced(portfolio, market) -> dict:
         "holdings": portfolio.holdings,
         "holding_rows": rows,
         "total_value": round(portfolio.cash + sum(r["value"] for r in rows), 2),
+        "problems": portfolio.problems,
     }
 
 
@@ -51,6 +53,9 @@ def _cash(raw):
         return None
     if cash < 0:
         flask.flash("Cash must be zero or more.")
+        return None
+    if not is_amount(cash):
+        flask.flash(f"Cash must be a real amount of at most {MAX_AMOUNT:,.0f}.")
         return None
     return round(cash, 2)
 
@@ -170,6 +175,9 @@ def portfolios_holdings():
         return _back()
     if shares < 0:
         flask.flash("Shares must be zero or more (zero removes the holding).")
+        return _back()
+    if not is_amount(shares):
+        flask.flash(f"Shares must be a real count of at most {MAX_AMOUNT:,.0f}.")
         return _back()
     context.repo().set_holding(workspace, portfolio_id, ticker, shares)
     return _back()

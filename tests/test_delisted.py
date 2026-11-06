@@ -10,7 +10,7 @@ import pytest
 
 from conftest import synthetic_market
 from wolvwealth.domain import optimizer
-from wolvwealth.domain.errors import ValidationError
+from wolvwealth.domain.errors import DataError, ValidationError
 from wolvwealth.domain.market import MarketData
 from wolvwealth.domain.stats import MarketStats
 
@@ -24,55 +24,44 @@ def with_delisted():
     return MarketData.build(base.universe, prices)
 
 
-def test_delisted_ticker_is_in_the_universe_but_not_tradeable(with_delisted):
-    assert "CCC" in with_delisted
-    assert not with_delisted.has_price("CCC")
+def test_a_delisted_ticker_is_known_but_not_tradeable_and_aliases_skip_it(with_delisted):
+    assert "CCC" in with_delisted and not with_delisted.has_price("CCC")
     assert "CCC" not in with_delisted.tradeable
+    assert with_delisted.top(3) == ["AAA", "BBB", "DDD"], "aliases skip it and still fill the count"
 
 
-def test_aliases_skip_delisted_names_and_still_fill_the_count(with_delisted):
-    assert "CCC" not in with_delisted.top(3)
-    assert with_delisted.top(3) == ["AAA", "BBB", "DDD"]
-
-
-def test_default_universe_excludes_delisted_names(with_delisted):
-    request = optimizer.parse_request({"initial_cash": 1000}, with_delisted)
-    assert "CCC" not in request.universe
-
-
-def test_delisted_universe_entry_is_a_clear_validation_error(with_delisted):
+@pytest.mark.parametrize(
+    "body, fragment",
+    [
+        ({"initial_cash": 1000, "universe": ["AAA", "CCC"]}, "delisted"),
+        # Regression: market.value() raised KeyError, which the API turned into a 500.
+        ({"initial_cash": 1000, "initial_holdings": {"CCC": 10}, "universe": ["AAA", "BBB"]}, "delisted"),
+        ({"initial_cash": 1000, "universe": ["NOPE"]}, "Invalid symbol in universe"),
+    ],
+    ids=["in the universe", "in the holdings", "unknown keeps its own message"],
+)
+def test_a_delisted_name_is_refused_by_name(with_delisted, body, fragment):
     with pytest.raises(ValidationError) as excinfo:
-        optimizer.optimize({"initial_cash": 1000, "universe": ["AAA", "CCC"]}, with_delisted)
-    assert "CCC" in excinfo.value.message and "delisted" in excinfo.value.message
-
-
-def test_unknown_universe_entry_keeps_its_own_message(with_delisted):
-    with pytest.raises(ValidationError) as excinfo:
-        optimizer.optimize({"initial_cash": 1000, "universe": ["NOPE"]}, with_delisted)
-    assert "Invalid symbol in universe" in excinfo.value.message
-
-
-def test_delisted_holding_is_a_400_not_an_uncaught_keyerror(with_delisted):
-    """Regression: market.value() raised KeyError, which the API turned into a 500."""
-    with pytest.raises(ValidationError) as excinfo:
-        optimizer.optimize(
-            {"initial_cash": 1000, "initial_holdings": {"CCC": 10}, "universe": ["AAA", "BBB"]},
-            with_delisted,
-        )
-    assert "CCC" in excinfo.value.message and "delisted" in excinfo.value.message
+        optimizer.optimize(body, with_delisted)
+    assert fragment in excinfo.value.message
+    if fragment == "delisted":
+        assert "CCC" in excinfo.value.message
 
 
 def test_default_request_solves_despite_a_delisted_name(with_delisted):
     """The whole point: NaN covariance no longer reaches the solver."""
-    result = optimizer.optimize({"initial_cash": 10_000}, with_delisted)
-    assert result["optimized_portfolio"]
-    assert "CCC" not in result["optimized_portfolio"]
-
-
-def test_statistics_over_tradeable_names_are_free_of_nan(with_delisted):
+    assert "CCC" not in optimizer.parse_request({"initial_cash": 1000}, with_delisted).universe
     stats = MarketStats.compute(with_delisted.prices[list(with_delisted.tradeable)])
-    assert not stats.mu.isna().any()
-    assert not stats.cov.isna().to_numpy().any()
+    assert not stats.mu.isna().any() and not stats.cov.isna().to_numpy().any()
+    result = optimizer.optimize({"initial_cash": 10_000}, with_delisted)
+    assert result["optimized_portfolio"] and "CCC" not in result["optimized_portfolio"]
+
+
+def test_a_market_where_nothing_is_tradeable_is_a_data_error_not_a_crash():
+    """A ticker list that matches none of the cached prices left the solver dividing by zero."""
+    prices = synthetic_market().prices.rename(columns=str.lower).rename(columns=lambda t: f"OLD{t}")
+    with pytest.raises(DataError, match="refresh-data --full"):
+        optimizer.optimize({"initial_cash": 1000}, MarketData.build(["AAA", "BBB"], prices))
 
 
 def test_api_reports_a_delisted_holding_as_400(client, services, with_delisted):

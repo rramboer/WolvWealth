@@ -41,13 +41,62 @@ jobs:
       - name: Install
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
 
+      - name: Everything parses on this Python
+        # Tests only import what they exercise; this catches newer-than-3.10
+        # syntax anywhere (scripts included) on the oldest version we support.
+        run: python -m compileall -q wolvwealth scripts tests
+
+      - name: Test (network disabled)
+        # The suite must not reach Yahoo: tests/conftest.py fails any test that
+        # tries. On Linux we also run it in a network namespace with only
+        # loopback, so even a path the guard misses has nowhere to go.
+        # Ubuntu 24.04 blocks unprivileged user namespaces by default.
+        if: runner.os == 'Linux'
+        env:
+          WOLVWEALTH_NO_AUTO_REFRESH: "1"
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare --user --map-root-user --net sh -c 'ip link set lo up && python -m pytest -q'
+
       - name: Test
-        # The suite is hermetic: fixtures build Services on a temp dir with a
-        # synthetic market, so nothing here reaches Yahoo. Fail loudly if that
-        # ever stops being true rather than letting CI depend on the network.
+        if: runner.os != 'Linux'
         env:
           WOLVWEALTH_NO_AUTO_REFRESH: "1"
         run: python -m pytest -q
+
+  installer:
+    # install.sh runs Python snippets on whatever interpreter the user has, so
+    # it has to work on the oldest supported version, not just the CI default.
+    name: install.sh (py${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.10"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run the installer from the checkout
+        run: |
+          bash -n install.sh
+          ./install.sh --no-data
+
+      - name: The installed command works from another directory
+        working-directory: /tmp
+        env:
+          WOLVWEALTH_NO_AUTO_REFRESH: "1"
+        run: |
+          "$(python -c 'import os, sysconfig; print(sysconfig.get_path("scripts", os.name + "_user"))')/wolvwealth" --help
+          python -c "import wolvwealth; print(wolvwealth.__file__)"
 
   lint:
     name: lint

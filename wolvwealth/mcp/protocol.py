@@ -53,6 +53,8 @@ def dispatch(message, methods: dict, log=None):
         return None if isinstance(message, dict) else error_response(None, INVALID_REQUEST, "Invalid request.")
     request_id = message.get("id")
     is_request = "id" in message
+    if not isinstance(message["method"], str):
+        return error_response(request_id, INVALID_REQUEST, "Invalid request: method must be a string.")
     handler = methods.get(message["method"])
     if handler is None:
         return (
@@ -89,7 +91,7 @@ def serve(methods: dict, stdin, stdout, log=None) -> None:
             continue
         try:
             message = json.loads(line.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as error:
+        except (ValueError, UnicodeDecodeError, RecursionError) as error:
             write(stdout, error_response(None, PARSE_ERROR, f"Parse error: {error}"))
             continue
         if isinstance(message, list):  # a JSON-RPC batch (protocol versions before 2025-06-18)

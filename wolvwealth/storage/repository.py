@@ -6,6 +6,7 @@ workspace's data (tidiness, not security: there are no passwords).
 """
 
 from wolvwealth.domain.models import Portfolio, Workspace
+from wolvwealth.domain.numbers import is_amount, is_number
 
 #: Every column of ``portfolios`` the Portfolio dataclass carries, in one place.
 PORTFOLIO_COLUMNS = "id, workspace, name, cash, risk_free_rate, created"
@@ -45,10 +46,28 @@ class PortfolioRepository:
     # --- portfolios ---------------------------------------------------------
 
     def _with_holdings(self, row: dict) -> Portfolio:
-        holdings = self.connection.execute(
+        rows = self.connection.execute(
             "SELECT ticker, shares FROM holdings WHERE portfolio_id = ? ORDER BY ticker", (row["id"],)
         ).fetchall()
-        return Portfolio(holdings={h["ticker"]: h["shares"] for h in holdings}, **row)
+        problems = []
+        cash = row.pop("cash")
+        if not is_amount(cash):
+            problems.append(f"cash is {cash!r}, which is not a usable amount; set the cash again")
+            cash = 0.0
+        rate = row.pop("risk_free_rate")
+        if rate is not None and not (is_number(rate) and -1 < rate < 1):
+            problems.append(f"risk-free rate is {rate!r}, which is not a fraction between -1 and 1; set it again")
+            rate = None
+        holdings = {}
+        for holding in rows:
+            ticker, shares = holding["ticker"], holding["shares"]
+            if not isinstance(ticker, str) or not ticker.strip():
+                problems.append(f"a holding has no ticker (shares {shares!r}); re-import with mode replace")
+            elif not is_amount(shares) or shares == 0:
+                problems.append(f"{ticker} has {shares!r} shares, which is not a usable count; set it again")
+            else:
+                holdings[ticker.strip().upper()] = holdings.get(ticker.strip().upper(), 0.0) + float(shares)
+        return Portfolio(cash=float(cash), risk_free_rate=rate, holdings=holdings, problems=problems, **row)
 
     def list_portfolios(self, workspace: str) -> list:
         """All portfolios in a workspace, each with holdings."""

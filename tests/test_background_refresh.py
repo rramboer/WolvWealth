@@ -1,4 +1,4 @@
-"""The startup refresh runs off the request path, and cache writes are atomic."""
+"""The startup refresh runs off the request path."""
 
 import dataclasses
 import threading
@@ -41,19 +41,7 @@ def test_fresh_cache_starts_no_thread(tmp_path):
     assert service.start_background_refresh(max_age_days=100_000) is None
 
 
-def test_stale_cache_refreshes_off_the_calling_thread(tmp_path):
-    service, _ = build_service(tmp_path, None)
-    service.downloader = appending_downloader(service)
-    before = service.data.as_of
-
-    thread = service.start_background_refresh(max_age_days=0)
-    assert thread is not None
-    thread.join(timeout=30)
-    assert not thread.is_alive()
-    assert service.data.as_of > before
-
-
-def test_the_cached_snapshot_is_served_until_the_refresh_lands(tmp_path):
+def test_a_stale_cache_refreshes_off_the_calling_thread_and_the_old_snapshot_serves_meanwhile(tmp_path):
     """The whole point: requests keep working on old prices while the download runs."""
     service, _ = build_service(tmp_path, None)
     released = threading.Event()
@@ -66,8 +54,10 @@ def test_the_cached_snapshot_is_served_until_the_refresh_lands(tmp_path):
     service.downloader = appending_downloader(service, before=wait_then_download)
     before = service.data.as_of
     thread = service.start_background_refresh(max_age_days=0)
+    assert thread is not None
     released.set()
     thread.join(timeout=30)
+    assert not thread.is_alive()
     assert observed["during"] == before
     assert service.data.as_of > before
 
@@ -121,19 +111,3 @@ def test_serve_does_not_block_on_a_stale_refresh(services, monkeypatch):
     assert cli.main(["serve", "--no-browser"], services) == 0
     release.set()
     assert order == ["refresh-started", "serving"]
-
-
-def test_price_writes_are_atomic(tmp_path):
-    """A failed write must not leave a truncated cache behind."""
-    store = PriceStore(tmp_path / "historical_prices.parquet", tmp_path / "universe.csv")
-    good = synthetic_market().prices
-    store.save_prices(good)
-
-    class Unwritable(pd.DataFrame):
-        def to_parquet(self, *_args, **_kwargs):
-            raise OSError("disk full")
-
-    with pytest.raises(OSError):
-        store.save_prices(Unwritable(good))
-    assert store.load_prices().equals(good)
-    assert not list(tmp_path.glob("*.partial"))

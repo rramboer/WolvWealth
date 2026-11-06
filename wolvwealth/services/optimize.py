@@ -7,7 +7,7 @@ the domain's 0% fallback, which the response flags.
 """
 
 from wolvwealth.domain import optimizer
-from wolvwealth.domain.errors import NotFoundError, ValidationError
+from wolvwealth.domain.errors import ConflictError, NotFoundError, ValidationError
 from wolvwealth.domain.market import MarketData
 from wolvwealth.domain.models import Portfolio
 from wolvwealth.services import risk_free
@@ -61,6 +61,12 @@ def optimize(
         payload, portfolio = resolve_portfolio_reference(payload, repo, default_workspace)
     if not isinstance(payload, dict):
         raise ValidationError("Parse Error. Request body must be a JSON object.")
+    if portfolio is not None and portfolio.problems:
+        raise ConflictError(
+            f"Portfolio {portfolio.workspace}/{portfolio.name} has stored values that cannot be used, so no "
+            f"trades were planned: {'; '.join(portfolio.problems)}.",
+            {"problems": portfolio.problems},
+        )
     payload = dict(payload)
     rate, source = risk_free.resolve(payload.get("risk_free_rate"), tbill)
     if rate is None and portfolio is not None and portfolio.risk_free_rate is not None:
@@ -81,8 +87,13 @@ def universe_with_held(payload: dict) -> list:
     CLI and the MCP tools all add the held names instead, which is the
     safer default when a person or a model is about to act on the trades.
     """
-    universe = list(payload.get("universe") or [f"top{optimizer.DEFAULT_UNIVERSE_SIZE}"])
-    return universe + [ticker for ticker in payload.get("initial_holdings", {}) if ticker not in universe]
+    universe = payload.get("universe")
+    holdings = payload.get("initial_holdings", {})
+    if universe is None or universe == []:
+        universe = [f"top{optimizer.DEFAULT_UNIVERSE_SIZE}"]
+    if not isinstance(universe, list) or not isinstance(holdings, dict):
+        return universe  # malformed: left as given so parse_request names the field
+    return universe + [ticker for ticker in holdings if ticker not in universe]
 
 
 def optimize_keeping_held(payload, market: MarketData, repo: PortfolioRepository, tbill: dict = None) -> tuple:

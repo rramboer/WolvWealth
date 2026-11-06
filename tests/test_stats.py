@@ -11,25 +11,21 @@ from wolvwealth.domain.stats import MarketStats
 
 
 @pytest.mark.parametrize("name", sorted(stats.ESTIMATORS))
-def test_every_estimator_is_separable_per_ticker(name):
-    """The cache is computed over 500 names and sliced per request; that is only valid if mu is per column."""
+def test_every_estimator_is_per_column_and_tolerates_a_short_history(name):
+    """The cache is computed over 500 names and sliced per request, which is only valid if mu is per column.
+
+    And a name that listed recently (leading NaNs) must get a finite estimate
+    without poisoning its neighbours.
+    """
     prices = synthetic_market().prices
     full = stats.expected_return(prices, name)
-    subset = stats.expected_return(prices[["CCC", "AAA"]], name)
-    assert np.allclose(full[["CCC", "AAA"]], subset)
     assert np.isfinite(full).all()
-
-
-@pytest.mark.parametrize("name", sorted(stats.ESTIMATORS))
-def test_every_estimator_tolerates_a_ticker_with_a_short_history(name):
-    """A name that listed recently (leading NaNs) gets a finite estimate and does not poison its neighbours."""
-    prices = synthetic_market().prices.copy()
-    prices.loc[prices.index[:300], "DDD"] = np.nan
-    mu = stats.expected_return(prices, name)
+    assert np.allclose(full[["CCC", "AAA"]], stats.expected_return(prices[["CCC", "AAA"]], name))
+    short = prices.copy()
+    short.loc[short.index[:300], "DDD"] = np.nan
+    mu = stats.expected_return(short, name)
     assert np.isfinite(mu).all()
-    assert np.allclose(
-        mu[["AAA", "BBB", "CCC"]], stats.expected_return(synthetic_market().prices, name)[["AAA", "BBB", "CCC"]]
-    )
+    assert np.allclose(mu[["AAA", "BBB", "CCC"]], full[["AAA", "BBB", "CCC"]])
 
 
 def test_recency_weighted_estimators_follow_the_recent_past_and_the_full_history_mean_does_not():

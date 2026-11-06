@@ -22,3 +22,15 @@ class ValidationError(DomainError):
 
 class NotFoundError(DomainError):
     """A referenced workspace or portfolio does not exist."""
+
+
+class DataError(DomainError):
+    """Stored data (the database, the price cache, the ticker list) is unreadable or invalid.
+
+    Not the caller's fault, so surfaces report it as a server-side failure,
+    but always with what is wrong and how to recover rather than a traceback.
+    """
+
+
+class ConflictError(DomainError):
+    """The request is fine but the stored state it refers to cannot be used until it is fixed (HTTP 409)."""

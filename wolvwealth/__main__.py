@@ -37,13 +37,21 @@ RATE_SOURCE_LABELS = {
 }
 
 
+def _port(raw: str) -> int:
+    """Parse a TCP port for argparse, which turns the ValueError into a usage error."""
+    port = int(raw)
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"{raw} is not a TCP port (1-65535)")
+    return port
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser (separate so tests can exercise it)."""
     parser = argparse.ArgumentParser(prog="wolvwealth", description="Local-first portfolio optimizer.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     serve = sub.add_parser("serve", help="Run the app on localhost and open it in your browser")
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port (default {DEFAULT_PORT})")
+    serve.add_argument("--port", type=_port, default=DEFAULT_PORT, help=f"TCP port, 1-65535 (default {DEFAULT_PORT})")
     serve.add_argument("--no-browser", action="store_true", help="Do not open a browser tab")
     serve.add_argument("--dev", action="store_true", help="Flask debug mode: auto-reload on code changes")
 
@@ -154,6 +162,10 @@ def _holdings_argument(args) -> tuple:
             text = pathlib.Path(args.holdings_file).read_text(encoding="utf-8")
         except OSError as err:
             raise ValidationError(f"Cannot read --holdings-file {args.holdings_file}: {err.strerror}.") from err
+        except UnicodeDecodeError as err:
+            raise ValidationError(
+                f"Cannot read --holdings-file {args.holdings_file}: it is not UTF-8 text. Export it as CSV."
+            ) from err
     elif args.holdings:
         # One pair per line is what the parser reads; pairs arrive on one line
         # here, separated by commas or spaces.
@@ -277,12 +289,21 @@ def cmd_refresh_data(args, services: Services) -> int:
     print(f"Universe: {len(market.data.universe)} tickers. Cached prices end {market.data.as_of}.")
     if args.full:
         print("Full re-download, 2006 -> today. This takes a while and rewrites the price cache ...")
-    if market.refresh(full=args.full):
+    try:
+        changed = market.refresh(full=args.full)
+    except DomainError:
+        raise
+    except Exception as err:  # pylint: disable=broad-except  # Yahoo and the network fail in many ways; none is fatal
+        print(f"wolvwealth: price refresh failed ({err}). The cached prices are unchanged.", file=sys.stderr)
+        return 1
+    if changed:
         print(f"Done. Prices now end {market.data.as_of}.")
     else:
         print("Prices already up to date.")
     if market.tbill is not None:
         print(f"13-week T-bill yield: {market.tbill['rate']:.2%} as of {market.tbill['as_of']}.")
+    for ticker, entry in market.quarantine.items():
+        print(f"Quarantined {ticker} (excluded from allocations since {entry['detected']}): {entry['reason']}.")
     return 0
 
 
@@ -337,7 +358,12 @@ def main(argv=None, services: Services = None) -> int:
         # Under MCP, stdout is the protocol stream; every diagnostic (refresh
         # progress, download shortfalls) must go to stderr or it corrupts it.
         services = Services.build(log=_log_to_stderr if args.command == "mcp" else print)
-    return COMMANDS[args.command](args, services)
+    try:
+        return COMMANDS[args.command](args, services)
+    except DomainError as error:  # unreadable stored data, mostly; each command reports its own input errors
+        return _report_error(error, getattr(args, "json", False))
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

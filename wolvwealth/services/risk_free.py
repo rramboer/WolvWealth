@@ -6,6 +6,7 @@ string ``"tbill"`` meaning the latest cached 13-week Treasury yield.
 """
 
 from wolvwealth.domain.errors import ValidationError
+from wolvwealth.domain.numbers import is_number
 
 TBILL = "tbill"
 
@@ -26,7 +27,7 @@ def resolve(value, tbill: dict, field: str = "risk_free_rate") -> tuple:
                 "(or wait for the background refresh) and try again, or pass a number."
             )
         return tbill["rate"], TBILL
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not is_number(value):
         raise ValidationError(f'Invalid {field}. {field} must be a number, or "tbill" for the current T-bill yield.')
     if not -1 < value < 1:
         raise ValidationError(f"Invalid {field}. {field} is a decimal fraction: 0.04 means 4%.")

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 
+import numpy as np
 import pytest
 
 import wolvwealth.__main__ as cli
@@ -21,6 +22,7 @@ from conftest import synthetic_market
 from test_api_contract import DOCUMENTED
 from test_background_refresh import appending_downloader, build_service
 from wolvwealth.config import REPO_ROOT, Settings
+from wolvwealth.domain.market import MarketData
 from wolvwealth.mcp import protocol, server, tools
 from wolvwealth.mcp.server import McpServer
 from wolvwealth.services.container import Services
@@ -56,17 +58,14 @@ def mcp(services):
 # --- handshake and listing --------------------------------------------------
 
 
-def test_initialize_echoes_a_known_protocol_version_and_offers_tools_only(mcp):
+def test_initialize_echoes_a_known_protocol_version_or_offers_the_newest_and_lists_tools_only(mcp):
     result = call(mcp, "initialize", {"protocolVersion": "2025-03-26", "capabilities": {}})["result"]
     assert result["protocolVersion"] == "2025-03-26"
     assert result["capabilities"] == {"tools": {"listChanged": False}}
     assert result["serverInfo"]["name"] == "wolvwealth" and result["serverInfo"]["version"]
     assert "never places orders" in result["instructions"] and "as_of" in result["instructions"]
-
-
-def test_initialize_with_an_unknown_version_offers_the_newest_we_speak(mcp):
-    result = call(mcp, "initialize", {"protocolVersion": "1999-01-01"})["result"]
-    assert result["protocolVersion"] == server.PROTOCOL_VERSIONS[0]
+    unknown = call(mcp, "initialize", {"protocolVersion": "1999-01-01"})["result"]
+    assert unknown["protocolVersion"] == server.PROTOCOL_VERSIONS[0]
     assert call(mcp, "initialize", {})["result"]["protocolVersion"] == server.PROTOCOL_VERSIONS[0]
 
 
@@ -102,6 +101,29 @@ def test_ping_and_notifications_and_unknown_methods(mcp):
     assert response["error"]["code"] == protocol.METHOD_NOT_FOUND
 
 
+def test_malformed_messages_get_an_invalid_request_or_silence(mcp):
+    methods = mcp.methods()
+    assert protocol.dispatch("not an object", methods)["error"]["code"] == protocol.INVALID_REQUEST
+    no_method = protocol.dispatch({"jsonrpc": "2.0", "id": 9}, methods)
+    assert no_method["id"] == 9 and no_method["error"]["code"] == protocol.INVALID_REQUEST
+    assert protocol.dispatch({"jsonrpc": "2.0", "id": 9, "result": {}}, methods) is None, "a reply to us: ignored"
+    assert protocol.dispatch({"jsonrpc": "2.0"}, methods) is None
+    for method in (5, ["ping"]):
+        wrong = protocol.dispatch({"jsonrpc": "2.0", "id": 3, "method": method}, methods)
+        assert (
+            wrong["error"]["code"] == protocol.INVALID_REQUEST
+            and "method must be a string" in wrong["error"]["message"]
+        )
+    with_data = protocol.error_response(1, protocol.INVALID_PARAMS, "bad", {"field": "x"})
+    assert with_data["error"]["data"] == {"field": "x"}
+
+    def boom(_params):
+        raise RuntimeError("kaboom")
+
+    quiet = protocol.dispatch({"jsonrpc": "2.0", "id": 1, "method": "boom"}, {"boom": boom})  # no log given
+    assert quiet["error"]["code"] == protocol.INTERNAL_ERROR and "kaboom" in quiet["error"]["message"]
+
+
 def test_unknown_tool_and_bad_arguments_are_protocol_errors(mcp):
     response = call(mcp, "tools/call", {"name": "launch_missiles", "arguments": {}})
     assert response["error"]["code"] == protocol.INVALID_PARAMS and "tools/list" in response["error"]["message"]
@@ -114,12 +136,17 @@ def test_unknown_tool_and_bad_arguments_are_protocol_errors(mcp):
 
 def test_market_status_reports_freshness_and_classifies_tickers(mcp, services):
     services.market.set_tbill(0.0412, "2026-10-30")
-    report = tool_result(mcp, "market_status", {"tickers": ["aaa", "ZZZ"]})["structuredContent"]
+    prices = services.market.data.prices.copy()
+    prices.iloc[-1, prices.columns.get_loc("BBB")] = np.nan  # delisted: known, but no current price
+    services.market.set_data(MarketData.build(services.market.data.universe, prices))
+    report = tool_result(mcp, "market_status", {"tickers": ["aaa", "bbb", "ZZZ"]})["structuredContent"]
     assert report["as_of"].startswith("2021-") and report["age_days"] > 365 and report["stale"] is True
     assert "refresh-data" in report["refresh_hint"]
     assert report["tbill_rate"] == 0.0412 and report["universe_aliases"][0] == "top100"
-    assert report["tickers"] == {"tradeable": ["AAA"], "no_current_price": [], "unknown": ["ZZZ"]}
+    assert report["tickers"] == {"tradeable": ["AAA"], "no_current_price": ["BBB"], "unknown": ["ZZZ"]}
     assert "tickers" not in tool_result(mcp, "market_status")["structuredContent"]
+    wrong = tool_result(mcp, "market_status", {"tickers": "AAA"})
+    assert wrong["isError"] is True and "list of strings" in text_of(wrong)
 
 
 def test_list_portfolios_matches_the_api(mcp, workspace_client):
@@ -165,6 +192,12 @@ def test_domain_errors_are_tool_errors_the_model_can_act_on(mcp):
     assert "Infeasible" in text_of(result) and '"conflicts"' in text_of(result), "the remedy payload rides along"
     result = tool_result(mcp, "optimize", {"workspace": "nobody", "portfolio": "x"})
     assert result["isError"] is True and "Unknown portfolio" in text_of(result)
+    # Malformed shapes are named, not iterated: the held-tickers step used to crash on these.
+    for arguments, field in [({"initial_holdings": 5}, "initial_holdings"), ({"universe": 5}, "universe")]:
+        result = tool_result(mcp, "optimize", {"initial_cash": 1000, **arguments})
+        assert result["isError"] is True and f"Invalid {field}" in text_of(result)
+    result = tool_result(mcp, "optimize", {"initial_cash": float("nan")})
+    assert result["isError"] is True and "initial_cash must be a number" in text_of(result)
 
 
 def test_import_holdings_tool_writes_and_matches_the_api_shape(mcp, repo, client, services):
@@ -272,18 +305,20 @@ def test_serve_frames_one_json_message_per_line_and_handles_garbage_and_batches(
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             "this is not json",
+            "[" * 100_000,  # deeper than the JSON parser recurses: a parse error, not the end of the session
             "",
             [{"jsonrpc": "2.0", "id": 2, "method": "ping"}, {"jsonrpc": "2.0", "method": "notifications/cancelled"}],
             [],
+            [{"jsonrpc": "2.0", "method": "notifications/initialized"}],  # only notifications: nothing owed
             {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
         ],
     )
-    assert raw.count("\n") == len(out) == 5, raw
+    assert raw.count("\n") == len(out) == 6, raw
     assert out[0]["id"] == 1 and "protocolVersion" in out[0]["result"]
-    assert out[1]["error"]["code"] == protocol.PARSE_ERROR and out[1]["id"] is None
-    assert out[2] == [{"jsonrpc": "2.0", "id": 2, "result": {}}], "a batch answers with a batch, notifications omitted"
-    assert out[3]["error"]["code"] == protocol.INVALID_REQUEST
-    assert [t["name"] for t in out[4]["result"]["tools"]] == TOOL_NAMES
+    assert out[1]["error"]["code"] == out[2]["error"]["code"] == protocol.PARSE_ERROR and out[1]["id"] is None
+    assert out[3] == [{"jsonrpc": "2.0", "id": 2, "result": {}}], "a batch answers with a batch, notifications omitted"
+    assert out[4]["error"]["code"] == protocol.INVALID_REQUEST
+    assert [t["name"] for t in out[5]["result"]["tools"]] == TOOL_NAMES
 
 
 def test_stray_prints_during_a_tool_call_go_to_stderr_not_the_protocol_stream(services, monkeypatch, capsys):
@@ -376,7 +411,7 @@ def test_mcp_config_prints_json_an_app_can_use_without_path(services, capsys):
     assert "claude_desktop_config.json" in err and "claude mcp add wolvwealth" in err and "MCP.md" in err
 
 
-def test_mcp_mode_builds_services_that_log_to_stderr(monkeypatch, services, capsys):
+def test_mcp_mode_builds_stderr_logging_services_and_hands_them_to_the_server(monkeypatch, services, capsys):
     seen = {}
 
     def fake_build(log=print, **_kwargs):
@@ -384,7 +419,26 @@ def test_mcp_mode_builds_services_that_log_to_stderr(monkeypatch, services, caps
         return services
 
     monkeypatch.setattr(cli.Services, "build", fake_build)
-    cli.main(["mcp", "--config"])
+    monkeypatch.setattr(server, "run", lambda given: seen.update(served=given) or 0)
+    assert cli.main(["mcp"]) == 0
+    assert seen["served"] is services
     seen["log"]("hello from a refresh")
     out, err = capsys.readouterr()
     assert "hello from a refresh" in err and "hello from a refresh" not in out
+
+
+def test_claude_desktop_config_path_follows_the_platform_and_the_version_survives_an_uninstalled_tree(monkeypatch):
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    mac = str(server.claude_desktop_config_path())
+    assert mac.endswith("Library/Application Support/Claude/claude_desktop_config.json")
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", "C:/Users/me/AppData/Roaming")
+    assert str(server.claude_desktop_config_path()).startswith("C:/Users/me/AppData/Roaming")
+    monkeypatch.setattr(server.sys, "platform", "linux")
+    assert str(server.claude_desktop_config_path()).endswith(".config/Claude/claude_desktop_config.json")
+
+    def not_installed(_name):
+        raise server.importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(server.importlib.metadata, "version", not_installed)
+    assert server.version_string() == "0"

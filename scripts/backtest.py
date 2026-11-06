@@ -29,6 +29,7 @@ import pandas as pd
 
 from wolvwealth.config import Settings
 from wolvwealth.domain import optimizer
+from wolvwealth.domain.errors import DataError
 from wolvwealth.domain.market import MarketData
 from wolvwealth.domain.stats import ESTIMATOR, ESTIMATORS, TRADING_DAYS
 from wolvwealth.storage.price_store import PriceStore
@@ -171,11 +172,21 @@ def format_row(label: str, figures: dict) -> str:
     )
 
 
+def _iso_date(raw: str) -> str:
+    """Validate a YYYY-MM-DD date for argparse, which reports the error as a usage message."""
+    try:
+        return datetime.date.fromisoformat(raw).isoformat()
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a date (YYYY-MM-DD)") from err
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Flags: which estimator, where to start, which rebalance frequencies."""
     parser = argparse.ArgumentParser(description="Walk-forward backtest of the optimizer against a 1/N baseline.")
     parser.add_argument("--estimator", default=ESTIMATOR, choices=sorted(ESTIMATORS), help=f"default {ESTIMATOR}")
-    parser.add_argument("--start", default=START_DATE, metavar="YYYY-MM-DD", help=f"default {START_DATE}")
+    parser.add_argument(
+        "--start", default=START_DATE, type=_iso_date, metavar="YYYY-MM-DD", help=f"default {START_DATE}"
+    )
     parser.add_argument(
         "--frequencies",
         default=",".join(FREQUENCIES),
@@ -199,9 +210,22 @@ def main(argv=None, market: MarketData = None, out=print) -> int:
     ``market`` and ``out`` are injectable so a test can run the whole report
     against a synthetic snapshot without the real cache.
     """
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    unknown = [name for name in args.frequencies.split(",") if name not in FREQUENCIES]
+    if unknown:
+        parser.error(f"unknown frequency {', '.join(unknown)}; choose from {', '.join(FREQUENCIES)}")
     frequencies = {name: FREQUENCIES[name] for name in args.frequencies.split(",")}
-    market = (market if market is not None else load_market()).with_estimator(args.estimator)
+    try:
+        market = (market if market is not None else load_market()).with_estimator(args.estimator)
+    except DataError as err:
+        parser.exit(1, f"backtest: {err.message}\n")
+    if next_trading_day(market.prices.index, args.start, 0) is None:
+        parser.error(f"--start {args.start} is after the last cached price ({market.as_of})")
+    try:
+        seasoned_universe(market.truncated(next_trading_day(market.prices.index, args.start, 0)))
+    except ValueError as err:
+        parser.error(str(err))
     out(SURVIVORSHIP_WARNING)
     out("")
     out(

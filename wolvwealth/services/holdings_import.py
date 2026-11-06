@@ -11,6 +11,7 @@ from wolvwealth.domain import holdings_parse
 from wolvwealth.domain.errors import NotFoundError, ValidationError
 from wolvwealth.domain.market import MarketData
 from wolvwealth.domain.models import NAME_RULE, Portfolio, valid_name
+from wolvwealth.domain.numbers import is_amount, is_number
 from wolvwealth.services import risk_free
 from wolvwealth.storage.repository import PortfolioRepository
 
@@ -57,10 +58,10 @@ def parse_holdings_map(holdings, market: MarketData) -> holdings_parse.ParsedHol
         parsed.errors.append("No holdings given.")
     for ticker, shares in holdings.items():
         symbol = holdings_parse.normalize_ticker(ticker)
-        if not isinstance(shares, (int, float)) or isinstance(shares, bool):
+        if not is_number(shares):
             parsed.errors.append(f"{symbol}: shares must be a number")
-        elif shares < 0:
-            parsed.errors.append(f"{symbol}: shares must be zero or more")
+        elif not is_amount(shares):
+            parsed.errors.append(f"{symbol}: shares must be zero or more (and a real count, not {shares:g})")
         elif symbol not in market:
             parsed.unknown.append(symbol)
         else:
@@ -92,7 +93,7 @@ def import_holdings(  # pylint: disable=too-many-arguments  # keyword-only knobs
         raise ValidationError('Invalid mode. mode must be "merge" or "replace".')
     if not isinstance(skip_unknown, bool):
         raise ValidationError("Invalid skip_unknown. skip_unknown must be a boolean.")
-    if cash is not None and (not isinstance(cash, (int, float)) or isinstance(cash, bool) or cash < 0):
+    if cash is not None and not is_amount(cash):
         raise ValidationError("Invalid cash. cash must be a number of zero or more.")
     if (text is None) == (holdings is None):
         raise ValidationError('Pass either "holdings" (object) or "csv" (string), not both.')

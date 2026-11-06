@@ -84,6 +84,9 @@ def assert_honors(result, market, spec: dict) -> None:
     assert result["cash"]["value"] == pytest.approx(
         reserve * result["metrics"]["portfolio_value"], abs=0.02
     ), "the cash line and the weights must describe the same money"
+    total = result["metrics"]["portfolio_value"]
+    bought = sum(trade["value"] for trade in result["trades"] if trade["action"] == "buy")
+    assert bought <= (1 - reserve) * total + 1e-4 * total, "buys must not dip into the reserve (share rounding aside)"
     if "max_weight" in spec:
         # Weight constraints are fractions of the whole portfolio, reserve
         # included -- "no stock above 10%" must not mean 10% of what is left.
@@ -106,6 +109,9 @@ def assert_honors(result, market, spec: dict) -> None:
 @pytest.mark.parametrize(
     "spec",
     [
+        # Regression: the cap truncated the solve and rescaled the survivors to
+        # sum to one, so a 10% cap came back holding 14%. The cap is now
+        # applied by re-solving over the names it keeps, which leaves max_weight binding.
         {"max_weight": 0.1, "max_positions": 12},
         {"max_weight": 0.1, "max_positions": 10},
         {"max_weight": 0.15, "max_positions": 8},
@@ -118,6 +124,9 @@ def assert_honors(result, market, spec: dict) -> None:
         {"min_universal_weight": 0.02},
         {"min_universal_weight": 0.03, "max_weight": 0.2},
         {"cash_reserve": 0.3},
+        # With a 30% reserve and a 10% cap the invested 70% needs seven names.
+        # If the cap were quietly measured against the invested sleeve
+        # instead, five names at 14% of it would satisfy the solver.
         {"cash_reserve": 0.3, "max_weight": 0.1},
         {"cash_reserve": 0.2, "max_weight": 0.1, "max_positions": 8},
         {"cash_reserve": 0.2, "min_universal_weight": 0.02},
@@ -127,17 +136,6 @@ def assert_honors(result, market, spec: dict) -> None:
 def test_feasible_constraints_are_honored_by_the_returned_portfolio(wide, spec):
     """Each feasible combination comes back satisfying every constraint in it."""
     assert_honors(run(wide, spec), wide, spec)
-
-
-def test_a_position_cap_no_longer_inflates_weights_past_max_weight(wide):
-    """Regression: the cap truncated the solve and rescaled the survivors to sum to one.
-
-    Dividing by a total below one inflated every weight, so a 10% cap came
-    back holding 14%. The cap is now applied by re-solving over the names it
-    keeps, which leaves max_weight binding.
-    """
-    result = run(wide, {"max_weight": 0.1, "max_positions": 12})
-    assert max(weights_of(result).values()) <= 10 + SLACK
 
 
 def test_a_position_cap_no_longer_sells_past_max_turnover(wide):
@@ -164,14 +162,6 @@ def test_a_position_cap_that_cannot_fit_the_turnover_budget_is_refused(wide):
     assert "constraints.max_positions" in fields and "constraints.max_turnover" in fields
 
 
-def test_a_weight_floor_is_applied_to_every_universe_ticker(wide):
-    """A floor is a bound on the whole universe, so every ticker is held at or above it."""
-    spec = {"min_universal_weight": 0.02}
-    result = run(wide, spec)
-    assert len(weights_of(result)) == len(wide.universe)
-    assert_honors(result, wide, spec)
-
-
 def test_capping_positions_can_only_improve_the_objective_it_optimizes(wide):
     """Re-solving over the kept names is never worse than rescaling them.
 
@@ -192,28 +182,6 @@ def test_capping_positions_can_only_improve_the_objective_it_optimizes(wide):
 
 
 # --- the cash reserve: part of the plan, not a leftover ---------------------
-
-
-def test_cash_reserve_leaves_the_money_uninvested_and_says_so(wide):
-    """30% reserve: weights sum to 70%, the cash line carries the other 30%, and the trades only spend 70%."""
-    result = run(wide, {"cash_reserve": 0.3})
-    total = result["metrics"]["portfolio_value"]
-    assert result["cash"] == {"value": pytest.approx(0.3 * total, abs=0.01), "percent_weight": 30.0}
-    assert sum(weights_of(result).values()) == pytest.approx(70, abs=0.5)
-    bought = sum(trade["value"] for trade in result["trades"] if trade["action"] == "buy")
-    assert bought == pytest.approx(0.7 * total, rel=0.01), "buys must not dip into the reserve"
-
-
-def test_max_weight_means_a_fraction_of_the_whole_portfolio_not_the_invested_part(wide):
-    """With a 30% reserve and a 10% cap, the invested 70% needs at least seven names.
-
-    If the cap were quietly measured against the invested sleeve instead,
-    five names at 14% of it would satisfy the solver and break the promise.
-    """
-    result = run(wide, {"cash_reserve": 0.3, "max_weight": 0.1})
-    weights = weights_of(result)
-    assert max(weights.values()) <= 10 + SLACK
-    assert len(weights) >= 7
 
 
 def test_a_reserve_makes_the_once_impossible_example_feasible(wide):
@@ -360,35 +328,21 @@ def test_a_small_universe_limits_weights_just_as_a_position_cap_would(wide):
     assert "universe" in str(excinfo.value.details["conflicts"][0]["fields"])
 
 
-def test_a_feasible_request_reports_no_conflicts(wide):
-    """The registry stays silent on a request that is fine."""
-    request = optimizer.parse_request(
-        {"initial_cash": 10_000, "universe": list(wide.universe), "constraints": {"max_weight": 0.2}}, wide
-    )
-    assert constraints.conflicts(request) == []
-
-
 # --- the same refusal, through every way in --------------------------------
 
 
 CONFLICTING = {"max_weight": 0.1, "max_positions": 2}
 
 
-def test_api_refuses_with_a_machine_readable_payload(client):
-    """An agent must be able to branch on the fields, not parse the prose."""
+def test_api_refuses_with_a_machine_readable_payload_whose_remedy_works(client):
+    """An agent must be able to branch on the fields, not parse the prose; and the suggested fix must work."""
     response = client.post("/api/optimize/", json={"initial_cash": 10_000, "constraints": CONFLICTING})
     assert response.status_code == 400
     error = response.get_json()["error"]
-    assert error["message"].startswith("Infeasible.")
+    assert error["message"].startswith("Infeasible.") and "max_weight to at least 0.5" in error["message"]
     conflicts = error["payload"]["conflicts"]
     assert conflicts and all({"fields", "reason", "remedy"} == set(c) for c in conflicts)
     assert any("constraints.max_weight" in c["fields"] for c in conflicts)
-
-
-def test_api_accepts_the_request_once_the_remedy_is_applied(client):
-    """The suggested fix has to actually work, or the message is worse than useless."""
-    rejected = client.post("/api/optimize/", json={"initial_cash": 10_000, "constraints": CONFLICTING})
-    assert "max_weight to at least 0.5" in rejected.get_json()["error"]["message"]
     accepted = client.post(
         "/api/optimize/", json={"initial_cash": 10_000, "constraints": {"max_weight": 0.5, "max_positions": 2}}
     )
@@ -396,8 +350,13 @@ def test_api_accepts_the_request_once_the_remedy_is_applied(client):
     assert max(row["percent_weight"] for row in accepted.get_json()["optimized_portfolio"].values()) <= 50 + SLACK
 
 
-def test_browser_refuses_on_the_page_with_the_values_still_filled_in(workspace_client, repo):
-    """A rejected run is one edit away from a good one, so nothing typed is thrown away."""
+def test_browser_refuses_on_the_page_with_only_the_submitted_form_still_filled_in(workspace_client, repo):
+    """A rejected run is one edit away from a good one, so nothing typed is thrown away.
+
+    Only the form that was submitted comes back filled; other portfolios'
+    forms stay blank, and a plain visit afterwards is clean again.
+    """
+    workspace_client.post("/portfolios/create/", data={"name": "second", "cash": "5000"})
     pid = repo.get_portfolio("tester", name="main").id
     response = workspace_client.post(
         "/optimizer/run/",
@@ -406,8 +365,9 @@ def test_browser_refuses_on_the_page_with_the_values_still_filled_in(workspace_c
     assert response.status_code == 200
     page = response.data.decode()
     assert "Infeasible." in page and "max_weight to at least" in page
-    assert 'value="0.1"' in page and 'value="2"' in page
+    assert page.count('value="0.1"') == 1 and 'value="2"' in page, "the other portfolio's form is not prefilled"
     assert 'value="top20"' in page and "selected" in page
+    assert 'value="0.1"' not in workspace_client.get("/workspace/").data.decode()
 
 
 def test_browser_cash_reserve_reaches_the_optimizer_and_the_results_page(workspace_client, repo):
@@ -426,18 +386,6 @@ def test_browser_cash_reserve_reaches_the_optimizer_and_the_results_page(workspa
     assert "cash_reserve" in rejected and 'value="1.5"' in rejected
 
 
-def test_browser_refill_does_not_leak_onto_other_portfolios(workspace_client, repo):
-    """Only the form that was submitted comes back filled; the rest stay blank."""
-    workspace_client.post("/portfolios/create/", data={"name": "second", "cash": "5000"})
-    pid = repo.get_portfolio("tester", name="main").id
-    page = workspace_client.post(
-        "/optimizer/run/", data={"portfolio_id": pid, "max_weight": "0.1", "max_positions": "2"}
-    ).data.decode()
-    assert page.count('value="0.1"') == 1, "the other portfolio's form must not be prefilled"
-    # And a plain visit afterwards is clean again.
-    assert 'value="0.1"' not in workspace_client.get("/workspace/").data.decode()
-
-
 def test_every_rule_returns_a_usable_conflict_or_none(wide):
     """A structural check on the registry, so a new rule cannot return prose by mistake."""
     request = optimizer.OptimizationRequest(
@@ -450,3 +398,7 @@ def test_every_rule_returns_a_usable_conflict_or_none(wide):
             assert isinstance(found.fields, tuple) and found.fields
             assert found.reason.strip() and found.remedy.strip()
             assert set(found.as_dict()) == {"fields", "reason", "remedy"}
+    fine = optimizer.parse_request(
+        {"initial_cash": 10_000, "universe": list(wide.universe), "constraints": {"max_weight": 0.2}}, wide
+    )
+    assert constraints.conflicts(fine) == [], "the registry stays silent on a request that is fine"

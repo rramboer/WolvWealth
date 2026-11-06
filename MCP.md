@@ -88,6 +88,7 @@ Four tools, all reading and writing the same local SQLite database and price cac
 
 And the three things to understand before acting on a result:
 
+- **Downloaded prices are checked, and exclusions are reported.** A ticker whose downloaded history moves implausibly is quarantined (excluded from allocations), and `market_status` lists it under `quarantined` with the reason. In a scheduled or unattended run, check that field before acting on trades.
 - **Prices are a local cache, not live quotes.** Every result carries `as_of`. When it is stale, `market_status` says so and the fix is `wolvwealth refresh-data` in a terminal; the running server picks up the new prices without a restart.
 - **By default `optimize` may sell any holding.** `constraints.max_turnover` caps how much of the portfolio's value is sold.
 - **Nothing is executed.** WolvWealth produces target allocations and trade lists. Placing orders is the user's decision, or a separate broker tool's job.

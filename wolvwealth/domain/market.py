@@ -9,6 +9,7 @@ class's concern.
 import dataclasses
 import functools
 
+import numpy as np
 import pandas as pd
 
 from wolvwealth.domain.cache import LRUCache
@@ -16,6 +17,76 @@ from wolvwealth.domain.stats import ESTIMATOR, ESTIMATORS, MarketStats
 
 #: "top20" expands to the 20 largest tickers by market cap, etc.
 UNIVERSE_ALIASES = {f"top{n}": n for n in (20, 50, 100, 200, 300, 400, 500)}
+
+
+#: Highest believable share price. The most expensive US share trades in the
+#: hundreds of thousands; anything above this is corruption or tampering.
+MAX_PRICE = 1e7
+#: Largest believable one-day move in split- and dividend-adjusted closes,
+#: as a factor either way (5x up, or down to a fifth). Adjusted large-cap data
+#: essentially never does this; a poisoned or unadjusted download does, and
+#: one such spike is enough to drag the optimizer toward or away from a name.
+MAX_DAILY_MOVE = 5.0
+
+
+def clean_prices(prices, minimum_rows: int = 2, latest=None) -> pd.DataFrame:
+    """Return ``prices`` in the shape every reader assumes, or raise ValueError saying what is wrong.
+
+    The cache is written by this app, but also survives crashes, older
+    versions and hand edits, and every download is whatever Yahoo sent. So,
+    one definition of usable: rows are dates, ascending and unique (a repeated
+    date keeps its last row); tickers are unique upper-case strings; a close
+    is a positive finite number no higher than MAX_PRICE, anything else
+    (text, zero, negative, infinite, absurd) is missing; a day with no price
+    at all is dropped, as is any day after ``latest`` (a download cannot
+    contain tomorrow). Fewer than ``minimum_rows`` usable days is an error:
+    nothing can be estimated from it.
+    """
+    if prices.empty and minimum_rows == 0:
+        return prices
+    frame = prices
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        if not (pd.api.types.is_object_dtype(frame.index) or pd.api.types.is_string_dtype(frame.index)):
+            raise ValueError("its rows are not dated.")
+        try:
+            frame = frame.set_axis(pd.to_datetime(frame.index), axis=0)
+        except (ValueError, TypeError) as err:
+            raise ValueError("its rows are not dated.") from err
+    frame = frame.set_axis([str(column).strip().upper() for column in frame.columns], axis=1)
+    frame = frame.loc[:, ~frame.columns.duplicated()]
+    if not all(pd.api.types.is_float_dtype(dtype) for dtype in frame.dtypes):
+        frame = frame.apply(pd.to_numeric, errors="coerce").astype(float)
+    frame = frame.where(np.isfinite(frame) & (frame > 0) & (frame <= MAX_PRICE))
+    if not frame.index.is_monotonic_increasing:
+        frame = frame.sort_index(kind="stable")
+    if frame.index.has_duplicates:
+        frame = frame[~frame.index.duplicated(keep="last")]
+    if latest is not None:
+        frame = frame[frame.index <= pd.Timestamp(latest)]
+    frame = frame.dropna(how="all")
+    if len(frame) < minimum_rows:
+        raise ValueError(f"it has {len(frame)} usable day(s) of prices; at least {minimum_rows} are needed.")
+    frame.index.name = "Date"
+    return frame
+
+
+def implausible_moves(prices: pd.DataFrame) -> dict:
+    """Return ``{ticker: description}`` for every ticker with a day-over-day move beyond MAX_DAILY_MOVE.
+
+    Each close is compared with the previous close that exists, so a gap
+    (a throttled day, a trading halt) does not hide a jump across it.
+    """
+    previous = prices.ffill().shift(1)
+    ratio = prices / previous
+    flagged = (ratio > MAX_DAILY_MOVE) | (ratio < 1 / MAX_DAILY_MOVE)
+    found = {}
+    for ticker in prices.columns[flagged.any()]:
+        day = flagged.index[flagged[ticker].to_numpy()][0]
+        found[str(ticker)] = (
+            f"moved {ratio.at[day, ticker]:.2f}x in one day on {day.date()} "
+            f"({previous.at[day, ticker]:g} -> {prices.at[day, ticker]:g})"
+        )
+    return found
 
 
 @dataclasses.dataclass(frozen=True)

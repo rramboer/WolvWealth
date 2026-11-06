@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Data problem | WolvWealth{% endblock %}
+{% block description %}WolvWealth could not read its stored data.{% endblock %}
+
+{# Rendered when the database, the price history or the ticker list cannot be read, so it needs none of them. #}
+{% block header %}{% endblock %}
+
+{% block content %}
+<section
+    class="bg-[url('/static/img/gold.jpg')] w-full h-screen bg-center bg-cover flex flex-wrap items-center justify-between mx-auto p-4">
+    <div class="flex flex-col items-center justify-center px-6 py-8 mx-auto md:h-screen lg:py-0 h-auto w-screen">
+        <div class="w-full rounded-lg shadow-lg md:mt-0 sm:max-w-md xl:p-0 backdrop-blur bg-gray-dark/30">
+            <div class="p-6 space-y-4 md:space-y-6 sm:p-8">
+                <h1 class="text-lg font-bold leading-tight tracking-tight text-white">
+                    WolvWealth can't read its data
+                </h1>
+                <div class="rounded-lg border border-red p-2.5" role="alert">
+                    <p class="text-sm text-red">{{ message }}</p>
+                </div>
+                <p class="text-sm font-light text-[#cad0da]">
+                    Nothing was changed. Fix the problem above, then reload this page.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

@@ -46,6 +46,9 @@ import urllib.request
 
 import yfinance as yf
 
+from wolvwealth.domain.holdings_parse import TICKER_RE
+from wolvwealth.domain.numbers import is_number
+
 UNIVERSE_PATH = pathlib.Path(__file__).resolve().parent.parent / "wolvwealth" / "data" / "ticker_universe.csv"
 SYMBOL_DIRECTORY_URLS = (
     # name|...|Test Issue|...|ETF|... pipe-delimited, one line per listing.
@@ -53,6 +56,12 @@ SYMBOL_DIRECTORY_URLS = (
     ("https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt", 0, 6, 4),
 )
 SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?limit=25000&download=true"
+#: Every feed is untrusted input that ends up in the shipped ticker list.
+#: Responses are size-capped before parsing (the real ones are a few MB),
+#: symbols must look like tickers, and sizes must be believable.
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+#: Above the largest company or fund ever; a bigger "size" is garbage.
+MAX_BELIEVABLE_SIZE = 1e14
 #: Smallest market cap a ticker not already in the file needs to join it.
 #: Roughly reproduces the original file's reach (~2,000 names in 2024).
 NEW_TICKER_CAP_FLOOR = 2e9
@@ -69,12 +78,24 @@ def fetch(url: str) -> bytes:
     """GET one source; api.nasdaq.com refuses clients without a browser-ish User-Agent."""
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "*/*"})
     with urllib.request.urlopen(request, timeout=60) as response:
-        return response.read()
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ValueError(f"{url} sent more than {MAX_RESPONSE_BYTES} bytes; refusing to parse it")
+    return body
 
 
 def to_yahoo_symbol(symbol: str) -> str:
     """NASDAQ writes share classes as BRK/B or BRK.B; Yahoo (and this app) use BRK-B."""
-    return symbol.strip().replace("/", "-").replace(".", "-")
+    return symbol.strip().upper().replace("/", "-").replace(".", "-")
+
+
+def believable_size(value) -> float:
+    """A market cap or fund size from a feed as a float, or 0.0 if it is missing, garbled or absurd."""
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return size if is_number(size) and 0 < size <= MAX_BELIEVABLE_SIZE else 0.0
 
 
 def listed_symbols() -> set:
@@ -85,8 +106,9 @@ def listed_symbols() -> set:
             parts = line.split("|")
             if len(parts) < 7 or parts[0].startswith("File Creation"):
                 continue
-            if parts[test_column] != "Y":
-                listed.add(to_yahoo_symbol(parts[symbol_column]))
+            symbol = to_yahoo_symbol(parts[symbol_column])
+            if parts[test_column] != "Y" and TICKER_RE.match(symbol):
+                listed.add(symbol)
     return listed
 
 
@@ -103,31 +125,33 @@ def issuer_of(name: str) -> str:
 
 def screener_stocks() -> list:
     """Return ``(symbol, cap, issuer)`` for every sizeable common-stock line in the screener."""
-    rows = json.loads(fetch(SCREENER_URL))["data"]["rows"]
+    body = json.loads(fetch(SCREENER_URL))
+    rows = body.get("data", {}).get("rows") if isinstance(body, dict) and isinstance(body.get("data"), dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("the stock screener answered without a list of rows")
     stocks = []
     for row in rows:
-        raw = row["symbol"].strip()
-        if "^" in raw or EXCLUDED_NAME.search(row["name"] or ""):
-            continue  # preferreds, warrants, units, when-issued lines
-        try:
-            cap = float(row["marketCap"])
-        except (TypeError, ValueError):
+        if not isinstance(row, dict) or not isinstance(row.get("symbol"), str):
             continue
-        if cap > 0:
-            stocks.append((to_yahoo_symbol(raw), cap, issuer_of(row["name"])))
+        raw, name = row["symbol"].strip(), row.get("name") if isinstance(row.get("name"), str) else ""
+        if "^" in raw or EXCLUDED_NAME.search(name):
+            continue  # preferreds, warrants, units, when-issued lines
+        symbol, cap = to_yahoo_symbol(raw), believable_size(row.get("marketCap"))
+        if cap > 0 and TICKER_RE.match(symbol):
+            stocks.append((symbol, cap, issuer_of(name)))
     return stocks
 
 
 def yahoo_size(ticker: str) -> float:
     """Size an existing ticker the screener cannot: market cap, else fund assets, else 0."""
     try:
-        cap = yf.Ticker(ticker).fast_info["market_cap"]
+        cap = believable_size(yf.Ticker(ticker).fast_info["market_cap"])
         if cap:
-            return float(cap)
+            return cap
     except Exception:  # pylint: disable=broad-except  # missing key, delisted, throttled: all mean "no cap here"
         pass
     try:
-        return float(yf.Ticker(ticker).info.get("totalAssets") or 0.0)
+        return believable_size(yf.Ticker(ticker).info.get("totalAssets"))
     except Exception:  # pylint: disable=broad-except
         return 0.0
 
@@ -176,7 +200,15 @@ def main(argv=None) -> int:
     with open(UNIVERSE_PATH, newline="", encoding="utf-8") as handle:
         old = [row[0].strip() for row in csv.reader(handle) if row and row[0].strip()]
     print(f"Current universe: {len(old)} tickers. Fetching today's listings...")
-    merged, summary = build(old, listed_symbols(), screener_stocks())
+    try:
+        listed, stocks = listed_symbols(), screener_stocks()
+    except (OSError, ValueError) as err:  # network failure, oversized or malformed feed
+        print(f"Could not fetch today's listings ({err}). Nothing written.", file=sys.stderr)
+        return 1
+    if not listed or not stocks:
+        print("A listing feed came back empty. Nothing written.", file=sys.stderr)
+        return 1
+    merged, summary = build(old, listed, stocks)
     print(
         f"Kept {summary['kept']} (of which {summary['delisted_retained']} no longer listed, retained at the "
         f"bottom), added {summary['added']}: {summary['total']} tickers."

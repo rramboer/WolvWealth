@@ -181,7 +181,9 @@ def market(services: Services) -> MarketData:
 def market_status(services: Services, arguments: dict) -> dict:
     """Freshness of the price cache, the T-bill reference, and an optional symbol check."""
     data = market(services)
-    report = market_data.status(data, services.market.tbill, services.settings.auto_refresh_max_age_days)
+    report = market_data.status(
+        data, services.market.tbill, services.settings.auto_refresh_max_age_days, services.market.quarantine
+    )
     if "tickers" in arguments:
         tickers = arguments["tickers"]
         if not isinstance(tickers, list) or not all(isinstance(t, str) for t in tickers):

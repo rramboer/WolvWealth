@@ -1,8 +1,12 @@
-"""Tests for the `wolvwealth` command line (serve, reset-db, dump-db, refresh-data parsing)."""
+"""Tests for the `wolvwealth` command line (serve, optimize, refresh-data, reset-db, dump-db)."""
+
+import dataclasses
+import json
 
 import pytest
 
 import wolvwealth.__main__ as cli
+from conftest import RECENT_DAY, dated_to_today, synthetic_market
 
 
 def test_parser_commands_and_defaults():
@@ -17,6 +21,10 @@ def test_parser_commands_and_defaults():
         parser.parse_args([])
     with pytest.raises(SystemExit):
         parser.parse_args(["bogus"])
+    assert parser.parse_args(["serve", "--port", "65535"]).port == 65535
+    for port in ("0", "-1", "65536", "http"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["serve", "--port", port])
 
 
 def test_serve_binds_localhost_and_opens_browser(services, monkeypatch):
@@ -41,12 +49,20 @@ def test_serve_binds_localhost_and_opens_browser(services, monkeypatch):
     cli.main(["serve", "--no-browser", "--dev"], services)
     assert calls["debug"] is True and opened == []
 
+    # Under --dev, Werkzeug's reloader runs the command a second time in a
+    # child process: that one must not load the cache, refresh, or open a tab.
+    monkeypatch.setenv("WERKZEUG_RUN_MAIN", "true")
+    services.settings = dataclasses.replace(services.settings, auto_refresh=True)
+    monkeypatch.setattr(services.market, "start_background_refresh", lambda _days: pytest.fail("second refresh"))
+    assert cli.main(["serve", "--dev"], services) == 0 and opened == []
+
 
 def test_reset_db_erases_workspaces_and_restores_demo(workspace_client, services, capsys):
     assert cli.main(["reset-db"], services) == 0
     names = [w["name"] for w in workspace_client.get("/api/workspaces/").get_json()["workspaces"]]
     assert names == ["demo"]
     assert "All workspaces erased" in capsys.readouterr().out
+    assert workspace_client.get("/workspace/").status_code == 302, "the session's workspace is gone: dropped"
 
 
 def test_dump_db_prints_tables(workspace_client, services, capsys):
@@ -57,19 +73,36 @@ def test_dump_db_prints_tables(workspace_client, services, capsys):
 
 def test_refresh_data_reports_up_to_date(services, capsys):
     services.market.downloader = lambda *a, **k: pytest.fail("must not download when nothing is missing")
-    import pandas as pd
-
-    # Pretend the newest cached row is today so the incremental path has nothing to fetch.
-    frame = services.market.data.prices.copy()
-    frame.index = pd.date_range(end=pd.Timestamp.now().normalize(), periods=len(frame))
-    services.market.set_data(services.market.data.__class__(services.market.data.universe, frame))
-    services.market.tbill_downloader = lambda: (0.0412, "2026-10-30")
+    # The newest cached row is today, so the incremental path has nothing to fetch.
+    services.market.set_data(dated_to_today(services.market.data))
+    services.market.tbill_downloader = lambda: (0.0412, RECENT_DAY)
     assert cli.main(["refresh-data"], services) == 0
     out = capsys.readouterr().out
     assert "Prices already up to date" in out
-    assert "T-bill yield: 4.12% as of 2026-10-30" in out
-    assert services.market.tbill == {"rate": 0.0412, "as_of": "2026-10-30"}
-    assert services.price_store.load_tbill() == {"rate": 0.0412, "as_of": "2026-10-30"}
+    assert f"T-bill yield: 4.12% as of {RECENT_DAY}" in out
+    assert services.market.tbill == {"rate": 0.0412, "as_of": RECENT_DAY} == services.price_store.load_tbill()
+
+
+def test_refresh_data_full_re_downloads_everything_and_a_failed_download_is_a_message(services, capsys):
+    spiked = synthetic_market().prices
+    spiked.iloc[100, 3] *= 40
+    services.market.downloader = lambda tickers, _start, **_k: spiked.loc[:, list(tickers)]
+    assert cli.main(["refresh-data", "--full"], services) == 0
+    out = capsys.readouterr().out
+    assert "Full re-download, 2006 -> today" in out and "Done. Prices now end 2021-" in out
+    assert "T-bill" not in out, "no T-bill line until one has been fetched"
+    assert "Quarantined DDD (excluded from allocations since " in out and "x in one day" in out
+    saved = services.price_store.load_prices()
+
+    def offline(*_args, **_kwargs):
+        raise ConnectionError("Name or service not known")
+
+    for broken, said in [(offline, "Name or service not known"), (lambda *_a, **_k: None, "returned NoneType")]:
+        services.market.downloader = broken
+        assert cli.main(["refresh-data", "--full"], services) == 1
+        err = capsys.readouterr().err
+        assert "price refresh failed (" in err and said in err
+    assert services.price_store.load_prices().equals(saved), "the cache is untouched"
 
 
 # --- optimize ---------------------------------------------------------------
@@ -124,11 +157,12 @@ def test_optimize_without_a_rate_says_zero_was_assumed(services, capsys):
     out = capsys.readouterr().out
     assert "Risk-free rate: 0.00% (none given, so 0% assumed)" in out
     assert "0% was assumed" in out
+    services.market.set_data(dated_to_today(services.market.data))
+    assert cli.main(["optimize", "--cash", "1000"], services) == 0
+    assert capsys.readouterr().err == "", "fresh prices: no staleness warning"
 
 
 def test_optimize_json_is_the_api_response_body(services, client, capsys):
-    import json
-
     code = cli.main(["optimize", "--cash", "1000", "--holdings", "AAA=10", "--universe", "top20", "--json"], services)
     assert code == 0
     body = json.loads(capsys.readouterr().out)
@@ -164,8 +198,8 @@ def test_optimize_errors_go_to_stderr_or_json(services, capsys):
     assert cli.main(["optimize", "--cash", "1000", "--universe", "FAKE"], services) == 1
     out, err = capsys.readouterr()
     assert out == "" and "Invalid symbol in universe: FAKE" in err
-
-    import json
+    assert cli.main(["optimize", "--cash", "inf"], services) == 1  # argparse's float() accepts it
+    assert "initial_cash must be a number" in capsys.readouterr().err
 
     args = ["optimize", "--cash", "1000", "--max-positions", "2", "--max-weight", "0.1", "--json"]
     assert cli.main(args, services) == 1
@@ -173,20 +207,27 @@ def test_optimize_errors_go_to_stderr_or_json(services, capsys):
     body = json.loads(out)
     assert "Infeasible" in body["error"]["message"] and body["error"]["payload"]["conflicts"]
     assert err == ""
+    assert cli.main(["optimize", "--cash", "1000", "--universe", "FAKE", "--json"], services) == 1
+    body = json.loads(capsys.readouterr().out)
+    assert set(body["error"]) == {"message"}, "no payload unless the error carries one"
 
 
 def test_optimize_holdings_file_accepts_a_brokerage_export_with_cash(services, tmp_path, capsys):
     export = tmp_path / "positions.csv"
     export.write_text("Symbol,Description,Quantity,Last Price\nAAA,Alpha,12,$10\nCASH,Sweep,750,$1\n", encoding="utf-8")
     assert cli.main(["optimize", "--holdings-file", str(export), "--universe", "top20", "--json"], services) == 0
-    import json
-
     body = json.loads(capsys.readouterr().out)
     expected = 750 + 12 * services.market.data.price("AAA")
     assert body["metrics"]["portfolio_value"] == round(expected, 2)
 
     assert cli.main(["optimize", "--holdings-file", str(tmp_path / "missing.csv")], services) == 1
     assert "Cannot read --holdings-file" in capsys.readouterr().err
+    assert cli.main(["optimize", "--holdings", "AAA=1", "--holdings-file", str(export)], services) == 1
+    assert "not both" in capsys.readouterr().err
+    binary = tmp_path / "positions.xlsx"
+    binary.write_bytes(b"PK\x03\x04\xff\xfe")
+    assert cli.main(["optimize", "--holdings-file", str(binary)], services) == 1
+    assert "not UTF-8 text" in capsys.readouterr().err
     assert cli.main(["optimize", "--holdings", "AAA ten"], services) == 1
     assert "Could not read the holdings" in capsys.readouterr().err
 

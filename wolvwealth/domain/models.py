@@ -35,3 +35,8 @@ class Portfolio:
     #: said, and the optimizer assumes 0% and says so in its output.
     risk_free_rate: float = None
     created: str = ""
+    #: Stored values that could not be used (a row edited outside the app, a
+    #: database from a buggy version). They are left out of ``cash``,
+    #: ``holdings`` and ``risk_free_rate`` and described here, so the page can
+    #: show them and the optimizer can refuse to plan trades on a guess.
+    problems: list = dataclasses.field(default_factory=list)

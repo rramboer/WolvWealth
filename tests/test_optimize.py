@@ -27,25 +27,38 @@ def test_rejects_non_dict_input(market):
     [
         ({"initial_cash": "100"}, "initial_cash"),
         ({"initial_cash": -5}, "initial_cash"),
+        ({"initial_cash": float("nan")}, "initial_cash must be a number"),
+        ({"initial_cash": float("inf")}, "initial_cash must be a number"),
+        ({"initial_cash": 10**400}, "initial_cash must be a number"),
+        ({"initial_cash": 1e13}, "at most"),
         ({"universe": "AAA"}, "universe"),
         ({"universe": [42]}, "universe"),
         ({"universe": ["FAKETICKER"]}, "FAKETICKER"),
         ({"initial_cash": 100, "initial_holdings": ["AAA"]}, "initial_holdings"),
+        ({"initial_cash": 100, "initial_holdings": {1: 1}}, "initial_holdings"),
         ({"initial_cash": 100, "initial_holdings": {"FAKETICKER": 1}}, "FAKETICKER"),
+        ({"initial_cash": 100, "initial_holdings": {"AAA": "ten"}}, "strings to numbers"),
         ({"initial_cash": 100, "initial_holdings": {"AAA": -1}}, "positive"),
+        ({"initial_cash": 100, "initial_holdings": {"AAA": float("nan")}}, "strings to numbers"),
+        ({"initial_cash": 100, "initial_holdings": {"AAA": 1e13}}, "more than"),
         ({"initial_cash": 100, "constraints": "nope"}, "constraints"),
         ({"initial_cash": 100, "constraints": {"max_weight": "big"}}, "max_weight"),
         ({"initial_cash": 100, "constraints": {"max_weight": 1.5}}, "max_weight"),
+        ({"initial_cash": 100, "constraints": {"max_weight": 0}}, "at least 0.01"),
+        ({"initial_cash": 100, "constraints": {"max_weight": 0.004}}, "at least 0.01"),  # rounds to a cap of zero
+        ({"initial_cash": 100, "constraints": {"max_weight": float("nan")}}, "max_weight must be a number"),
         ({"initial_cash": 100, "constraints": {"max_positions": 2.5}}, "max_positions"),
         ({"initial_cash": 100, "constraints": {"max_positions": 0}}, "max_positions"),
         ({"initial_cash": 100, "constraints": {"max_positions": 2, "max_weight": 0.25}}, "Infeasible"),
         ({"initial_cash": 100, "constraints": {"min_universal_weight": 2}}, "min_universal_weight"),
+        ({"initial_cash": 100, "constraints": {"min_universal_weight": "x"}}, "min_universal_weight"),
         ({"initial_cash": 100, "constraints": {"min_universal_weight": 0.5, "max_weight": 0.3}}, "less than"),
         ({"initial_cash": 100, "constraints": {"cash_reserve": "half"}}, "cash_reserve"),
         ({"initial_cash": 100, "constraints": {"cash_reserve": True}}, "cash_reserve"),
         ({"initial_cash": 100, "constraints": {"cash_reserve": -0.1}}, "cash_reserve"),
         ({"initial_cash": 100, "constraints": {"cash_reserve": 1}}, "nothing to optimize"),
         ({"initial_cash": 100, "exclude_metrics": "yes"}, "exclude_metrics"),
+        ({"initial_cash": 100, "exclude_trades": "yes"}, "exclude_trades"),
     ],
 )
 def test_rejects_bad_input(market, body, fragment):
@@ -68,11 +81,6 @@ def test_invalid_ticker_after_alias_is_still_rejected(market):
 def test_alias_expansion_and_dedupe(market):
     request = optimizer.parse_request({"initial_cash": 1000, "universe": ["top20", "aaa", "BBB"]}, market)
     assert request.universe == ["AAA", "BBB", "CCC", "DDD"]
-
-
-def test_lowercase_tickers_accepted(market):
-    request = optimizer.parse_request({"initial_cash": 1000, "universe": ["aaa", "bbb"]}, market)
-    assert request.universe == ["AAA", "BBB"]
 
 
 def test_empty_universe_uses_default(market):
@@ -103,14 +111,6 @@ def test_max_weight_respected(market):
         assert position["percent_weight"] <= 40.0 + 0.01
 
 
-def test_max_positions_caps_the_holding_count_and_stays_fully_invested(market):
-    result = optimizer.optimize({"initial_cash": 10000, "constraints": {"max_positions": 2}}, market)
-    portfolio = result["optimized_portfolio"]
-    assert len(portfolio) <= 2
-    assert result["metrics"]["num_assets"] == len(portfolio)
-    assert sum(p["percent_weight"] for p in portfolio.values()) == pytest.approx(100, abs=0.5)
-
-
 def test_metrics_describe_the_returned_portfolio(market):
     """Regression: metrics used to come from the untruncated solver output."""
     from pypfopt import risk_models
@@ -119,7 +119,7 @@ def test_metrics_describe_the_returned_portfolio(market):
 
     result = optimizer.optimize({"initial_cash": 10000, "constraints": {"max_positions": 1}}, market)
     portfolio = result["optimized_portfolio"]
-    assert len(portfolio) == 1
+    assert len(portfolio) == 1 and result["metrics"]["num_assets"] == 1
     weights = pd.Series({t: p["percent_weight"] / 100 for t, p in portfolio.items()}, dtype=float).reindex(
         market.prices.columns, fill_value=0.0
     )
@@ -182,7 +182,6 @@ def test_no_rate_means_zero_with_a_note(market):
     explicit = optimizer.optimize({"initial_cash": 10000, "risk_free_rate": 0}, market)
     assert explicit["risk_free_rate"] == {"value": 0.0, "source": "request"}
     assert explicit["optimized_portfolio"] == result["optimized_portfolio"]
-    assert "risk_free_rate" in optimizer.optimize({"initial_cash": 10000, "exclude_metrics": True}, market)
 
 
 def test_a_higher_rate_tilts_toward_return(market):
@@ -200,14 +199,23 @@ def test_rate_above_every_expected_return_is_a_clear_error(market):
 
 @pytest.mark.parametrize(
     "value, fragment",
-    [("0.04", "must be a number"), (True, "must be a number"), (4, "0.04 means 4%"), (-1, "0.04 means 4%")],
+    [
+        ("0.04", "must be a number"),
+        (True, "must be a number"),
+        (float("nan"), "must be a number"),
+        (float("inf"), "must be a number"),
+        (4, "0.04 means 4%"),
+        (-1, "0.04 means 4%"),
+    ],
 )
 def test_rejects_bad_risk_free_rate(market, value, fragment):
     assert fragment in error_of(market, {"initial_cash": 1000, "risk_free_rate": value})
 
 
-def test_exclude_metrics(market):
-    assert "metrics" not in optimizer.optimize({"initial_cash": 10000, "exclude_metrics": True}, market)
+def test_exclude_flags_omit_their_blocks_but_never_the_echoed_rate(market):
+    result = optimizer.optimize({"initial_cash": 10000, "exclude_metrics": True, "exclude_trades": True}, market)
+    assert "metrics" not in result and "trades" not in result
+    assert result["optimized_portfolio"] and result["risk_free_rate"]["source"] == "default"
 
 
 # --- max_turnover -----------------------------------------------------------
@@ -224,10 +232,12 @@ def sold_fraction(result):
     return sells / result["metrics"]["portfolio_value"]
 
 
-def test_unconstrained_run_sells_most_of_a_concentrated_portfolio(market):
-    result = optimizer.optimize({"initial_holdings": all_in(market, "DDD")}, market)
-    assert result["metrics"]["turnover"] > 0.5
-    assert result["metrics"]["turnover"] == pytest.approx(sold_fraction(result), abs=1e-3)
+def test_without_a_limit_a_concentrated_portfolio_is_mostly_sold_and_a_limit_of_one_changes_nothing(market):
+    holdings = all_in(market, "DDD")
+    plain = optimizer.optimize({"initial_holdings": holdings}, market)
+    assert plain["metrics"]["turnover"] > 0.5
+    assert plain["metrics"]["turnover"] == pytest.approx(sold_fraction(plain), abs=1e-3)
+    assert optimizer.optimize({"initial_holdings": holdings, "constraints": {"max_turnover": 1}}, market) == plain
 
 
 def test_max_turnover_caps_what_is_sold(market):
@@ -284,12 +294,6 @@ def test_tighter_turnover_never_beats_a_looser_one(market):
     assert sharpes == sorted(sharpes)
 
 
-def test_turnover_limit_of_one_matches_no_limit(market):
-    holdings = all_in(market, "DDD")
-    plain = optimizer.optimize({"initial_holdings": holdings}, market)
-    assert optimizer.optimize({"initial_holdings": holdings, "constraints": {"max_turnover": 1}}, market) == plain
-
-
 def test_holding_outside_the_universe_is_a_forced_sale(market):
     body = {
         "initial_holdings": {**all_in(market, "DDD", 2_000), **all_in(market, "AAA", 8_000)},
@@ -328,7 +332,13 @@ def test_turnover_limit_with_no_holdings_is_harmless(market):
 
 @pytest.mark.parametrize(
     "value, fragment",
-    [("0.2", "must be a number"), (True, "must be a number"), (-0.1, "between 0 and 1"), (1.5, "between 0 and 1")],
+    [
+        ("0.2", "must be a number"),
+        (True, "must be a number"),
+        (float("nan"), "must be a number"),
+        (-0.1, "between 0 and 1"),
+        (1.5, "between 0 and 1"),
+    ],
 )
 def test_rejects_bad_max_turnover(market, value, fragment):
     assert fragment in error_of(market, {"initial_cash": 1000, "constraints": {"max_turnover": value}})

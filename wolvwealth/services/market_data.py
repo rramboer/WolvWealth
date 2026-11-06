@@ -5,16 +5,21 @@ from datetime import timedelta
 
 import pandas as pd
 
-from wolvwealth.domain.market import UNIVERSE_ALIASES, MarketData
+from wolvwealth.domain.errors import DataError
+from wolvwealth.domain.market import UNIVERSE_ALIASES, MarketData, clean_prices, implausible_moves
+from wolvwealth.domain.numbers import TBILL_RATE_RANGE, is_plausible_tbill_rate
 from wolvwealth.domain.stats import ESTIMATOR, MarketStats
 from wolvwealth.market import yahoo
 from wolvwealth.storage.price_store import PriceStore
+
+#: A T-bill quote older than this is not the "current" yield it would be presented as.
+TBILL_MAX_AGE_DAYS = 30
 
 #: Marks the T-bill reference as not yet read from disk (None means read, and absent).
 _UNLOADED = object()
 
 
-def status(data: MarketData, tbill, max_age_days: int) -> dict:
+def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None) -> dict:
     """Describe the price snapshot's freshness: the report the API and the MCP server both publish.
 
     ``stale`` is the same judgement the startup refresh makes, so a reader
@@ -33,6 +38,10 @@ def status(data: MarketData, tbill, max_age_days: int) -> dict:
         "tbill_rate": None if tbill is None else tbill["rate"],
         "tbill_as_of": None if tbill is None else tbill["as_of"],
     }
+    if quarantine:
+        # Unattended runs (agents, schedules) read this report, not the logs:
+        # an excluded name must be visible where the decision is made.
+        report["quarantined"] = quarantine
     if report["stale"]:
         report["refresh_hint"] = (
             f"Prices are {age} days old. Run `wolvwealth refresh-data` in a terminal for current ones; "
@@ -53,6 +62,25 @@ def classify_tickers(data: MarketData, tickers) -> dict:
         else:
             report["unknown"].append(ticker)
     return report
+
+
+def _check_tbill(rate, as_of) -> None:
+    """Raise ValueError unless a downloaded T-bill quote is believable.
+
+    Portfolios set to "tbill" use this number in every optimization, often
+    unattended, so a tampered or garbled quote must be refused rather than
+    stored: a plausible yield, dated, not in the future, and not stale.
+    """
+    if not is_plausible_tbill_rate(rate):
+        low, high = TBILL_RATE_RANGE
+        raise ValueError(f"implausible yield {rate!r} (expected a fraction between {low} and {high})")
+    try:
+        day = pd.Timestamp(as_of)
+    except (ValueError, TypeError) as err:
+        raise ValueError(f"undated quote ({as_of!r})") from err
+    today = pd.Timestamp.now().normalize()
+    if not today - timedelta(days=TBILL_MAX_AGE_DAYS) <= day <= today:
+        raise ValueError(f"quote dated {as_of}, not within the last {TBILL_MAX_AGE_DAYS} days")
 
 
 class MarketDataService:  # pylint: disable=too-many-instance-attributes
@@ -157,6 +185,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         downloader = self.tbill_downloader or yahoo.download_tbill_rate
         try:
             rate, as_of = downloader()
+            _check_tbill(rate, as_of)
         except Exception as err:  # pylint: disable=broad-except
             self.log(f"wolvwealth: could not fetch the T-bill rate ({err}); the stored one, if any, stands")
             return False
@@ -171,7 +200,15 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 self.log(f"wolvwealth: migrated price history into {self.store.prices_path}")
             else:
                 self.log("wolvwealth: no price history cache, downloading 2006 -> today (this takes a while)...")
-                self.store.save_prices(self._download(universe, self.history_start))
+                downloaded = self._download(universe, self.history_start)
+                if len(downloaded) >= 2:
+                    downloaded = self._quarantine(downloaded, clear=True)
+                if len(downloaded) < 2:
+                    raise DataError(
+                        "The first price download returned no usable history (offline, or Yahoo is throttling). "
+                        "Nothing was saved; run `wolvwealth refresh-data` again later."
+                    )
+                self.store.save_prices(downloaded)
         self._loaded_stamp = self.store.prices_stamp()
         prices = self.store.load_prices()
         return MarketData.build(universe, prices, self._load_or_compute_stats(universe, prices))
@@ -181,6 +218,62 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self.store.save_prices(prices)
         self._loaded_stamp = self.store.prices_stamp()
 
+    def _fetch(self, tickers, start_date) -> pd.DataFrame:
+        """Download and clean: the one gate every price from the network passes through.
+
+        Only the requested tickers are kept, nothing dated after today
+        survives, and every close must be believable (see ``clean_prices``).
+        Plausibility across days is checked once merged, by ``_quarantine``.
+        """
+        tickers = list(tickers)
+        raw = self.downloader(tickers, start_date)
+        if not isinstance(raw, pd.DataFrame):
+            raise RuntimeError(f"the price source returned {type(raw).__name__}, not a table of prices")
+        fresh = clean_prices(raw, minimum_rows=0, latest=pd.Timestamp.now().normalize())
+        return fresh.reindex(columns=tickers) if not fresh.empty else fresh
+
+    def _quarantine(self, prices: pd.DataFrame, since=None, whole=(), clear: bool = False) -> pd.DataFrame:
+        """Blank every ticker whose downloaded history moves implausibly, record why, and return the result.
+
+        ``since`` limits the check to rows from that date on (the cached
+        history before it was checked when it arrived); ``whole`` names
+        tickers whose entire history was just replaced. Tickers already in
+        quarantine stay blank until a full refresh (``clear``) re-checks them,
+        so a refresh cannot quietly bring a poisoned name back. If more than
+        MAX_WENT_DARK_FRACTION of the live tickers look implausible at once,
+        the download as a whole is not trusted and nothing is written.
+        """
+        window = prices if since is None else prices.loc[since:]
+        found = implausible_moves(window)
+        if whole:
+            found.update(implausible_moves(prices[[t for t in whole if t in prices.columns]]))
+        record = {} if clear else self.store.load_quarantine()
+        newly = {ticker: reason for ticker, reason in found.items() if ticker not in record}
+        live = prices.iloc[-1].dropna().index if not prices.empty else pd.Index([])
+        if len(newly) > max(3, self.MAX_WENT_DARK_FRACTION * len(live)):
+            raise RuntimeError(
+                f"{len(newly)} tickers moved implausibly in the downloaded prices (corrupt or tampered data?); "
+                "not overwriting the price cache. Try again later."
+            )
+        detected = pd.Timestamp.now().strftime("%Y-%m-%d")
+        record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in newly.items()})
+        for ticker, reason in newly.items():
+            self.log(
+                f"wolvwealth: quarantined {ticker}: its downloaded prices {reason}. It is excluded from "
+                "allocations until `wolvwealth refresh-data --full` downloads a believable history."
+            )
+        blanked = [ticker for ticker in record if ticker in prices.columns]
+        if blanked:
+            prices = prices.copy()
+            prices[blanked] = float("nan")
+        self.store.save_quarantine(record)
+        return prices
+
+    @property
+    def quarantine(self) -> dict:
+        """Tickers excluded because their downloaded prices were implausible: ``{ticker: {reason, detected}}``."""
+        return self.store.load_quarantine()
+
     def _download(self, tickers, start_date):
         """Download prices and say how much of the universe came back empty.
 
@@ -189,7 +282,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         here would mean quietly optimizing over a fraction of the universe
         the user believes they have, so the shortfall is always reported.
         """
-        prices = self.downloader(list(tickers), start_date)
+        prices = self._fetch(tickers, start_date)
         empty = yahoo.empty_tickers(prices, tickers)
         if empty:
             self.log(
@@ -262,19 +355,14 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         """
         self.refresh_tbill()
         if full:
-            prices = self._download(self.data.universe, self.history_start)
-            self._save_prices(prices)
-            universe = self.data.universe
-            columns = self._stats_columns(universe, prices)
-            self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
-            return True
+            return self._refresh_full()
         current = self.data
         last = current.prices.index[-1]
         today = pd.Timestamp.now().strftime("%Y-%m-%d")
         if (last + timedelta(days=1)).strftime("%Y-%m-%d") >= today:
             return False
         overlap_start = current.prices.index[-self.OVERLAP_ROWS :][0]
-        fresh = self.downloader(list(current.universe), overlap_start.strftime("%Y-%m-%d"))
+        fresh = self._fetch(current.universe, overlap_start.strftime("%Y-%m-%d"))
         if fresh.empty:
             return False
         previously_live = current.prices.iloc[-1].dropna().index
@@ -291,9 +379,29 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         prices = pd.concat([current.prices, new_rows.reindex(columns=current.prices.columns)])
         if readjusted:
             prices = self._repair_readjusted(prices, readjusted)
+        prices = self._quarantine(prices, since=last, whole=readjusted)
         self._save_prices(prices)
         columns = self._stats_columns(current.universe, prices)
         self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices, columns))
+        return True
+
+    def _refresh_full(self) -> bool:
+        """Re-download the whole history; refuse to replace the cache with a throttled, mostly empty one."""
+        prices = self._download(self.data.universe, self.history_start)
+        previously_live = self.data.prices.iloc[-1].dropna().index
+        came_back = prices.iloc[-1].dropna().index if not prices.empty else pd.Index([])
+        lost = previously_live.difference(came_back)
+        if len(lost) > self.MAX_WENT_DARK_FRACTION * len(previously_live):
+            raise RuntimeError(
+                f"{len(lost)} of {len(previously_live)} live tickers came back without a current price "
+                "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
+            )
+        # After the throttling check, which must count what came back, not what was then judged implausible.
+        prices = self._quarantine(prices, clear=True)
+        self._save_prices(prices)
+        universe = self.data.universe
+        columns = self._stats_columns(universe, prices)
+        self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
         return True
 
     def _readjusted_tickers(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> list:
@@ -327,7 +435,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
             f"wolvwealth: {len(tickers)} ticker(s) changed adjustment basis (split or dividend); "
             f"re-downloading their full history: {', '.join(tickers)}"
         )
-        repaired = self.downloader(list(tickers), self.history_start)
+        repaired = self._fetch(tickers, self.history_start)
         prices = prices.copy()
         for ticker in tickers:
             if ticker in repaired.columns and not repaired[ticker].isna().all():

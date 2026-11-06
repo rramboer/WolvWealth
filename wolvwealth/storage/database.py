@@ -4,6 +4,8 @@ import contextlib
 import pathlib
 import sqlite3
 
+from wolvwealth.domain.errors import DataError
+
 SQL_DIR = pathlib.Path(__file__).resolve().parent / "sql"
 
 #: Columns added after the first release, applied to databases created
@@ -62,10 +64,26 @@ class Database:
         return added
 
     def open(self) -> sqlite3.Connection:
-        """Open a connection with dict rows and foreign keys on. Caller commits and closes."""
-        self.ensure_schema()
-        connection = sqlite3.connect(str(self.path))
-        self.migrate(connection)
+        """Open a connection with dict rows and foreign keys on. Caller commits and closes.
+
+        A file that is not a database (truncated, overwritten, the wrong file
+        moved into place) raises DataError naming it and the way out, rather
+        than an sqlite traceback from whichever request happened to touch it.
+        """
+        try:
+            self.ensure_schema()
+            connection = sqlite3.connect(str(self.path))
+            try:
+                self.migrate(connection)
+                connection.execute("PRAGMA quick_check").fetchone()
+            except BaseException:
+                connection.close()
+                raise
+        except sqlite3.DatabaseError as err:
+            raise DataError(
+                f"The database {self.path} is unreadable ({err}). Move it aside to keep it, then run "
+                "`wolvwealth reset-db` to start a fresh one (that erases every workspace)."
+            ) from err
         connection.row_factory = _dict_factory
         connection.execute("PRAGMA foreign_keys = ON")  # per-connection in sqlite
         return connection

@@ -48,6 +48,8 @@ def test_equal_weight_holds_the_universe_equally_at_each_rebalance(market):
     values = {ticker: count * known.price(ticker) for ticker, count in shares.items()}
     assert set(shares) == set(backtest.seasoned_universe(known)) == set(market.universe)
     assert np.allclose(list(values.values()), 10000 / len(values))
+    with pytest.raises(ValueError, match="unknown strategy"):
+        backtest.target_shares(market, START, 10000, {}, "coin_flip")
 
 
 def test_universe_at_a_date_excludes_names_without_a_year_of_history(market):
@@ -103,5 +105,16 @@ def test_report_compares_strategies_under_the_chosen_estimator_and_warns_twice(m
     assert "  max_sharpe " in text and "  equal_weight " in text and "Sharpe" in text and "turnover" in text
     assert f"    {START}: 100000.00" in text, "--verbose lists the value at each rebalance"
     assert text.count("(survivorship-biased") == 1
-    with pytest.raises(SystemExit):
-        backtest.main(["--estimator", "oracle"], market=market, out=lines.append)
+    quiet = []
+    assert backtest.main(argv[:-1], market=market, out=quiet.append) == 0
+    assert not any(line.startswith(f"    {START}:") for line in quiet), "without --verbose, no per-rebalance lines"
+    for bad in (
+        ["--estimator", "oracle"],
+        ["--start", "last tuesday"],
+        ["--frequencies", "hourly"],
+        ["--start", "2030-01-01"],  # after the data
+        ["--start", "2020-02-03"],  # before any name has a year of history
+    ):
+        with pytest.raises(SystemExit) as exit_info:
+            backtest.main(bad, market=market, out=lines.append)
+        assert exit_info.value.code == 2, bad

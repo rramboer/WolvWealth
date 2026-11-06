@@ -15,8 +15,9 @@ from pypfopt.efficient_frontier import EfficientFrontier
 
 from wolvwealth.domain import constraints as constraint_rules
 from wolvwealth.domain import trades
-from wolvwealth.domain.errors import ValidationError
+from wolvwealth.domain.errors import DataError, ValidationError
 from wolvwealth.domain.market import MarketData
+from wolvwealth.domain.numbers import MAX_AMOUNT, is_number
 
 #: Annual risk-free rate assumed when the request names none: zero, because
 #: the app cannot know where someone's uninvested money sits. A savings
@@ -101,6 +102,11 @@ def parse_request(payload, market: MarketData) -> OptimizationRequest:
     _parse_cash(payload, request)
     _parse_risk_free_rate(payload, request)
     _parse_universe(payload, request, market)
+    if not request.universe:
+        raise DataError(
+            "No ticker in the list has a current price, so there is nothing to optimize over. "
+            "Run `wolvwealth refresh-data --full` to download prices for the whole list."
+        )
     _parse_holdings(payload, request, market)
     _parse_output_flags(payload, request)
     _parse_constraints(payload, request)
@@ -114,10 +120,12 @@ def _parse_cash(payload, request) -> None:
     if "initial_cash" not in payload:
         return
     cash = payload["initial_cash"]
-    if not isinstance(cash, (int, float)) or isinstance(cash, bool):
+    if not is_number(cash):
         raise ValidationError("Invalid initial_cash. initial_cash must be a number.")
     if cash < 0:
         raise ValidationError("Invalid initial_cash. initial_cash must be greater than 0.")
+    if cash > MAX_AMOUNT:
+        raise ValidationError(f"Invalid initial_cash. initial_cash must be at most {MAX_AMOUNT:,.0f}.")
     request.cash = round(cash, 2)
 
 
@@ -125,7 +133,7 @@ def _parse_risk_free_rate(payload, request) -> None:
     if "risk_free_rate" not in payload:
         return
     value = payload["risk_free_rate"]
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not is_number(value):
         raise ValidationError("Invalid risk_free_rate. risk_free_rate must be a number.")
     if not -1 < value < 1:
         # The common slip is writing 4 for 4%; say so rather than reporting a range.
@@ -168,12 +176,14 @@ def _parse_holdings(payload, request, market) -> None:
                 f"No current price for {ticker.upper()} in initial_holdings: delisted, renamed, "
                 "or missed by the last price refresh. Remove it, or run `wolvwealth refresh-data --full`."
             )
-        if not isinstance(shares, (int, float)) or isinstance(shares, bool):
+        if not is_number(shares):
             raise ValidationError(
                 "Invalid initial_holdings. initial_holdings must be a dictionary of strings to numbers."
             )
         if shares < 0:
             raise ValidationError("Invalid initial_holdings. Shares must be positive.")
+        if shares > MAX_AMOUNT:
+            raise ValidationError(f"Invalid initial_holdings. {ticker.upper()} has more than {MAX_AMOUNT:,.0f} shares.")
         cleaned[ticker.upper()] = shares
     request.holdings = cleaned
 
@@ -195,10 +205,11 @@ def _parse_constraints(payload, request) -> None:
         raise ValidationError("Invalid constraints. constraints must be a dictionary.")
     if "max_weight" in constraints:
         value = constraints["max_weight"]
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
+        if not is_number(value):
             raise ValidationError("Invalid max_weight. max_weight must be a number.")
-        if not 0 <= value <= 1:
-            raise ValidationError("Invalid max_weight. max_weight must be greater than 0 and less than 1.")
+        # Stored to two decimals, so anything below 0.005 would become a cap of zero.
+        if not 0.005 <= value <= 1:
+            raise ValidationError("Invalid max_weight. max_weight must be at least 0.01 and at most 1.")
         request.max_weight = round(value, 2)
     if "max_positions" in constraints:
         value = constraints["max_positions"]
@@ -209,7 +220,7 @@ def _parse_constraints(payload, request) -> None:
         request.max_positions = min(value, len(request.universe))
     if "min_universal_weight" in constraints:
         value = constraints["min_universal_weight"]
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
+        if not is_number(value):
             raise ValidationError("Invalid min_universal_weight. min_universal_weight must be a number.")
         if not 0 <= value <= 1:
             raise ValidationError(
@@ -218,7 +229,7 @@ def _parse_constraints(payload, request) -> None:
         request.min_universal_weight = round(value, 2)
     if "cash_reserve" in constraints:
         value = constraints["cash_reserve"]
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
+        if not is_number(value):
             raise ValidationError("Invalid cash_reserve. cash_reserve must be a number.")
         if not 0 <= value < 1:
             raise ValidationError(
@@ -233,7 +244,7 @@ def _parse_max_turnover(constraints, request) -> None:
     if "max_turnover" not in constraints:
         return
     value = constraints["max_turnover"]
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not is_number(value):
         raise ValidationError("Invalid max_turnover. max_turnover must be a number.")
     if not 0 <= value <= 1:
         raise ValidationError("Invalid max_turnover. max_turnover must be between 0 and 1.")

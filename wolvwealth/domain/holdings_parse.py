@@ -28,6 +28,8 @@ import dataclasses
 import io
 import re
 
+from wolvwealth.domain.numbers import is_amount
+
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
 _NUMBER_CLEAN_RE = re.compile(r"[,$\s]")
 _SYMBOL_HEADERS = ("symbol", "ticker", "stock")
@@ -164,6 +166,9 @@ def _parse_row(result: ParsedHoldings, number: int, cells: list, symbol_col: int
         return
     if shares < 0:
         result.errors.append(f"line {number}: {ticker} has negative shares ({shares:g}); shorts are not supported")
+        return
+    if not is_amount(shares):
+        result.errors.append(f"line {number}: {ticker} has an unusable amount ({cells[shares_col].strip()})")
         return
     if ticker in _CASH_TICKERS:
         result.cash = round((result.cash or 0.0) + shares, 2)

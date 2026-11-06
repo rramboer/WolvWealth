@@ -17,12 +17,21 @@ def test_parse_number_handles_brokerage_formatting():
     assert parse_number("(4)") == -4
     assert parse_number("--") is None
     assert parse_number("n/a") is None
+    assert parse_number(None) is None
 
 
 def test_parse_simple_lines_any_separator():
     parsed = parse_holdings("AAA, 10\nBBB\t5.5\nccc 2\nDDD=1\n", universe=UNIVERSE)
     assert parsed.ok
     assert parsed.holdings == {"AAA": 10, "BBB": 5.5, "CCC": 2, "DDD": 1}
+    plain = parse_holdings("AAA 10\n# a note\n\nBBB 5", universe=UNIVERSE)
+    assert plain.ok and plain.holdings == {"AAA": 10, "BBB": 5}, "comments and blank lines are skipped"
+
+
+def test_parse_ignores_rows_without_a_share_count_and_lists_each_unknown_once():
+    parsed = parse_holdings("AAA --\nBBB n/a\nFAKE 1\nFAKE 2\nCCC 3", universe=UNIVERSE)
+    assert parsed.holdings == {"CCC": 3} and parsed.unknown == ["FAKE"]
+    assert parsed.ignored == ["line 1: no share count for AAA", "line 2: no share count for BBB"]
 
 
 def test_parse_csv_with_header_and_extra_columns():
@@ -53,18 +62,21 @@ def test_parse_cash_row_and_duplicate_lots_summed():
     assert parsed.cash == 2500
 
 
-def test_parse_rejects_negative_and_garbage_tickers():
-    parsed = parse_holdings("AAA,-5\n@@@,1\nBBB,2", universe=UNIVERSE)
-    assert parsed.holdings == {"BBB": 2}
-    assert len(parsed.errors) == 2
+def test_parse_rejects_negative_unusable_amounts_and_garbage_tickers():
+    parsed = parse_holdings("AAA,-5\n@@@,1\nBBB,2\nCCC,nan\nDDD,1e400\nCASH,inf", universe=UNIVERSE)
+    assert parsed.holdings == {"BBB": 2} and parsed.cash is None
+    assert len(parsed.errors) == 5
     assert "line 1" in parsed.errors[0] and "negative" in parsed.errors[0]
     assert "line 2" in parsed.errors[1]
+    assert [error[:7] for error in parsed.errors[2:]] == ["line 4:", "line 5:", "line 6:"]
+    assert all("unusable amount" in error for error in parsed.errors[2:])
 
 
 def test_parse_empty_and_header_only_inputs():
     assert parse_holdings("", universe=UNIVERSE).errors == ["No holdings given."]
     assert parse_holdings("   \n\n", universe=UNIVERSE).errors == ["No holdings given."]
     assert "No holdings found" in parse_holdings("Symbol,Quantity\n", universe=UNIVERSE).errors[0]
+    assert "No holdings found" in parse_holdings("# only a comment", universe=UNIVERSE).errors[0]
     half = parse_holdings("Symbol,Price\nAAA,10", universe=UNIVERSE)
     assert "header" in half.errors[0]
 
@@ -132,16 +144,20 @@ def test_import_scoped_to_workspace(workspace_client, repo):
     assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10}
 
 
-def test_import_requires_open_workspace(client):
-    response = client.post("/portfolios/import/", data={"portfolio_id": 1, "text": "AAA 1"})
-    assert "/workspaces/" in response.headers["Location"]
+def test_import_rejects_a_non_utf8_upload_and_reports_ignored_lines(workspace_client, repo):
+    pid = repo.get_portfolio("tester", name="main").id
+    workspace_client.post(
+        "/portfolios/import/",
+        data={"portfolio_id": pid, "file": (io.BytesIO(b"\xff\xfe\x00bad"), "positions.csv")},
+        content_type="multipart/form-data",
+    )
+    assert b"not UTF-8" in workspace_client.get("/workspace/").data
+    workspace_client.post("/portfolios/import/", data={"portfolio_id": pid, "text": "BBB 1\nCCC --"})
+    assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10, "BBB": 1}
+    assert b"Imported 1 holding. Ignored 1 line without a share count." in workspace_client.get("/workspace/").data
 
 
 # --- JSON API ----------------------------------------------------------------
-
-
-def test_api_index_lists_import_endpoint(client):
-    assert "/api/holdings/import/" in client.get("/api/").get_json()
 
 
 def test_api_import_holdings_map(workspace_client, repo):
@@ -190,6 +206,7 @@ def test_api_import_can_set_the_risk_free_rate(workspace_client, repo, services)
     body = workspace_client.post(
         "/api/holdings/import/", json={"portfolio": "main", "holdings": {"BBB": 1}, "risk_free_rate": 0.045}
     ).get_json()
+    assert body["workspace"] == "tester", "no workspace given: the one open in the session"
     assert body["risk_free_rate"] == 0.045
     assert repo.get_portfolio("tester", name="main").risk_free_rate == 0.045
     response = workspace_client.post(
@@ -228,10 +245,22 @@ def test_api_import_validation_errors(workspace_client, repo):
         ({**base, "holdings": []}, "must be an object"),
         ({**base, "holdings": {"AAA": "ten"}}, "must be a number"),
         ({**base, "holdings": {"AAA": -1}}, "zero or more"),
+        ({**base, "holdings": {"AAA": float("nan")}}, "must be a number"),
+        ({**base, "holdings": {"AAA": 1e13}}, "real count"),
+        ({**base, "csv": "AAA,inf"}, "unusable amount"),
         ({**base, "holdings": {"AAA": 1}, "mode": "append"}, "Invalid mode"),
         ({**base, "holdings": {"AAA": 1}, "cash": -5}, "Invalid cash"),
+        ({**base, "holdings": {"AAA": 1}, "cash": float("inf")}, "Invalid cash"),
+        ({**base, "holdings": {"AAA": 1}, "cash": 1e13}, "Invalid cash"),
+        ({**base, "holdings": {"AAA": 1}, "skip_unknown": "yes"}, "skip_unknown must be a boolean"),
+        ({**base, "holdings": {"AAA": 1}, "risk_free_rate": "high"}, "must be a number"),
+        ({**base, "holdings": {}}, "No holdings given"),
+        ({**base, "csv": 5}, "csv must be a string"),
         ({**base, "portfolio": "nope", "holdings": {"AAA": 1}}, "Unknown portfolio"),
+        ({**base, "portfolio": 5, "holdings": {"AAA": 1}}, "portfolio must be a string"),
+        ({**base, "portfolio": "bad/name", "create_portfolio": True, "holdings": {"AAA": 1}}, "Invalid portfolio name"),
         ({"workspace": "ghost", "portfolio": "main", "holdings": {"AAA": 1}}, "Unknown workspace"),
+        ({"workspace": 5, "portfolio": "main", "holdings": {"AAA": 1}}, "Unknown workspace"),
     ]
     for body, needle in cases:
         response = workspace_client.post("/api/holdings/import/", json=body)
@@ -241,15 +270,13 @@ def test_api_import_validation_errors(workspace_client, repo):
         )
         assert needle in message, (body, message)
     assert repo.get_portfolio("tester", name="main").holdings == {"AAA": 10}
+    assert repo.get_portfolio("tester", name="bad/name") is None
 
 
-def test_api_import_session_workspace_fallback(workspace_client, repo):
-    response = workspace_client.post("/api/holdings/import/", json={"portfolio": "main", "holdings": {"BBB": 1}})
-    assert response.status_code == 200 and response.get_json()["workspace"] == "tester"
-
-
-def test_api_import_rejects_bad_json(client):
+def test_api_import_rejects_bad_json_and_a_request_with_no_workspace_anywhere(client):
     response = client.post("/api/holdings/import/", data="{nope", content_type="application/json")
     assert response.status_code == 400
     response = client.post("/api/holdings/import/", json=[1, 2])
     assert response.status_code == 400
+    response = client.post("/api/holdings/import/", json={"portfolio": "main", "holdings": {"AAA": 1}})
+    assert response.status_code == 400 and "No workspace given" in response.get_json()["error"]["message"]
