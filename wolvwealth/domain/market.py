@@ -257,7 +257,7 @@ class MarketData:
             return self.stats.slice(tickers)
         return MarketStats.compute(self.prices[tickers], self.estimator).slice(tickers)
 
-    def expand_universe(self, entries, min_history_days: int = MIN_HISTORY_DAYS) -> list:
+    def expand_universe(self, entries, min_history_days: int = MIN_HISTORY_DAYS, held=()) -> list:
         """Expand aliases and tickers into a deduplicated, tradeable, seasoned ticker list.
 
         Raises ValueError naming the first entry that is neither an alias nor
@@ -268,7 +268,12 @@ class MarketData:
         and have statistics worth optimizing on. A named short-history ticker
         is refused rather than skipped: the entry was deliberate, and the
         reader must learn why it is missing and how to include it anyway.
+        The exception is a short-history ticker in ``held``: it is skipped,
+        because the optimizer keeps such a position as it is rather than
+        either sizing it on noise or selling it, and the browser, CLI and
+        MCP flows name every held ticker so keeping it is possible.
         """
+        held = set(held)
         expanded = []
         for entry in entries:
             if not isinstance(entry, str):
@@ -278,6 +283,8 @@ class MarketData:
             elif entry.upper() in self.latest_prices:
                 ticker = entry.upper()
                 if self.history_days[ticker] < min_history_days:
+                    if ticker in held:
+                        continue
                     raise ValueError(self.describe_short_history(ticker, min_history_days))
                 expanded.append(ticker)
             elif entry.upper() in self.tickers:

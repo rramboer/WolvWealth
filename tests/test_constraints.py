@@ -101,6 +101,9 @@ def assert_honors(result, market, spec: dict) -> None:
         assert min(weights.values()) >= spec["min_universal_weight"] * 100 - SLACK
     if "max_turnover" in spec:
         assert result["metrics"]["turnover"] <= spec["max_turnover"] + 1e-3
+    for ticker in result.get("unoptimized", {}).get("positions", {}):
+        # A position kept as held is in the plan at its held size and is never traded.
+        assert ticker in weights and not any(trade["ticker"] == ticker for trade in result["trades"])
 
 
 # --- honored: the returned plan obeys what was asked ------------------------
@@ -389,7 +392,12 @@ def test_browser_cash_reserve_reaches_the_optimizer_and_the_results_page(workspa
 def test_every_rule_returns_a_usable_conflict_or_none(wide):
     """A structural check on the registry, so a new rule cannot return prose by mistake."""
     request = optimizer.OptimizationRequest(
-        universe=list(wide.universe)[:4], max_weight=0.1, min_universal_weight=0.5, max_positions=2
+        universe=list(wide.universe)[:4],
+        max_weight=0.1,
+        min_universal_weight=0.5,
+        max_positions=1,
+        unoptimized={"T19": 0.3},
+        unoptimized_days={"T19": 20},
     )
     for rule in constraints.RULES:
         found = rule(request)

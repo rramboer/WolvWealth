@@ -91,7 +91,7 @@ And the three things to understand before acting on a result:
 - **Downloaded prices are checked, and exclusions are reported.** A ticker whose downloaded history moves implausibly is quarantined (excluded from allocations), and `market_status` lists it under `quarantined` with the reason. In a scheduled or unattended run, check that field before acting on trades.
 - **Prices are a local cache, not live quotes.** Every result carries `as_of`. When it is stale, `market_status` says so and the fix is `wolvwealth refresh-data` in a terminal; the running server picks up the new prices without a restart.
 - **By default `optimize` may sell any holding.** `constraints.max_turnover` caps how much of the portfolio's value is sold.
-- **Recent listings are left out.** A ticker with fewer than a year of prices (`min_history_days`, default 252) is skipped by universe aliases and refused by name, because a few weeks of returns extrapolated to a year would dominate the allocation. `market_status` lists them under `short_history`; pass a lower `min_history_days` to `optimize` only knowingly.
+- **Recent listings are left out.** A ticker with fewer than a year of prices (`min_history_days`, default 252) is skipped by universe aliases and refused by name, because a few weeks of returns extrapolated to a year would dominate the allocation. A held one is kept at its current size and reported under `unoptimized` in the result, never sold on the optimizer's say-so. `market_status` lists such tickers under `short_history`; pass a lower `min_history_days` to `optimize` only knowingly.
 - **Nothing is executed.** WolvWealth produces target allocations and trade lists. Placing orders is the user's decision, or a separate broker tool's job.
 
 ---

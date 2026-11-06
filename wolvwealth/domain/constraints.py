@@ -63,37 +63,53 @@ def _position_cap(request) -> int:
     universe_size = len(request.universe)
     if request.max_positions is None:
         return universe_size
-    return min(request.max_positions, universe_size)
+    # Positions kept as they are count toward max_positions but are not the
+    # solver's to choose, so they come off its allowance.
+    return max(0, min(request.solver_positions(), universe_size))
+
+
+def _kept(request) -> float:
+    """Return the share of the portfolio held in positions kept as they are."""
+    return sum(request.unoptimized.values())
 
 
 def _investable(request) -> float:
     """Return the share of the portfolio the weights must be able to cover.
 
-    One, less any ``cash_reserve``: money deliberately kept in cash is money
-    the weight constraints do not have to find room for, so a reserve makes
-    otherwise-impossible combinations feasible (8 holdings at 10% cannot
-    fill a portfolio, but they exactly fill one that keeps 20% in cash).
+    One, less any ``cash_reserve`` and less the positions kept as they are:
+    money deliberately kept in cash, or in a holding the optimizer leaves
+    alone, is money the weight constraints do not have to find room for, so
+    a reserve makes otherwise-impossible combinations feasible (8 holdings
+    at 10% cannot fill a portfolio, but they exactly fill one that keeps
+    20% in cash).
     """
-    return 1.0 - request.cash_reserve
+    return 1.0 - request.cash_reserve - _kept(request)
 
 
 def _describe_investable(request) -> str:
     """How the reason sentences name the amount that must be allocated."""
-    if request.cash_reserve <= 0:
+    taken = []
+    if request.cash_reserve > 0:
+        taken.append(f"cash_reserve {request.cash_reserve}")
+    if request.unoptimized:
+        taken.append(f"the {_kept(request):.0%} kept in {', '.join(sorted(request.unoptimized))}")
+    if not taken:
         return "the portfolio"
-    return f"the {_investable(request):.0%} to be invested after cash_reserve {request.cash_reserve}"
+    return f"the {_investable(request):.0%} to be invested after {' and '.join(taken)}"
 
 
 def _max_weight_cannot_fill_the_portfolio(request):
     """max_weight x the number of holdings allowed must reach everything to be invested."""
     cap, max_weight, investable = _position_cap(request), request.max_weight, _investable(request)
     reachable = cap * max_weight
-    if reachable >= investable - TOLERANCE:
-        return None
+    if reachable >= investable - TOLERANCE or cap == 0:
+        return None  # cap == 0 is _kept_positions_use_up_max_positions's to report
     # max_weight is stored to two decimals, so the suggestion must round up to
     # two decimals as well or following it would land back here.
     enough_weight = math.ceil(100 * investable / cap) / 100
-    enough_positions = math.ceil(investable / max_weight - TOLERANCE)
+    # max_positions counts the kept positions too, so the suggestion must include them.
+    kept_count = len(request.unoptimized)
+    enough_positions = math.ceil(investable / max_weight - TOLERANCE) + kept_count
     # The third way out: a reserve big enough that the weights no longer have
     # to cover the gap. Suggested only when the field is already in play --
     # otherwise the remedy would introduce a concept the request never used.
@@ -113,10 +129,13 @@ def _max_weight_cannot_fill_the_portfolio(request):
                 f"{enough_positions} tickers{more_reserve}."
             ),
         )
+    holdings = f"max_positions {cap} holdings"
+    if kept_count:
+        holdings = f"the {cap} holdings max_positions {request.max_positions} leaves after the {kept_count} kept"
     return Conflict(
         fields=("constraints.max_positions", "constraints.max_weight"),
         reason=(
-            f"max_positions {cap} holdings at max_weight {max_weight} each allocates at most "
+            f"{holdings} at max_weight {max_weight} each allocates at most "
             f"{reachable:.0%} of the portfolio, leaving {investable - reachable:.0%} of "
             f"{_describe_investable(request)} with nowhere to go."
         ),
@@ -192,9 +211,53 @@ def _min_weight_above_max_weight(request):
     )
 
 
+def _kept_position_above_max_weight(request):
+    """Refuse a kept position above max_weight: it cannot be sold down, so it must already fit under the cap."""
+    over = {ticker: weight for ticker, weight in request.unoptimized.items() if weight > request.max_weight + TOLERANCE}
+    if not over:
+        return None
+    names = ", ".join(sorted(over))
+    largest = max(over.values())
+    fewest = min(request.unoptimized_days[ticker] for ticker in over)
+    return Conflict(
+        fields=("constraints.max_weight", "initial_holdings", "min_history_days"),
+        reason=(
+            f"{names} is {largest:.1%} of the portfolio and is kept as held (fewer than {request.min_history_days} "
+            f"days of price history), which is above max_weight {request.max_weight}."
+        ),
+        remedy=(
+            f"Raise max_weight to at least {math.ceil(100 * largest) / 100}, or pass min_history_days of {fewest} "
+            f"or less so {names} can be optimized and sold down."
+        ),
+    )
+
+
+def _kept_positions_use_up_max_positions(request):
+    """Positions kept as they are count toward max_positions; something must be left for the money to optimize."""
+    if request.max_positions is None or _investable(request) <= TOLERANCE or request.solver_positions() >= 1:
+        return None
+    kept = len(request.unoptimized)
+    names = ", ".join(sorted(request.unoptimized))
+    fewest = min(request.unoptimized_days.values())
+    return Conflict(
+        fields=("constraints.max_positions", "initial_holdings", "min_history_days"),
+        reason=(
+            f"max_positions {request.max_positions} is used up by the {kept} position(s) kept as held ({names}, "
+            f"fewer than {request.min_history_days} days of price history), leaving no position for "
+            f"{_describe_investable(request)}."
+        ),
+        remedy=(
+            f"Raise max_positions to at least {kept + 1}, or pass min_history_days of {fewest} or less so "
+            f"{names} can be optimized."
+        ),
+    )
+
+
 #: Checked in order; every rule that fires is reported. A rule takes the
 #: parsed request and returns a Conflict or None. Add new interactions here.
 RULES = (
+    _kept_position_above_max_weight,
+    _kept_positions_use_up_max_positions,
     _max_weight_cannot_fill_the_portfolio,
     _min_weight_overfills_the_portfolio,
     _min_weight_forces_every_ticker_to_be_held,

@@ -236,6 +236,11 @@ def render_report(result: dict, universe: list, portfolio=None) -> str:
     cash = result["cash"]
     if cash["value"] > 0:
         lines.append(f"  {'CASH':<8}{cash['percent_weight']:>7.2f}%{'':>12}{_money(cash['value']):>14}")
+    if "unoptimized" in result:
+        kept = result["unoptimized"]["positions"]
+        names = ", ".join(f"{ticker} ({row['history_days']} days of history)" for ticker, row in sorted(kept.items()))
+        lines += ["", f"Kept as held, not optimized: {names}"]
+        lines.append(textwrap.fill(result["unoptimized"]["note"], 110, initial_indent="  ", subsequent_indent="  "))
     lines.append("")
     lines.append("Trades to get there, sells first" if result["trades"] else "No trades: already at the target.")
     for move in result["trades"]:

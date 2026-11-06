@@ -7,10 +7,13 @@ there. A minimum history (a trading year by default) keeps such names out
 of every universe unless a request lowers it on purpose.
 """
 
+import pathlib
+
 import numpy as np
 import pytest
 
 from conftest import synthetic_market
+from wolvwealth import __main__ as cli
 from wolvwealth.domain import optimizer
 from wolvwealth.domain.errors import DataError, ValidationError
 from wolvwealth.domain.market import MIN_HISTORY_DAYS, MarketData
@@ -81,12 +84,112 @@ def test_lowering_the_minimum_admits_it_by_name_and_by_alias(with_young):
         )
 
 
-def test_a_young_ticker_may_still_be_held_and_valued(with_young):
-    """Holding it is a fact, not a choice; it is valued, and sold as a name outside the universe."""
+def test_a_young_holding_is_kept_as_it_is_and_the_rest_is_optimized_around_it(with_young):
+    """Holding it is a fact, not a choice; the optimizer has nothing to size it by, so it leaves it alone."""
+    result = optimizer.optimize({"initial_cash": 10_000, "initial_holdings": {"DDD": 10}}, with_young)
+    total = 10_000 + 10 * with_young.price("DDD")
+    kept = result["optimized_portfolio"]["DDD"]
+    assert kept["shares"] == 10 and kept["value"] == pytest.approx(10 * with_young.price("DDD"), abs=0.01)
+    assert kept["percent_weight"] == pytest.approx(100 * 10 * with_young.price("DDD") / total, abs=0.01)
+    assert sum(row["percent_weight"] for row in result["optimized_portfolio"].values()) == pytest.approx(100, abs=0.05)
+    assert not any(trade["ticker"] == "DDD" for trade in result["trades"]), "a kept position produces no trade"
+    assert result["unoptimized"]["positions"] == {
+        "DDD": {"history_days": YOUNG_DAYS, "percent_weight": kept["percent_weight"]}
+    }
+    note = result["unoptimized"]["note"]
+    assert "Kept at their current size" in note and f"min_history_days of {YOUNG_DAYS} or less" in note
+    assert (
+        result["metrics"]["num_assets"] == 4 and result["metrics"]["expected_annual_return"] < 1
+    ), "DDD's noise is not in the metrics"
+    assert "unoptimized" not in optimizer.optimize({"initial_cash": 10_000}, with_young)
+
+
+def test_the_users_reproducer_a_young_holding_with_cash_and_no_turnover_sells_nothing(with_young):
+    """Holding a young stock plus cash at max_turnover 0 used to refuse (or, before that, sell the stock)."""
+    body = {"initial_cash": 10_000, "initial_holdings": {"DDD": 10}, "constraints": {"max_turnover": 0}}
+    result = optimizer.optimize(body, with_young)
+    assert all(trade["action"] == "buy" for trade in result["trades"]) and result["metrics"]["turnover"] == 0
+    assert result["optimized_portfolio"]["DDD"]["shares"] == 10
+    assert sum(trade["value"] for trade in result["trades"]) == pytest.approx(10_000, rel=1e-3), "the cash is deployed"
+
+
+def test_naming_a_held_young_ticker_in_the_universe_keeps_it_rather_than_refusing(with_young):
+    """The browser, CLI and MCP flows add held tickers to the universe; that must not make them fail."""
+    body = {"initial_cash": 1000, "initial_holdings": {"DDD": 1}, "universe": ["AAA", "DDD"]}
+    request = optimizer.parse_request(body, with_young)
+    assert request.universe == ["AAA"] and list(request.unoptimized) == ["DDD"]
+    assert with_young.expand_universe(["DDD"], held=["DDD"]) == []
+
+
+def test_a_portfolio_that_is_only_a_young_holding_comes_back_unchanged(with_young):
     result = optimizer.optimize({"initial_cash": 0, "initial_holdings": {"DDD": 10}}, with_young)
-    assert result["metrics"]["portfolio_value"] == pytest.approx(10 * with_young.price("DDD"), abs=0.01)
-    assert "DDD" not in result["optimized_portfolio"]
-    assert any(trade["ticker"] == "DDD" and trade["action"] == "sell" for trade in result["trades"])
+    assert result["optimized_portfolio"] == {
+        "DDD": {"shares": 10, "value": pytest.approx(10 * with_young.price("DDD"), abs=0.01), "percent_weight": 100.0}
+    }
+    assert result["trades"] == [] and result["metrics"]["num_assets"] == 1
+
+
+def test_lowering_the_minimum_makes_a_held_young_ticker_ordinary_again(with_young):
+    """With the override it is optimized when the universe names it and sold when it does not."""
+    held = {"initial_cash": 1000, "initial_holdings": {"DDD": 1}, "min_history_days": YOUNG_DAYS}
+    optimized = optimizer.optimize({**held, "universe": ["AAA", "DDD"]}, with_young)
+    assert "unoptimized" not in optimized and optimized["optimized_portfolio"]["DDD"]["percent_weight"] > 50
+    sold = optimizer.optimize({**held, "universe": ["AAA"]}, with_young)
+    assert "DDD" not in sold["optimized_portfolio"] and sold["trades"][0] == {
+        **sold["trades"][0],
+        "ticker": "DDD",
+        "action": "sell",
+    }
+
+
+@pytest.mark.parametrize(
+    "constraints, fields, fragment",
+    [
+        (
+            {"max_weight": 0.5},
+            ["constraints.max_weight", "initial_holdings", "min_history_days"],
+            "above max_weight 0.5",
+        ),
+        (
+            {"max_positions": 1},
+            ["constraints.max_positions", "initial_holdings", "min_history_days"],
+            "used up by the 1",
+        ),
+    ],
+)
+def test_a_kept_position_that_breaks_a_constraint_is_refused_with_both_ways_out(
+    with_young, constraints, fields, fragment
+):
+    """It cannot be sold down or dropped, so the constraint must give or the minimum must."""
+    body = {"initial_cash": 1000, "initial_holdings": {"DDD": 10}, "constraints": constraints}  # DDD is ~55%
+    with pytest.raises(ValidationError) as excinfo:
+        optimizer.optimize(body, with_young)
+    assert fragment in excinfo.value.message and f"min_history_days of {YOUNG_DAYS} or less" in excinfo.value.message
+    assert excinfo.value.details["conflicts"][0]["fields"] == fields
+    assert "unoptimized" not in optimizer.optimize({**body, "min_history_days": YOUNG_DAYS}, with_young)
+
+
+def test_constraints_are_honored_around_a_kept_position(with_young):
+    body = {
+        "initial_cash": 10_000,
+        "initial_holdings": {"DDD": 10},  # ~10.8%
+        "constraints": {"max_positions": 3, "max_weight": 0.5, "cash_reserve": 0.1},
+    }
+    result = optimizer.optimize(body, with_young)
+    weights = {ticker: row["percent_weight"] for ticker, row in result["optimized_portfolio"].items()}
+    assert len(weights) == 3 and "DDD" in weights, "the kept position counts toward max_positions"
+    assert max(weights.values()) <= 50.05
+    assert sum(weights.values()) == pytest.approx(90, abs=0.1) and result["cash"]["percent_weight"] == 10
+
+
+def test_a_kept_position_s_weight_is_a_memo_key(with_young):
+    """Different kept weights mean different room for the solver, so they cannot share a solve."""
+    optimizer.optimize({"initial_cash": 10_000, "initial_holdings": {"DDD": 10}}, with_young)
+    assert len(with_young.solutions) == 2
+    optimizer.optimize({"initial_cash": 10_000, "initial_holdings": {"DDD": 10}}, with_young)
+    assert len(with_young.solutions) == 2
+    optimizer.optimize({"initial_cash": 10_000, "initial_holdings": {"DDD": 20}}, with_young)
+    assert len(with_young.solutions) == 4
 
 
 @pytest.mark.parametrize(
@@ -159,15 +262,28 @@ def test_the_browser_form_passes_the_override_through(workspace_client, services
     assert b"whole number of trading days" in page.data
 
 
-def test_the_held_flows_refuse_a_young_holding_rather_than_sell_it_quietly(with_young, repo):
-    """The CLI and MCP add held names to the universe; a young one cannot be added, and the message says why."""
-    payload = {"initial_cash": 0, "initial_holdings": {"DDD": 10}}
-    with pytest.raises(ValidationError, match="DDD has only 20 day"):
-        optimize.optimize_keeping_held(payload, with_young, repo)
-    result, universe, _ = optimize.optimize_keeping_held(dict(payload, min_history_days=YOUNG_DAYS), with_young, repo)
-    assert universe == ["top500", "DDD"] and "DDD" in result["optimized_portfolio"]
+def test_the_held_flows_keep_a_young_holding_and_say_so(with_young, repo, capsys):
+    """The CLI and MCP add held names to the universe; a young one is kept, and the report says why."""
+    payload = {"initial_cash": 1000, "initial_holdings": {"DDD": 10}}
+    result, universe, _ = optimize.optimize_keeping_held(payload, with_young, repo)
+    assert universe == ["top500", "DDD"] and result["optimized_portfolio"]["DDD"]["shares"] == 10
+    report = cli.render_report(result, universe)
+    assert "Kept as held, not optimized: DDD (20 days of history)" in report and "Kept at their current size" in report
     assert optimize.payload_for_portfolio(_Stub(), "top20", min_history_days=30)["min_history_days"] == 30
     assert "min_history_days" not in optimize.payload_for_portfolio(_Stub(), "top20")
+
+
+def test_the_browser_shows_a_kept_young_holding(workspace_client, services, with_young, repo):
+    services.market.set_data(with_young)
+    pid = repo.get_portfolio("tester", name="main").id
+    workspace_client.post("/portfolios/holdings/", data={"portfolio_id": pid, "ticker": "DDD", "shares": "3"})
+    page = workspace_client.post("/optimizer/run/", data={"portfolio_id": pid, "universe": "top20"}).data.decode()
+    assert "Kept as held, not optimized" in page and "DDD (20" in page and "days of history" in page
+
+
+def test_the_api_documents_the_unoptimized_block():
+    text = (pathlib.Path(__file__).resolve().parent.parent / "API.md").read_text(encoding="utf-8")
+    assert "`unoptimized`" in text and "`history_days`" in text
 
 
 class _Stub:

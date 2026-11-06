@@ -85,6 +85,14 @@
                 The optimizer reallocates your full portfolio value (cash + holdings). Held tickers missing from
                 this table would be sold entirely under this target.
             </p>
+            {% if result.unoptimized %}
+            <p class="text-xs mt-3 text-yellow">
+                Kept as held, not optimized:
+                {% for ticker, row in result.unoptimized.positions | dictsort %}{{ ticker }} ({{ row.history_days }}
+                days of history, {{ row.percent_weight }}%){{ ", " if not loop.last }}{% endfor %}.
+                {{ result.unoptimized.note }}
+            </p>
+            {% endif %}
         </div>
 
         {% if result.trades %}

@@ -88,7 +88,7 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | `initial_holdings` | object | Ticker → share count. Valued at the `as_of` close and pooled with cash | `{}` |
 | `workspace` + `portfolio` | string | Load cash and holdings from a stored portfolio instead. `workspace` falls back to the browser session. Explicit `initial_cash`/`initial_holdings` still win | — |
 | `universe` | array | Tickers and/or aliases to allocate across. Aliases skip tickers with fewer than `min_history_days` of prices; naming one is refused with the days it has and the override that would admit it | `top500` |
-| `min_history_days` | integer ≥ 2 | Trading days of price history a ticker needs to be in the universe. The estimators annualize whatever history exists, so a company listed three weeks ago that rose 15% shows an expected return in the thousands of percent at almost no measured risk, and the solver puts the maximum weight there. Lower this only knowingly; `GET /api/market/` lists the excluded names under `short_history` | `252` (one trading year) |
+| `min_history_days` | integer ≥ 2 | Trading days of price history a ticker needs to be in the universe. The estimators annualize whatever history exists, so a company listed three weeks ago that rose 15% shows an expected return in the thousands of percent at almost no measured risk, and the solver puts the maximum weight there. A **held** ticker under the minimum is neither sized nor sold: it is kept at its current size, the rest is optimized around it, and the response lists it under `unoptimized`. Lower this only knowingly; `GET /api/market/` lists the excluded names under `short_history` | `252` (one trading year) |
 | `constraints.max_weight` | number 0–1 | Per-asset cap | `1` |
 | `constraints.max_positions` | integer ≥ 1 | Largest number of holdings. Applied by solving, keeping the N largest names, and re-solving over those under the same constraints | unlimited |
 | `constraints.min_universal_weight` | number 0–1 | Floor applied to **every** asset in the universe | `0` |
@@ -159,7 +159,8 @@ sales no limit can prevent, and the request is rejected with a message naming th
 limit is below what they require: a held ticker that is not in `universe` (it cannot be
 kept), and a position already above `max_weight`. A `max_positions` cap that would have to
 drop held positions is checked against the limit the same way, so the returned `turnover`
-never exceeds `max_turnover`.
+never exceeds `max_turnover`. A held ticker under `min_history_days` is the exception to the
+first rule: it is kept as held whether or not `universe` names it, so it forces no sale.
 
 ```json
 {
@@ -238,8 +239,18 @@ order frees cash before spending it. A position that does not change produces no
 does a difference too small to show at 4 decimals. Share counts are fractional; round them if
 your broker requires whole shares, accepting the small drift that introduces.
 
+**`unoptimized`** — present only when some held ticker has fewer than `min_history_days` of
+prices. Such a position is kept at exactly its current size (it appears in
+`optimized_portfolio` with the shares held and produces no trade), the rest of the money is
+optimized around it, and it is left out of `metrics`, since the statistics that would describe
+it are the ones too thin to trust. `positions` maps each such ticker to its `history_days` and
+`percent_weight`; `note` says so in words and names the `min_history_days` that would admit it.
+A kept position above `max_weight`, or a `max_positions` that the kept positions use up, is
+refused as an infeasible constraint set with those remedies. To sell such a position instead,
+lower `min_history_days` to its count and leave it out of `universe`.
+
 **`metrics`** — figures describing the portfolio actually returned, including any
-`max_positions` re-solve:
+`max_positions` re-solve, and excluding any `unoptimized` positions:
 
 | Field | Meaning |
 |---|---|
@@ -247,7 +258,7 @@ your broker requires whole shares, accepting the small drift that introduces.
 | `expected_annual_return` | Annualized expected return as a fraction (`0.124` is 12.4%): the exponentially weighted mean of daily returns (500-day span, so the last two years weigh most), annualized |
 | `annual_volatility` | Annualized standard deviation, same units |
 | `sharpe_ratio` | `(expected_annual_return − risk_free_rate.value) / annual_volatility`, the same rate the solver maximized against. `null` when volatility is zero (degenerate history) rather than dividing by zero |
-| `num_assets` | Positions in the returned portfolio |
+| `num_assets` | Positions in the returned portfolio, `unoptimized` ones included |
 | `turnover` | Fraction of `portfolio_value` the `trades` sell (`0.3` means 30% of what you hold changes hands; buys funded by cash do not count). `0` when there are no holdings |
 
 ### Worth knowing before trading on this

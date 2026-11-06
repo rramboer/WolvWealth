@@ -59,7 +59,8 @@ OPTIMIZE_SCHEMA = {
             "description": "Trading days of price history a ticker needs to be in the universe. Default 252 (one "
             "year). Lower it only knowingly: a newly listed name's few weeks of returns, extrapolated to a year, "
             "look like an enormous expected return at almost no risk, and the optimizer puts the maximum weight "
-            "there. market_status lists the excluded names under short_history.",
+            "there. A held ticker under the minimum is kept at its current size and reported under "
+            "`unoptimized` in the result. market_status lists the excluded names under short_history.",
         },
         "constraints": {
             "type": "object",

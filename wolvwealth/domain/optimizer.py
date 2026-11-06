@@ -74,9 +74,19 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     max_turnover: float = None  # fraction of portfolio value that may be sold; None = no limit
     cash_reserve: float = 0.0  # fraction of portfolio value left in cash, uninvested
     #: Days of prices a ticker needs to be in the universe. Shapes the universe
-    #: and nothing else, so it is deliberately absent from the memo keys: two
-    #: requests that resolve to the same ticker list share a solve.
+    #: and the kept positions, both of which are in the memo keys, so it is
+    #: deliberately absent from them itself: two requests that resolve to the
+    #: same ticker list and kept positions share a solve.
     min_history_days: int = MIN_HISTORY_DAYS
+    #: Held tickers with fewer than ``min_history_days`` of prices, each at
+    #: its current weight (fraction of the total portfolio). The optimizer
+    #: has no statistics it can trust for them, so it neither sizes nor
+    #: sells them: they are kept exactly as held and the rest of the money
+    #: is optimized around them, as a cash reserve is. A solver input, since
+    #: they shrink what the solver may deploy, so they are in the memo keys.
+    unoptimized: dict = dataclasses.field(default_factory=dict)
+    #: Ticker -> days of history, for the ones in ``unoptimized`` (for the messages).
+    unoptimized_days: dict = dataclasses.field(default_factory=dict)
 
     def invested_fraction(self) -> float:
         """Return the share of the portfolio the optimizer is allowed to deploy.
@@ -85,9 +95,16 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
         portfolio, cash reserve included -- "no stock above 10%" should not
         quietly mean 10% of the invested part. The solver works on weights
         that sum to one, so its bounds are divided by this and its answer is
-        multiplied back.
+        multiplied back. Positions kept as they are take their share off the
+        top in the same way as the reserve.
         """
-        return 1.0 - self.cash_reserve
+        return 1.0 - self.cash_reserve - sum(self.unoptimized.values())
+
+    def solver_positions(self):
+        """Return how many positions the solver may choose: ``max_positions`` less the ones kept as they are."""
+        if self.max_positions is None:
+            return None
+        return self.max_positions - len(self.unoptimized)
 
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE
     risk_free_rate_source: str = "default"
@@ -108,10 +125,13 @@ def parse_request(payload, market: MarketData) -> OptimizationRequest:
     request.universe = market.top(DEFAULT_UNIVERSE_SIZE, request.min_history_days)
     _parse_cash(payload, request)
     _parse_risk_free_rate(payload, request)
+    # Holdings before the universe: a held ticker under the minimum history
+    # is kept as it is, so naming it in the universe must not be refused.
+    _parse_holdings(payload, request, market)
     _parse_universe(payload, request, market)
     if not request.universe:
         _raise_empty_universe(request, market, explicit="min_history_days" in payload)
-    _parse_holdings(payload, request, market)
+    _set_unoptimized(request, market)
     _parse_output_flags(payload, request)
     _parse_constraints(payload, request)
     # Field-by-field validation above; how the fields interact is one concern
@@ -190,7 +210,7 @@ def _parse_universe(payload, request, market) -> None:
     if not entries:  # empty means "use the default"
         return
     try:
-        request.universe = market.expand_universe(entries, request.min_history_days)
+        request.universe = market.expand_universe(entries, request.min_history_days, held=request.holdings)
     except ValueError as err:
         raise ValidationError(f"Invalid universe. {err}" if "list of strings" in str(err) else str(err)) from err
 
@@ -227,6 +247,28 @@ def _parse_holdings(payload, request, market) -> None:
     request.holdings = cleaned
 
 
+def _set_unoptimized(request, market) -> None:
+    """Record the held tickers the minimum history excludes, at their current weights.
+
+    Selling them would act on the same absence of statistics that keeps
+    them out of the universe; the one thing the optimizer knows about such
+    a position is its size today, so that is what it keeps. Lowering
+    ``min_history_days`` to their count turns them back into ordinary
+    tickers: optimized if the universe names them, sold if it does not.
+    """
+    total = request.cash + market.value(request.holdings)
+    if total == 0:
+        return
+    for ticker, shares in request.holdings.items():
+        days = market.history_days[ticker]
+        if shares > 0 and days < request.min_history_days:
+            request.unoptimized[ticker] = shares * market.price(ticker) / total
+            request.unoptimized_days[ticker] = days
+    for ticker in request.unoptimized:
+        if ticker in request.universe:
+            request.universe.remove(ticker)
+
+
 def _parse_output_flags(payload, request) -> None:
     for field in ("exclude_metrics", "exclude_trades"):
         if field not in payload:
@@ -256,7 +298,7 @@ def _parse_constraints(payload, request) -> None:
             raise ValidationError("Invalid max_positions. max_positions must be an integer.")
         if value < 1:
             raise ValidationError("Invalid max_positions. max_positions must be greater than 0.")
-        request.max_positions = min(value, len(request.universe))
+        request.max_positions = min(value, len(request.universe) + len(request.unoptimized))
     if "min_universal_weight" in constraints:
         value = constraints["min_universal_weight"]
         if not is_number(value):
@@ -518,7 +560,7 @@ def _apply_position_cap(request: OptimizationRequest, market: MarketData, curren
     the rescaled weights remain available to the restricted problem.
     """
     kept = [ticker for ticker, _ in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)]
-    kept = kept[: request.max_positions]
+    kept = kept[: request.solver_positions()]
     _check_positions_turnover_feasible(request, current, kept)
     mu, cov_matrix = market.stats_for(kept)
     limit = None if request.max_turnover is None else (request.max_turnover, current)
@@ -553,6 +595,7 @@ def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current
         turnover_inputs,
         request.max_positions,
         request.cash_reserve,
+        tuple(sorted(request.unoptimized.items())),
     )
 
     def compute():
@@ -560,7 +603,7 @@ def max_sharpe_weights(request: OptimizationRequest, market: MarketData, current
         limit = None if turnover_inputs is None else (request.max_turnover, current)
         weights = _run_solver(mu, cov_matrix, request, limit)
         held = [ticker for ticker, weight in weights.items() if weight != 0]
-        if request.max_positions is None or len(held) <= request.max_positions:
+        if request.max_positions is None or len(held) <= request.solver_positions():
             return weights
         return _apply_position_cap(request, market, current, weights)
 
@@ -593,10 +636,13 @@ def _return_and_volatility(request: OptimizationRequest, market: MarketData, wei
         _solver_inputs(request, current),
         request.max_positions,
         request.cash_reserve,
+        tuple(sorted(request.unoptimized.items())),
     )
 
     def compute():
         mu, cov_matrix = market.stats_for(request.universe)
+        # Reindexing to the universe drops the positions kept as they are:
+        # the metrics describe what was optimized, and the response says so.
         vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
         # The cash reserve earns the risk-free rate (that is what the rate
         # means here) and has no variance, so it adds to the return and
@@ -615,11 +661,18 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     if total_investment == 0:
         raise ValidationError("Invalid input. Total investment value cannot be 0.")
     current = current_weights(request, market)
-    _check_turnover_feasible(request, current)
+    # The kept positions are not the solver's to sell, so they are not in
+    # the held weights it and the turnover rules see; they rejoin below.
+    optimizable = {ticker: weight for ticker, weight in current.items() if ticker not in request.unoptimized}
+    _check_turnover_feasible(request, optimizable)
 
-    weights = max_sharpe_weights(request, market, current)
-    weights = {asset: weight for asset, weight in weights.items() if weight != 0}
-    weights = _keep_untouched_holdings(weights, current)
+    if request.invested_fraction() > WEIGHT_THRESHOLD:
+        weights = max_sharpe_weights(request, market, optimizable)
+        weights = {asset: weight for asset, weight in weights.items() if weight != 0}
+        weights = _keep_untouched_holdings(weights, optimizable)
+    else:
+        weights = {}  # everything is kept or reserved; nothing is left to solve for
+    weights.update(request.unoptimized)
 
     portfolio = {
         asset: {
@@ -629,6 +682,10 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
         }
         for asset, weight in weights.items()
     }
+    for asset in request.unoptimized:
+        # Exactly the shares held, not a weight converted back, so the trade
+        # list cannot carry a rounding sliver for a position nobody touched.
+        portfolio[asset]["shares"] = request.holdings[asset]
     # as_of is the date of the prices every number here was computed from.
     # An agent about to place real orders needs it to decide whether the plan
     # is fresh enough to act on; without it the response looks like a quote.
@@ -644,6 +701,8 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
             "percent_weight": round(request.cash_reserve * 100, 2),
         },
     }
+    if request.unoptimized:
+        result["unoptimized"] = _describe_unoptimized(request)
     if not request.exclude_trades:
         result["trades"] = trades.plan(
             request.holdings,
@@ -655,7 +714,7 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
         # cap is the restricted re-solve rather than the first pass
         # (ef.portfolio_performance() would describe the latter). Computed
         # here so `exclude_metrics` requests skip it entirely.
-        expected_return, volatility = _return_and_volatility(request, market, weights, current)
+        expected_return, volatility = _return_and_volatility(request, market, weights, optimizable)
         # Degenerate history (too few rows, flat prices) gives zero volatility; report
         # the Sharpe ratio as null rather than dividing by zero.
         sharpe = round((expected_return - request.risk_free_rate) / volatility, 2) if volatility > 0 else None
@@ -671,6 +730,24 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
             "turnover": round(turnover(current, weights), 4),
         }
     return result
+
+
+def _describe_unoptimized(request: OptimizationRequest) -> dict:
+    """Describe the positions kept as they are, and how to have them optimized instead, for the response."""
+    kept = sum(request.unoptimized.values())
+    fewest = min(request.unoptimized_days.values())
+    return {
+        "positions": {
+            ticker: {"history_days": request.unoptimized_days[ticker], "percent_weight": round(weight * 100, 2)}
+            for ticker, weight in request.unoptimized.items()
+        },
+        "note": (
+            f"Kept at their current size, {kept:.1%} of the portfolio, and left out of the metrics: fewer than "
+            f"{request.min_history_days} days of price history is too little to estimate their return and risk, "
+            f"so the optimizer neither sized nor sold them. Pass min_history_days of {fewest} or less to have them "
+            "optimized like any other ticker (which may sell them down or out)."
+        ),
+    }
 
 
 def _describe_rate(request: OptimizationRequest) -> dict:
