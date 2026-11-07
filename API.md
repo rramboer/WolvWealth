@@ -221,9 +221,11 @@ An agent should treat `"default"` as a prompt to ask its user where the cash sit
 be sold off entirely; the `trades` block already says so.
 
 **`cash`** — the uninvested part of the plan, always present: `value` in USD and
-`percent_weight` 0–100, both zero unless `constraints.cash_reserve` was set. The ticker
-weights plus this line account for the whole `portfolio_value`, so reconcile against both
-rather than treating the gap as rounding error.
+`percent_weight` 0–100. Usually it is exactly the `constraints.cash_reserve`, and zero
+without one; it also carries any cash that positions kept as held (`unoptimized`) leave over
+but that is too small a fraction to allocate. The ticker values plus this line account for
+the whole `portfolio_value`, so reconcile against both rather than treating the gap as
+rounding error.
 
 **`trades`** — what to do, which is usually the only part an agent needs:
 

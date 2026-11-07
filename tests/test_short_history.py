@@ -202,6 +202,21 @@ def test_the_reserve_the_kept_position_leaves_room_for_is_exactly_the_cash_held(
     assert weights + result["cash"]["percent_weight"] == pytest.approx(100, abs=0.05)
 
 
+def test_cash_too_small_to_allocate_is_reported_as_cash_not_vanished(with_young):
+    """Regression: $9999.50 kept in a young stock plus $0.50 cash reported a $10000 portfolio whose
+    allocation and cash blocks summed to $9999.50 -- the 50 cents was below the solver's weight
+    threshold, so nothing was solved and the cash block (which restated the requested reserve, zero)
+    never mentioned it. The response must account for every dollar.
+    """
+    shares = 9999.50 / with_young.price("DDD")
+    result = optimizer.optimize({"initial_cash": 0.50, "initial_holdings": {"DDD": shares}}, with_young)
+    assert result["cash"]["value"] == 0.50
+    accounted = sum(row["value"] for row in result["optimized_portfolio"].values()) + result["cash"]["value"]
+    assert accounted == result["metrics"]["portfolio_value"] == 10_000.0
+    assert result["trades"] == [], "half a dollar is not worth a trade"
+    assert result["optimized_portfolio"]["DDD"]["shares"] == shares
+
+
 def test_a_kept_position_is_not_counted_as_cash_by_the_turnover_floor(with_young):
     """Regression: held cash was computed as one minus the *optimizable* holdings, so a kept position
     looked like cash, and a reserve that in fact required selling slipped past the named check into

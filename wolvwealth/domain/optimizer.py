@@ -648,13 +648,15 @@ def _return_and_volatility(request: OptimizationRequest, market: MarketData, wei
         # Reindexing to the universe drops the positions kept as they are:
         # the metrics describe what was optimized, and the response says so.
         vector = pd.Series(weights, dtype=float).reindex(mu.index, fill_value=0.0)
-        # The cash reserve earns the risk-free rate (that is what the rate
+        # Uninvested money earns the risk-free rate (that is what the rate
         # means here) and has no variance, so it adds to the return and
         # dilutes nothing but the volatility -- which is why the Sharpe
         # ratio is unchanged by the reserve: both the excess return and the
-        # volatility shrink by the invested fraction.
-        reserve_return = request.cash_reserve * request.risk_free_rate
-        return float(vector @ mu) + reserve_return, float(np.sqrt(vector @ cov_matrix @ vector))
+        # volatility shrink by the invested fraction. Computed from the
+        # weights, not from cash_reserve: cash the plan could not deploy (a
+        # sliver the kept positions leave) idles at the same rate.
+        idle = max(0.0, 1.0 - sum(weights.values()))
+        return float(vector @ mu) + idle * request.risk_free_rate, float(np.sqrt(vector @ cov_matrix @ vector))
 
     return market.solutions.get_or_compute(key, compute)
 
@@ -675,8 +677,13 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
         weights = {asset: weight for asset, weight in weights.items() if weight != 0}
         weights = _keep_untouched_holdings(weights, optimizable)
     else:
-        weights = {}  # everything is kept or reserved; nothing is left to solve for
+        weights = {}  # everything is kept or reserved (bar dust); nothing is left to solve for
     weights.update(request.unoptimized)
+    # Whatever the plan leaves in cash: the requested reserve, plus any sliver
+    # the kept positions leave that is too small to solve for (the branch
+    # above). Derived from the weights rather than restating cash_reserve, so
+    # the response accounts for every dollar of the portfolio either way.
+    cash_weight = max(0.0, 1.0 - sum(weights.values()))
 
     portfolio = {
         asset: {
@@ -701,8 +708,8 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
         # not a leftover, and an agent reconciling value against the holdings
         # should find the difference stated rather than have to infer it.
         "cash": {
-            "value": round(request.cash_reserve * total_investment, 2),
-            "percent_weight": round(request.cash_reserve * 100, 2),
+            "value": round(cash_weight * total_investment, 2),
+            "percent_weight": round(cash_weight * 100, 2),
         },
     }
     if request.unoptimized:

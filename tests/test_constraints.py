@@ -80,11 +80,18 @@ def assert_honors(result, market, spec: dict) -> None:
     assert sum(weights.values()) == pytest.approx(
         (1 - reserve) * 100, abs=0.5
     ), "everything but the cash reserve must be invested"
-    assert result["cash"]["percent_weight"] == pytest.approx(reserve * 100, abs=0.01)
-    assert result["cash"]["value"] == pytest.approx(
-        reserve * result["metrics"]["portfolio_value"], abs=0.02
-    ), "the cash line and the weights must describe the same money"
+    # Solver dust (weights clean_weights rounds away or drops below its
+    # cutoff) stays uninvested and is reported as cash rather than vanishing,
+    # so the cash line is the reserve only to within that dust.
+    assert result["cash"]["percent_weight"] == pytest.approx(reserve * 100, abs=0.1)
     total = result["metrics"]["portfolio_value"]
+    invested = sum(row["value"] for row in result["optimized_portfolio"].values())
+    # clean_weights rounds each weight to 5 decimals, so the values can be off
+    # by up to a basis point of the total in either direction -- dust, where
+    # the bug this guards against lost whole positions' worth of cash.
+    assert invested + result["cash"]["value"] == pytest.approx(
+        total, abs=0.02 + total * 1e-4
+    ), "the allocation plus the cash line must account for every dollar"
     bought = sum(trade["value"] for trade in result["trades"] if trade["action"] == "buy")
     assert bought <= (1 - reserve) * total + 1e-4 * total, "buys must not dip into the reserve (share rounding aside)"
     if "max_weight" in spec:
