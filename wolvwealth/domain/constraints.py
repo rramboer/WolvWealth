@@ -211,6 +211,38 @@ def _min_weight_above_max_weight(request):
     )
 
 
+def _reserve_and_kept_positions_overfill(request):
+    """Refuse a cash_reserve that only selling a kept position could fund.
+
+    The reserve is a fraction of the whole portfolio to hold in cash, and a
+    position kept as held (too little history to be optimized) cannot be
+    sold to raise it. When the two together exceed the portfolio, the money
+    does not exist: the solver would have nothing to allocate, and the
+    result would report reserve plus kept position summing past 100%.
+    Held cash below the reserve is not a conflict on its own, because
+    selling the *optimizable* holdings can raise the difference.
+    """
+    kept, reserve = _kept(request), request.cash_reserve
+    if reserve <= 0 or kept + reserve <= 1 + TOLERANCE:
+        return None
+    names = ", ".join(sorted(request.unoptimized))
+    fewest = min(request.unoptimized_days.values())
+    # Floor: the suggestion must itself be feasible after the 2-decimal rounding.
+    at_most = math.floor(100 * (1 - kept)) / 100
+    return Conflict(
+        fields=("constraints.cash_reserve", "initial_holdings", "min_history_days"),
+        reason=(
+            f"cash_reserve {reserve} asks for {reserve:.0%} of the portfolio in cash, but {names} is "
+            f"{kept:.1%} of it and is kept as held (fewer than {request.min_history_days} days of price "
+            f"history), leaving at most {max(0.0, 1 - kept):.1%} for cash without selling it."
+        ),
+        remedy=(
+            f"Lower cash_reserve to at most {at_most}, or pass min_history_days of {fewest} or less so "
+            f"{names} can be sold."
+        ),
+    )
+
+
 def _kept_position_above_max_weight(request):
     """Refuse a kept position above max_weight: it cannot be sold down, so it must already fit under the cap."""
     over = {ticker: weight for ticker, weight in request.unoptimized.items() if weight > request.max_weight + TOLERANCE}
@@ -256,6 +288,7 @@ def _kept_positions_use_up_max_positions(request):
 #: Checked in order; every rule that fires is reported. A rule takes the
 #: parsed request and returns a Conflict or None. Add new interactions here.
 RULES = (
+    _reserve_and_kept_positions_overfill,
     _kept_position_above_max_weight,
     _kept_positions_use_up_max_positions,
     _max_weight_cannot_fill_the_portfolio,

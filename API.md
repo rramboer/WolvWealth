@@ -110,7 +110,8 @@ quietly breaks one of them. The checks:
 | `min_universal_weight` × universe size ≤ 1 − `cash_reserve` | The floor applies to **every** universe ticker, so a large universe (or a large reserve) overfills the portfolio |
 | `min_universal_weight` = 0 when `max_positions` < universe size | A positive floor requires every universe ticker to be held, so the holding count cannot also be capped below it |
 | `min_universal_weight` ≤ `max_weight` | No single weight can be under the floor and over the cap |
-| `max_turnover` ≥ the selling the other inputs force | A held ticker outside `universe`, a position already above `max_weight`, a `max_positions` cap that drops held names, or a `cash_reserve` above the cash already held (the shortfall can only come from sales) |
+| `max_turnover` ≥ the selling the other inputs force | A held ticker outside `universe`, a position already above `max_weight`, a `max_positions` cap that drops held names, or a `cash_reserve` above the cash already held (the shortfall can only come from sales). Money in `unoptimized` positions is not cash and cannot be sold, so it counts toward neither |
+| `cash_reserve` + the `unoptimized` positions ≤ 1 | Both are fractions of the whole portfolio the optimizer may not touch, and a kept position cannot be sold to fund the reserve, so together they must leave the reserve's cash actually obtainable |
 
 **Every** violated rule is reported in one response, so a contradictory body takes one round
 trip to diagnose rather than one per conflict. The message names the fields and a remedy, and

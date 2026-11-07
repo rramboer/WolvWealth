@@ -169,6 +169,58 @@ def test_a_kept_position_that_breaks_a_constraint_is_refused_with_both_ways_out(
     assert "unoptimized" not in optimizer.optimize({**body, "min_history_days": YOUNG_DAYS}, with_young)
 
 
+def test_a_cash_reserve_cannot_be_funded_by_money_kept_in_a_young_holding(with_young):
+    """Regression: $6000 kept in a young stock plus $4000 cash with cash_reserve 0.5 reported a portfolio
+    of 60% stock and 50% cash -- 110% of the money. Only $4000 of cash exists, and the kept position
+    cannot be sold to raise more, so the request must be refused with both ways out.
+    """
+    shares = 6000 / with_young.price("DDD")
+    body = {"initial_cash": 4000, "initial_holdings": {"DDD": shares}, "constraints": {"cash_reserve": 0.5}}
+    with pytest.raises(ValidationError) as excinfo:
+        optimizer.optimize(body, with_young)
+    message = excinfo.value.message
+    assert "cash_reserve 0.5" in message and "DDD is 60.0%" in message and "at most 40.0% for cash" in message
+    assert "Lower cash_reserve to at most 0.4" in message and f"min_history_days of {YOUNG_DAYS} or less" in message
+    assert excinfo.value.details["conflicts"][0]["fields"] == [
+        "constraints.cash_reserve",
+        "initial_holdings",
+        "min_history_days",
+    ]
+
+
+def test_the_reserve_the_kept_position_leaves_room_for_is_exactly_the_cash_held(with_young):
+    """The boundary of the regression above: a 40% reserve is all $4000 of real cash, nothing invented."""
+    shares = 6000 / with_young.price("DDD")
+    body = {"initial_cash": 4000, "initial_holdings": {"DDD": shares}, "constraints": {"cash_reserve": 0.4}}
+    result = optimizer.optimize(body, with_young)
+    assert result["cash"] == {"value": 4000.0, "percent_weight": 40.0}
+    assert result["optimized_portfolio"] == {
+        "DDD": {"shares": shares, "value": pytest.approx(6000, abs=0.01), "percent_weight": pytest.approx(60, abs=0.01)}
+    }
+    assert result["trades"] == [], "every dollar is accounted for without a single trade"
+    weights = sum(row["percent_weight"] for row in result["optimized_portfolio"].values())
+    assert weights + result["cash"]["percent_weight"] == pytest.approx(100, abs=0.05)
+
+
+def test_a_kept_position_is_not_counted_as_cash_by_the_turnover_floor(with_young):
+    """Regression: held cash was computed as one minus the *optimizable* holdings, so a kept position
+    looked like cash, and a reserve that in fact required selling slipped past the named check into
+    an opaque solver failure.
+    """
+    holdings = {"DDD": 6000 / with_young.price("DDD"), "AAA": 3000 / with_young.price("AAA")}
+    body = {
+        "initial_cash": 1000,
+        "initial_holdings": holdings,
+        "constraints": {"cash_reserve": 0.2, "max_turnover": 0},
+    }
+    with pytest.raises(ValidationError, match="cash_reserve 0.2 requires 10.0% more cash than is held") as excinfo:
+        optimizer.optimize(body, with_young)
+    assert "max_turnover 0 is below the 10.0%" in excinfo.value.message
+    enough_room = optimizer.optimize({**body, "constraints": {"cash_reserve": 0.2, "max_turnover": 0.15}}, with_young)
+    assert enough_room["metrics"]["turnover"] <= 0.15 + 1e-3
+    assert enough_room["optimized_portfolio"]["DDD"]["shares"] == holdings["DDD"], "the sale never touches DDD"
+
+
 def test_constraints_are_honored_around_a_kept_position(with_young):
     body = {
         "initial_cash": 10_000,

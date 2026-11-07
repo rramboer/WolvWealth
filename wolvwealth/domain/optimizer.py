@@ -387,6 +387,10 @@ def _turnover_floor(request: OptimizationRequest, current: dict) -> tuple:
     The forced sales and the cash shortfall do not add: proceeds from a
     position that had to go anyway can be kept as the reserve. The floor is
     whichever is larger.
+
+    ``current`` holds the optimizable positions only, so the cash on hand is
+    one minus those *and* minus the positions kept as held: a kept position
+    is money, but not money that can become the cash reserve.
     """
     in_universe = set(request.universe)
     outside = {ticker: weight for ticker, weight in current.items() if ticker not in in_universe}
@@ -395,7 +399,7 @@ def _turnover_floor(request: OptimizationRequest, current: dict) -> tuple:
         for ticker, weight in current.items()
         if ticker in in_universe and weight > request.max_weight
     }
-    held_cash = max(0.0, 1.0 - sum(current.values()))
+    held_cash = max(0.0, 1.0 - sum(current.values()) - sum(request.unoptimized.values()))
     cash_shortfall = max(0.0, request.cash_reserve - held_cash)
     reasons = []
     if outside:
