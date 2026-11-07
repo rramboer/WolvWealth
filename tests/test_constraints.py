@@ -158,6 +158,24 @@ def test_a_position_cap_no_longer_sells_past_max_turnover(wide):
     assert_honors(result, wide, spec)
 
 
+def test_turnover_zero_keeps_even_a_position_below_the_weight_threshold(wide):
+    """Regression: a holding worth 0.03% of the portfolio sat below WEIGHT_THRESHOLD, so the cleanup
+    zeroed the weight the solver had been forced to keep and the plan sold it -- nonzero turnover
+    under max_turnover 0. The promise is exact: 0 sells nothing, however small the holding.
+    """
+    shares = 30 / wide.price("T01")  # ~0.03% of the ~$100k portfolio, in a name the solver zero-weights
+    result = run(wide, {"max_turnover": 0}, initial_holdings={"T01": shares})
+    assert result["metrics"]["turnover"] == 0
+    assert not any(trade["ticker"] == "T01" for trade in result["trades"]), "kept exactly: no sale, no dust buy"
+    assert result["optimized_portfolio"]["T01"]["shares"] == pytest.approx(shares, abs=1e-4)
+    # Without a turnover limit, selling the tiny position is the solver's own
+    # choice, surfaced as an ordinary trade and counted in the metric.
+    unlimited = run(wide, {}, initial_holdings={"T01": shares})
+    assert "T01" not in unlimited["optimized_portfolio"]
+    assert any(trade["ticker"] == "T01" and trade["action"] == "sell" for trade in unlimited["trades"])
+    assert unlimited["metrics"]["turnover"] == pytest.approx(0.0003, abs=1e-4)
+
+
 def test_a_position_cap_that_cannot_fit_the_turnover_budget_is_refused(wide):
     """The alternative to silently overselling: say so, and name both fields."""
     holdings = {ticker: 50.0 for ticker in list(wide.universe)[:10]}

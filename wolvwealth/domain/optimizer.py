@@ -51,11 +51,11 @@ WEIGHT_THRESHOLD = 0.0005
 #: Slack allowed when checking a turnover limit against what the other
 #: constraints already force; covers the solver's own tolerance.
 TURNOVER_TOLERANCE = 1e-6
-#: A held position the solver leaves within this much weight below its
-#: current size is kept exactly as is. ``clean_weights`` rounds to five
-#: decimals, so a position the solver did not touch otherwise comes back a
-#: hair short and appears in the trade list as a sell of 0.0001 shares:
-#: noise, but noise an agent would still place as an order. Deliberately
+#: A held position the solver leaves within this much weight of its
+#: current size (either side) is kept exactly as is. ``clean_weights``
+#: rounds to five decimals, so a position the solver did not touch otherwise
+#: comes back a hair off and appears in the trade list as an order for
+#: 0.0001 shares: noise, but noise an agent would still place. Deliberately
 #: smaller than WEIGHT_THRESHOLD: this is a tolerance on *changes* to a
 #: position that already exists (anything bigger would silently swallow
 #: real trims), while WEIGHT_THRESHOLD is the floor for a position existing
@@ -365,22 +365,26 @@ def turnover(current: dict, target: dict) -> float:
 
 
 def _keep_untouched_holdings(weights: dict, current: dict) -> dict:
-    """Snap held positions left within ``DUST_WEIGHT`` below their current weight back onto it.
+    """Snap held positions left within ``DUST_WEIGHT`` of their current weight back onto it.
 
-    The weight this adds is taken from the largest buy, so the total stays at
-    one without shaving every other position, which would only mint new dust.
+    Either side: ``clean_weights`` rounds to five decimals, so a position the
+    solver did not mean to touch comes back a hair short *or* a hair over and
+    would appear in the trade list as an order for 0.0001 shares. The weight
+    this adds (or frees) is settled against the largest buy, so the total
+    stays put without shaving every other position, which would only mint
+    new dust.
     """
     snapped = dict(weights)
-    excess = 0.0
+    net = 0.0
     for ticker, held in current.items():
-        if ticker in snapped and 0 < held - snapped[ticker] <= DUST_WEIGHT:
-            excess += held - snapped[ticker]
+        if ticker in snapped and 0 < abs(held - snapped[ticker]) <= DUST_WEIGHT:
+            net += held - snapped[ticker]
             snapped[ticker] = held
-    if excess:
+    if net:
         buys = {ticker: weight - current.get(ticker, 0.0) for ticker, weight in snapped.items()}
         biggest = max(buys, key=buys.get)
-        if buys[biggest] >= excess:
-            snapped[biggest] -= excess
+        if buys[biggest] >= net:
+            snapped[biggest] -= net
     return snapped
 
 
@@ -473,11 +477,23 @@ def _run_solver(mu, cov_matrix, request: OptimizationRequest, turnover_limit: tu
         if turnover_limit is not None:
             frontier.add_constraint(_turnover_constraint(mu.index, *turnover_limit, invested))
         frontier.max_sharpe(risk_free_rate=request.risk_free_rate)
-        cleaned = frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
+        cleaned = frontier.clean_weights(cutoff=0)  # rounds to 5 decimals; the cutoff is applied below
     except Exception as err:  # pylint: disable=broad-except
         # Surface the real solver error; "Infeasible" alone is undiagnosable.
         raise ValidationError(f"Optimization Error. Check your inputs and constraints. {err}") from err
-    survivors = _deploy_leftover({ticker: weight for ticker, weight in cleaned.items() if weight > 0}, scaled_max)
+    # WEIGHT_THRESHOLD applies to positions the solve would *open*: a new
+    # position below 0.05% is noise. A position already held is exempt when a
+    # turnover limit made the held weights a solver input: there, a weight
+    # the solver kept (often because the limit forbade selling it) must not
+    # be zeroed into a sale the constraint promised would not happen --
+    # max_turnover 0 means every holding is kept, including the tiny ones.
+    held = turnover_limit[1] if turnover_limit is not None else {}
+    survivors = {
+        ticker: weight
+        for ticker, weight in cleaned.items()
+        if weight > 0 and (weight * invested >= WEIGHT_THRESHOLD or ticker in held)
+    }
+    survivors = _deploy_leftover(survivors, scaled_max)
     return {ticker: weight * invested for ticker, weight in survivors.items()}
 
 
