@@ -383,3 +383,39 @@ def test_degenerate_history_reports_null_sharpe_instead_of_crashing():
     result = optimizer.optimize({"initial_cash": 1000, "min_history_days": 2}, MarketData.build(["AAA", "BBB"], frame))
     assert result["metrics"]["sharpe_ratio"] is None
     assert result["metrics"]["portfolio_value"] == 1000
+
+
+# --- sub-threshold weights are rebalanced, not left as unplanned cash --------
+
+
+def test_deploy_leftover_rebalances_dropped_weight_largest_first_up_to_the_cap():
+    """The weight clean_weights drops or rounds away goes back into the surviving positions."""
+    grown = optimizer._deploy_leftover({"AAA": 0.6, "BBB": 0.3996}, cap=2.0)
+    assert grown == {"AAA": pytest.approx(0.6004), "BBB": 0.3996}, "the deficit goes to the largest position"
+    capped = optimizer._deploy_leftover({"AAA": 0.6, "BBB": 0.3996}, cap=0.6)
+    assert capped == {"AAA": 0.6, "BBB": pytest.approx(0.4)}, "a position at the cap passes it along"
+    full = optimizer._deploy_leftover({"AAA": 0.5, "BBB": 0.5}, cap=0.5)
+    assert full == {"AAA": 0.5, "BBB": 0.5}, "with every position at the cap the leftover stays cash"
+    shaved = optimizer._deploy_leftover({"AAA": 0.6001, "BBB": 0.4}, cap=2.0)
+    assert shaved == {"AAA": pytest.approx(0.6, abs=1e-12), "BBB": 0.4}, "a rounding overshoot is shaved off the top"
+    assert optimizer._deploy_leftover({}, cap=1.0) == {}
+
+
+def test_a_weight_the_cutoff_drops_is_folded_into_the_rest_not_reported_as_cash(market, monkeypatch):
+    """Regression: a solver weight below WEIGHT_THRESHOLD was zeroed and its money sat in the
+    cash block as a plan nobody asked for, instead of being rebalanced into the positions.
+    """
+    from pypfopt.efficient_frontier import EfficientFrontier
+
+    def with_dropped_dust(self, cutoff=0, rounding=5):  # pylint: disable=unused-argument
+        # What clean_weights returns when the solver put 0.05% of the money
+        # on CCC and DDD together: both zeroed by the cutoff, total 0.9995.
+        return {"AAA": 0.6, "BBB": 0.3995, "CCC": 0.0, "DDD": 0.0}
+
+    monkeypatch.setattr(EfficientFrontier, "clean_weights", with_dropped_dust)
+    result = optimizer.optimize({"initial_cash": 10_000, "universe": list(market.universe)}, market)
+    assert result["cash"] == {"value": 0.0, "percent_weight": 0.0}, "no unplanned cash"
+    weights = {t: row["percent_weight"] for t, row in result["optimized_portfolio"].items()}
+    assert weights == {"AAA": pytest.approx(60.05), "BBB": pytest.approx(39.95)}
+    invested = sum(row["value"] for row in result["optimized_portfolio"].values())
+    assert invested == pytest.approx(10_000, abs=0.02), "every dollar is invested"

@@ -40,7 +40,13 @@ DEFAULT_RATE_NOTE = (
 )
 #: Default universe when the request names none: the 500 largest tickers.
 DEFAULT_UNIVERSE_SIZE = 500
-#: Weights below this are treated as zero after solving.
+#: Smallest weight that counts as a position: anything the solver assigns
+#: below 0.05% of the portfolio is zeroed and its weight folded back into
+#: the surviving positions (``_deploy_leftover``). A fraction rather than a
+#: dollar amount on purpose: solved weights must depend only on what reaches
+#: the solver, so one memoized solve serves every portfolio size (cash and
+#: holdings scale the weights afterwards; see ``max_sharpe_weights``). Not
+#: the same knob as DUST_WEIGHT below, which is about trades, not positions.
 WEIGHT_THRESHOLD = 0.0005
 #: Slack allowed when checking a turnover limit against what the other
 #: constraints already force; covers the solver's own tolerance.
@@ -49,7 +55,11 @@ TURNOVER_TOLERANCE = 1e-6
 #: current size is kept exactly as is. ``clean_weights`` rounds to five
 #: decimals, so a position the solver did not touch otherwise comes back a
 #: hair short and appears in the trade list as a sell of 0.0001 shares:
-#: noise, but noise an agent would still place as an order.
+#: noise, but noise an agent would still place as an order. Deliberately
+#: smaller than WEIGHT_THRESHOLD: this is a tolerance on *changes* to a
+#: position that already exists (anything bigger would silently swallow
+#: real trims), while WEIGHT_THRESHOLD is the floor for a position existing
+#: at all. They measure different things and must not be unified.
 DUST_WEIGHT = 1e-4
 #: Convex solver for the max-Sharpe program. cvxpy would otherwise pick OSQP,
 #: a first-order method that hits its iteration limit and fails outright on
@@ -464,10 +474,42 @@ def _run_solver(mu, cov_matrix, request: OptimizationRequest, turnover_limit: tu
             frontier.add_constraint(_turnover_constraint(mu.index, *turnover_limit, invested))
         frontier.max_sharpe(risk_free_rate=request.risk_free_rate)
         cleaned = frontier.clean_weights(cutoff=WEIGHT_THRESHOLD)
-        return {ticker: weight * invested for ticker, weight in cleaned.items()}
     except Exception as err:  # pylint: disable=broad-except
         # Surface the real solver error; "Infeasible" alone is undiagnosable.
         raise ValidationError(f"Optimization Error. Check your inputs and constraints. {err}") from err
+    survivors = _deploy_leftover({ticker: weight for ticker, weight in cleaned.items() if weight > 0}, scaled_max)
+    return {ticker: weight * invested for ticker, weight in survivors.items()}
+
+
+def _deploy_leftover(weights: dict, cap: float) -> dict:
+    """Fold the weight ``clean_weights`` rounded or dropped back into the surviving positions.
+
+    The solver's weights sum to one, but zeroing the sub-WEIGHT_THRESHOLD
+    positions and rounding the rest to five decimals leaves the total short
+    (or, more rarely, over) by dust. That shortfall is money the solve meant
+    to invest, so it is added to the surviving positions largest-first,
+    never pushing one past ``cap``; it used to linger as cash the plan never
+    asked to hold. Only when every position sits at the cap does the
+    remainder stay in cash, which the response's cash block then reports.
+    An overshoot is shaved off the largest position, where it is dust too.
+    """
+    leftover = 1.0 - sum(weights.values())
+    if not weights or leftover == 0:
+        return weights
+    if leftover < 0:
+        biggest = max(weights, key=weights.get)
+        weights[biggest] = max(0.0, weights[biggest] + leftover)
+        return weights
+    for ticker in sorted(weights, key=weights.get, reverse=True):
+        room = cap - weights[ticker]
+        if room <= 0:
+            continue
+        added = min(room, leftover)
+        weights[ticker] += added
+        leftover -= added
+        if leftover <= 0:
+            break
+    return weights
 
 
 def _turnover_constraint(tickers, limit: float, current: dict, invested_fraction: float = 1.0):
