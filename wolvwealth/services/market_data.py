@@ -116,6 +116,16 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     #: whole history by its ratio, so the margin is not delicate.
     READJUSTED_TOLERANCE = 0.005
 
+    #: A re-downloaded full history must cover at least this share of the
+    #: trading days the cache already holds for that ticker, or it is judged
+    #: truncated (Yahoo serves only the recent tail of a history while
+    #: throttling) and the ticker is blanked instead of shortened. A company
+    #: listed for decades otherwise comes back looking like a recent IPO, and
+    #: every statistic estimated from the stub is wrong. Splits and dividends
+    #: change prices, never the number of trading days, so the guard cannot
+    #: reject a genuine re-adjustment.
+    MIN_HISTORY_COVERAGE = 0.9
+
     def __init__(
         self,
         store: PriceStore,
@@ -371,9 +381,11 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     def refresh(self, full: bool = False) -> bool:
         """Bring the cache up to today. Return True if anything changed.
 
-        ``full`` re-downloads the entire history. An incremental refresh
-        repairs re-adjusted tickers on its own (see ``_readjusted_tickers``),
-        so ``full`` is for recovering tickers that were only throttled.
+        ``full`` re-downloads the entire history and merges it over the
+        cache, so days are only ever added, never lost to throttling. An
+        incremental refresh repairs re-adjusted tickers on its own (see
+        ``_readjusted_tickers``), so ``full`` is for recovering tickers or
+        days that were only throttled.
         """
         self.refresh_tbill()
         if full:
@@ -408,16 +420,26 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         return True
 
     def _refresh_full(self) -> bool:
-        """Re-download the whole history; refuse to replace the cache with a throttled, mostly empty one."""
-        prices = self._download(self.data.universe, self.history_start)
-        previously_live = self.data.prices.iloc[-1].dropna().index
-        came_back = prices.iloc[-1].dropna().index if not prices.empty else pd.Index([])
+        """Re-download the whole history and merge it over the cache: a full refresh may add days, never lose them.
+
+        This program runs unattended on schedules, and Yahoo under throttling
+        serves anything from nothing to only the recent tail of a history.
+        Replacing the cache with whatever arrived would shorten histories
+        silently (see ``_merge_full_download``), so the download is laid over
+        the cache additively, and a download that lost too many live tickers
+        outright is refused before anything is written.
+        """
+        cached = self.data.prices
+        fresh = self._download(self.data.universe, self.history_start)
+        previously_live = cached.iloc[-1].dropna().index
+        came_back = fresh.iloc[-1].dropna().index if not fresh.empty else pd.Index([])
         lost = previously_live.difference(came_back)
         if len(lost) > self.MAX_WENT_DARK_FRACTION * len(previously_live):
             raise RuntimeError(
                 f"{len(lost)} of {len(previously_live)} live tickers came back without a current price "
                 "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
             )
+        prices = self._merge_full_download(cached, fresh)
         # After the throttling check, which must count what came back, not what was then judged implausible.
         prices = self._quarantine(prices, clear=True)
         self._save_prices(prices)
@@ -425,6 +447,43 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         columns = self._stats_columns(universe, prices)
         self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
         return True
+
+    def _merge_full_download(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
+        """Lay a full re-download over the cache: fresh wins where both have a close, the cache fills the rest.
+
+        A ticker the download misses entirely keeps its cached history and
+        merely has no current price until a later refresh recovers it; one
+        served only in part has the missing days filled from the cache. The
+        exception is a ticker whose adjustment basis changed (split or
+        dividend): its cached rows are on the old basis and must not survive,
+        so it takes only the fresh history -- and if that came back truncated,
+        it is blanked rather than shortened, the same choice
+        ``_repair_readjusted`` makes on the incremental path.
+        """
+        readjusted = self._readjusted_tickers(cached, fresh)
+        if readjusted:
+            self.log(
+                f"wolvwealth: {len(readjusted)} ticker(s) changed adjustment basis (split or dividend); "
+                f"their cached history is replaced by the download: {', '.join(readjusted)}"
+            )
+        merged = fresh.combine_first(cached.drop(columns=readjusted, errors="ignore"))
+        # Universe (market-cap) column order; a ticker no longer in the universe is dropped, as before.
+        merged = merged.reindex(columns=fresh.columns)
+        for ticker in readjusted:
+            fresh_days, cached_days = int(fresh[ticker].count()), int(cached[ticker].count())
+            if fresh_days < self.MIN_HISTORY_COVERAGE * cached_days:
+                merged[ticker] = float("nan")
+                self.log(self._truncated_history_notice(ticker, fresh_days, cached_days))
+        return merged.dropna(how="all")
+
+    @staticmethod
+    def _truncated_history_notice(ticker: str, fresh_days: int, cached_days: int) -> str:
+        """Say why a re-adjusted ticker was blanked instead of taking its re-downloaded history."""
+        return (
+            f"wolvwealth: only {fresh_days} of {ticker}'s {cached_days} cached trading day(s) came back after "
+            "its split/dividend (throttled?); a history that short would pass it off as a recent listing, so it "
+            "is excluded from allocations until a later refresh downloads the full history."
+        )
 
     def _readjusted_tickers(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> list:
         """Tickers whose freshly served prices contradict the cache on overlapping days.
@@ -448,10 +507,11 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         """Replace ``tickers``' full history with a fresh download on today's adjustment basis.
 
         A handful of tickers split or go ex-dividend on any given day, so
-        this is one small request. A ticker the repair download misses
-        (throttled) is blanked rather than kept: a history that mixes two
-        adjustment bases poisons the optimizer, while an empty column is
-        merely excluded until the next refresh picks it up.
+        this is one small request. A ticker the repair download misses or
+        truncates (throttled) is blanked rather than kept: a history that
+        mixes two adjustment bases poisons the optimizer, and one cut down
+        to a recent tail poses as a new listing; an empty column is merely
+        excluded until a later refresh picks it up.
         """
         self.log(
             f"wolvwealth: {len(tickers)} ticker(s) changed adjustment basis (split or dividend); "
@@ -460,14 +520,13 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         repaired = self._fetch(tickers, self.history_start)
         prices = prices.copy()
         for ticker in tickers:
-            if ticker in repaired.columns and not repaired[ticker].isna().all():
+            cached_days = int(prices[ticker].count())
+            fresh_days = int(repaired[ticker].count()) if ticker in repaired.columns else 0
+            if fresh_days and fresh_days >= self.MIN_HISTORY_COVERAGE * cached_days:
                 prices[ticker] = repaired[ticker].reindex(prices.index)
             else:
                 prices[ticker] = float("nan")
-                self.log(
-                    f"wolvwealth: could not re-download {ticker} after its split/dividend; "
-                    "its history is cleared until a later refresh recovers it."
-                )
+                self.log(self._truncated_history_notice(ticker, fresh_days, cached_days))
         return prices
 
     def _stale_by(self, max_age_days: int) -> int:

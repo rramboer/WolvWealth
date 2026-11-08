@@ -28,12 +28,13 @@ def build_service(tmp_path, downloader=None):
     return MarketDataService(store, "2020-01-01", downloader=downloader, log=lambda *_: None), store
 
 
-def splitting_downloader(service, split_ticker="BBB", ratio=0.5, fail_repair=False):
+def splitting_downloader(service, split_ticker="BBB", ratio=0.5, fail_repair=False, truncate_repair=False):
     """Serve prices as Yahoo would after ``split_ticker`` split: its whole history scaled by ``ratio``.
 
     The refresh request (many tickers, recent start) gets the overlap plus 3
     new rows; the repair request (just the split ticker, history start) gets
-    the full rescaled history.
+    the full rescaled history -- or, under throttling, nothing
+    (``fail_repair``) or only its recent tail (``truncate_repair``).
     """
     cached = service.data.prices
     adjusted = cached.copy()
@@ -50,6 +51,8 @@ def splitting_downloader(service, split_ticker="BBB", ratio=0.5, fail_repair=Fal
         calls.append((list(tickers), start))
         if len(calls) > 1 and fail_repair:  # the repair request comes back empty (throttled)
             return full.loc[:, list(tickers)] * float("nan")
+        if len(calls) > 1 and truncate_repair:  # throttled down to the recent tail
+            return full.iloc[-30:].loc[:, list(tickers)]
         return full.loc[full.index >= start, list(tickers)]
 
     return download, full, calls
@@ -97,6 +100,21 @@ def test_a_failed_repair_blanks_the_ticker_instead_of_mixing_bases(tmp_path):
     prices = store.load_prices()
     assert prices["BBB"].isna().all(), "a mixed-basis history must never be persisted"
     assert prices["AAA"].notna().any()
+
+
+def test_a_truncated_repair_is_rejected_like_a_failed_one(tmp_path):
+    """Regression: Yahoo throttled all but the tail of a repair download, and the decades-old
+    ticker was persisted with a month of history, as if it had just listed."""
+    logged = []
+    service, store = build_service(tmp_path)
+    service.log = logged.append
+    download, _full, _calls = splitting_downloader(service, truncate_repair=True)
+    service.downloader = download
+    assert service.refresh() is True
+    prices = store.load_prices()
+    assert prices["BBB"].isna().all(), "a shortened history must be excluded, not adopted"
+    assert prices["AAA"].notna().any()
+    assert any("BBB" in line and "excluded" in line for line in logged)
 
 
 @pytest.mark.parametrize("served", ["only the cached overlap", "nothing at all"])
@@ -184,6 +202,10 @@ def test_a_quarantine_is_reported_survives_refreshes_and_only_a_clean_full_refre
         service.refresh(full=True)
     assert store.load_prices().equals(before) and list(service.quarantine) == ["BBB"]
 
-    service.downloader = lambda tickers, _start, **_kwargs: clean.loc[:, list(tickers)]
+    # A clean full download covers up to today, including the rows the incremental refresh appended.
+    healed = pd.concat(
+        [clean, pd.DataFrame({t: [clean[t].iloc[-1]] * 2 for t in clean.columns}, index=before.index[-2:])]
+    )
+    service.downloader = lambda tickers, _start, **_kwargs: healed.loc[:, list(tickers)]
     assert service.refresh(full=True) is True
     assert service.quarantine == {} and not store.quarantine_path.exists() and "BBB" in service.data.tradeable

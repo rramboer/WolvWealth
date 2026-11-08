@@ -113,6 +113,83 @@ def test_a_full_refresh_re_downloads_the_whole_history_and_recovers_blank_ticker
     assert store.load_prices()["CCC"].notna().all() and "CCC" in service.data.tradeable
 
 
+def wide_market_prices(tickers, periods=400):
+    """Deterministic random-walk prices for ``tickers``: the went-dark guard needs more than four names."""
+    rng = np.random.default_rng(7)
+    dates = pd.bdate_range("2020-01-02", periods=periods)
+    prices = pd.DataFrame(
+        {t: np.round(100 * np.exp(np.cumsum(0.0003 + 0.01 * rng.standard_normal(periods))), 2) for t in tickers},
+        index=dates,
+    )
+    prices.index.name = "Date"
+    return prices
+
+
+def test_a_full_refresh_merges_over_the_cache_so_throttling_cannot_shorten_a_history(tmp_path):
+    """Regression: Yahoo, throttling, served only the recent tail of a long-listed ticker's history
+    (and nothing at all for another), and a full refresh overwrote the cache with it, so a company
+    listed for decades looked like a recent IPO to the optimizer."""
+    tickers = [f"TK{i}" for i in range(8)]
+    cached = wide_market_prices(tickers)
+    store = PriceStore(tmp_path / "historical_prices.parquet", tmp_path / "universe.csv")
+    store.save_universe(tickers)
+    store.save_prices(cached)
+    new_dates = pd.bdate_range(cached.index[-1] + pd.Timedelta(days=1), periods=2)
+    full = pd.concat([cached, pd.DataFrame({t: [cached[t].iloc[-1]] * 2 for t in tickers}, index=new_dates)])
+
+    def downloader(requested, _start, **_kwargs):
+        served = full.loc[:, list(requested)].copy()
+        served["TK2"] = served["TK2"].where(served.index >= served.index[-60])  # only the recent tail came back
+        served["TK3"] = np.nan  # nothing at all: throttled or delisted, indistinguishable
+        return served
+
+    service = MarketDataService(store, "2020-01-01", downloader=downloader, log=lambda *_: None)
+    assert service.refresh(full=True) is True
+    merged = store.load_prices()
+    # The tail-only ticker keeps every cached day and gains the new ones; it still trades.
+    assert merged["TK2"].count() == len(full)
+    pd.testing.assert_series_equal(merged["TK2"], full["TK2"], check_names=False, check_freq=False)
+    assert service.data.has_price("TK2") and service.data.history_days["TK2"] == len(full)
+    # The empty ticker keeps its history but has no current price until something recovers it.
+    assert merged["TK3"].count() == len(cached) and not service.data.has_price("TK3")
+    pd.testing.assert_series_equal(
+        merged["TK3"].iloc[: len(cached)], cached["TK3"], check_names=False, check_freq=False
+    )
+
+
+def test_a_full_refresh_takes_only_the_fresh_history_for_a_re_adjusted_ticker(tmp_path):
+    """A split ticker's cached rows are on the old basis: the cache must not fill them back in --
+    unless the new-basis history came back truncated, in which case the ticker is blanked."""
+    tickers = [f"TK{i}" for i in range(8)]
+    cached = wide_market_prices(tickers)
+
+    def run(truncated):
+        root = tmp_path / ("truncated" if truncated else "complete")
+        store = PriceStore(root / "historical_prices.parquet", root / "universe.csv")
+        store.save_universe(tickers)
+        store.save_prices(cached)
+        new_dates = pd.bdate_range(cached.index[-1] + pd.Timedelta(days=1), periods=2)
+        full = pd.concat([cached, pd.DataFrame({t: [cached[t].iloc[-1]] * 2 for t in tickers}, index=new_dates)])
+        full["TK1"] = (full["TK1"] * 0.5).round(2)  # 2:1 split: the served history is rescaled end to end
+        if truncated:
+            full["TK1"] = full["TK1"].where(full.index >= full.index[-60])
+
+        def downloader(requested, _start, **_kwargs):
+            return full.loc[:, list(requested)]
+
+        service = MarketDataService(store, "2020-01-01", downloader=downloader, log=lambda *_: None)
+        assert service.refresh(full=True) is True
+        return store.load_prices(), full
+
+    merged, full = run(truncated=False)
+    pd.testing.assert_series_equal(merged["TK1"], full["TK1"], check_names=False, check_freq=False)
+    assert merged["TK1"].pct_change().abs().max() < 0.3, "no old-basis row survives to fake a crash"
+
+    merged, _full = run(truncated=True)
+    assert merged["TK1"].isna().all(), "a truncated new-basis history is excluded, not adopted"
+    assert merged["TK0"].notna().all()
+
+
 def test_refresh_recomputes_stats_for_the_new_rows(tmp_path):
     service, store = build_service(tmp_path)
     last = service.data.prices.index[-1]
