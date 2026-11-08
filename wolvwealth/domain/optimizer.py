@@ -898,10 +898,11 @@ def _unoptimized_note(request: OptimizationRequest, kept: float) -> str:
         )
     if "quarantined" in reasons:
         parts.append(
-            "Some are quarantined: their downloaded prices failed a plausibility check, so there is no price "
-            "that can be trusted to trade them at; they are valued at their last believable close (date above). "
-            "The market status report gives the reason for each under `quarantined`; a refresh that downloads "
-            "a believable history (try `wolvwealth refresh-data --full`) returns them to normal optimization."
+            "Some are quarantined: their cached history was rejected (implausible prices, or a split/dividend "
+            "re-download that failed and left it on a superseded adjustment basis), so there is no history to "
+            "estimate their return and risk from; they are valued at the most recent close that could be "
+            "trusted, whose date is `priced_as_of` above. The market status report gives the reason for each "
+            "under `quarantined`; a refresh that downloads a usable history returns them to normal optimization."
         )
     return " ".join(parts)
 

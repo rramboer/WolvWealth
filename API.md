@@ -67,7 +67,7 @@ Price-cache freshness and the symbols a request may use.
 | `tickers` | The full tradeable list, so symbols can be validated without a round trip. Includes the `short_history` names |
 | `tbill_rate` | 13-week US Treasury bill yield as a fraction, fetched from Yahoo at the last price refresh. A reference for choosing a `risk_free_rate`; the app never applies it on its own. `null` until the first refresh |
 | `tbill_as_of` | Date of that yield, or `null` |
-| `quarantined` | Present only when some tickers were excluded because their downloaded prices were implausible (a one-day move beyond 5x either way) or because the full history a split/dividend made necessary could not be re-downloaded: `{ticker: {"reason", "detected"}}`. They cannot be bought (naming one in a `universe` is refused), and a held position in one is kept at its current size, valued at its last believable close, and reported under `unoptimized` with reason `quarantined` rather than failing the request. The exclusion lifts when a refresh (usually `wolvwealth refresh-data --full`) downloads a believable history. Check this before acting on trades, especially in unattended runs |
+| `quarantined` | Present only when some tickers were excluded because their downloaded prices were implausible (a one-day move beyond 5x either way) or because the full history a split/dividend made necessary could not be re-downloaded: `{ticker: {"reason", "detected"}}`. They cannot be bought (naming one in a `universe` is refused), and a held position in one is kept at its current size, valued at the most recent close that could be trusted (for a failed split/dividend re-download that is a fresh close on the current adjustment basis, never the superseded cached one), and reported under `unoptimized` with reason `quarantined` rather than failing the request. The exclusion lifts when a refresh (usually `wolvwealth refresh-data --full`) downloads a believable history. Check this before acting on trades, especially in unattended runs |
 | `readjusted` | Present only when a refresh in the last 30 days detected that a ticker's adjustment basis changed (a split or dividend rescales the entire served history) and re-downloaded it whole: `{ticker: {"detected", "outcome"}}`. `outcome` says whether the history was replaced on the new basis (every cached number for that ticker changed, legitimately) or could not be re-downloaded (the ticker is then under `quarantined`). Dated notes about events, not current state: exclusions in force are always under `quarantined` |
 
 `universe_size` exceeds `tradeable_size` because the ticker list keeps names that were
@@ -258,9 +258,11 @@ shares held and produces no trade), the rest of the money is optimized around it
 left out of `metrics` — though its value *is* included in `portfolio_value`, since the shares
 are genuinely owned. `positions` maps each ticker to a `reason` (`"short_history"`,
 `"no_current_price"` or `"quarantined"`), its `history_days` and `percent_weight`, plus
-`priced_as_of` when the position is valued from an old close (the last known close for
-`no_current_price`, the last believable one — the newest close before the implausible move —
-for `quarantined`); `note` says the same in words with the remedy for each. A kept position
+`priced_as_of` when the position is valued from a close other than today's (the last known
+close for `no_current_price`; for `quarantined`, the most recent close that could be trusted —
+the newest one before the implausible move, or, when a split/dividend re-download failed, a
+freshly downloaded close on the *current* adjustment basis, since the cached history is on the
+superseded one); `note` says the same in words with the remedy for each. A kept position
 above `max_weight`, or a `max_positions` that the kept positions use up, is refused as an
 infeasible constraint set with those remedies. To sell a `short_history` position instead,
 lower `min_history_days` to its count and leave it out of `universe`; a `no_current_price` one

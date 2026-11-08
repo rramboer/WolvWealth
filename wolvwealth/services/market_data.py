@@ -324,19 +324,33 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
 
     @staticmethod
     def _frozen_valuations(prices: pd.DataFrame, record: dict) -> dict:
-        """Each quarantined ticker's last believable close, read from the archive before ``_exclude`` blanks it.
+        """Each quarantined ticker's best trustworthy close, as ``{ticker: (close, date)}``.
 
-        ``{ticker: (close, date)}``, so a held position in a quarantined name
-        is still valued (and frozen) instead of failing the whole request.
-        Only tickers with at least one believable close appear; one whose
-        history is empty genuinely cannot be valued.
+        So a held position in a quarantined name is still valued (and
+        frozen) instead of failing the whole request. The two exclusion
+        reasons need different prices, and using the wrong one misstates the
+        position:
+
+        - *Split or dividend re-download failed.* The cached history is on a
+          superseded basis -- after a 2:1 split its closes are twice the real
+          price -- so it must not be used at all. ``_record_quarantine``
+          stored a close from the download that detected the change, which is
+          on the current basis.
+        - *Implausible move.* The download is what is distrusted, so the
+          cached history is used, stopping before the first flagged move.
+
+        Only tickers with such a close appear; one with neither genuinely
+        cannot be valued.
         """
         frozen = {}
-        for ticker in record:
-            if ticker in prices.columns:
-                valuation = last_believable_close(prices[ticker])
-                if valuation is not None:
-                    frozen[ticker] = valuation
+        for ticker, entry in record.items():
+            valuation = entry.get("valuation")
+            if valuation:
+                frozen[ticker] = (valuation["close"], pd.Timestamp(valuation["as_of"]).date())
+            elif ticker in prices.columns:
+                believable = last_believable_close(prices[ticker])
+                if believable is not None:
+                    frozen[ticker] = believable
         return frozen
 
     def _save_prices(self, prices) -> None:
@@ -371,27 +385,20 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         fresh = clean_prices(raw, minimum_rows=0, latest=pd.Timestamp.now().normalize())
         return fresh.reindex(columns=tickers) if not fresh.empty else fresh
 
-    def _record_quarantine(self, prices, since=None, whole=(), clear=False, broken=None, recovered=()) -> dict:
-        """Record every ticker that must be excluded from allocations and return the record. Writes no prices.
+    def _newly_implausible(self, prices, since, whole, record: dict) -> dict:
+        """Tickers not already excluded whose closes move implausibly, as ``{ticker: reason}``.
 
-        ``since`` limits the implausibility check to rows from that date on
-        (the cached history before it was checked when it arrived); ``whole``
-        names tickers whose entire history was just replaced; ``broken`` maps
-        tickers whose split/dividend re-download failed or came back
-        truncated to their reasons; ``recovered`` names tickers whose history
-        was successfully replaced on the new basis, lifting an earlier
-        ``broken`` entry (and only such an entry: a new adjustment basis is
-        no answer to implausible prices). Tickers already in quarantine stay
-        excluded until a full refresh (``clear``) re-checks them, so a
-        refresh cannot quietly bring a poisoned name back. If more than
-        MAX_WENT_DARK_FRACTION of the live tickers look implausible at once,
-        the download as a whole is not trusted and nothing is written.
+        ``since`` limits the check to rows from that date on (the cached
+        history before it was checked when it arrived); ``whole`` names
+        tickers whose entire history was just replaced and so must be
+        re-checked end to end. Raises if more than MAX_WENT_DARK_FRACTION of
+        the live tickers look implausible at once: that is a bad download,
+        not a bad market, and nothing should be written from it.
         """
         window = prices if since is None else prices.loc[since:]
         found = implausible_moves(window)
         if whole:
             found.update(implausible_moves(prices[[t for t in whole if t in prices.columns]]))
-        record = {} if clear else self.store.load_quarantine()
         newly = {ticker: reason for ticker, reason in found.items() if ticker not in record}
         live = prices.iloc[-1].dropna().index if not prices.empty else pd.Index([])
         if len(newly) > max(3, self.MAX_WENT_DARK_FRACTION * len(live)):
@@ -399,9 +406,45 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 f"{len(newly)} tickers moved implausibly in the downloaded prices (corrupt or tampered data?); "
                 "not overwriting the price cache. Try again later."
             )
+        return newly
+
+    @staticmethod
+    def _basis_entry(failure: dict, previous_entry, detected: str) -> dict:
+        """Quarantine entry for a failed re-basing, carrying a close on the current adjustment basis.
+
+        This refresh's own download first; failing that (nothing came back
+        for the ticker at all), whatever an earlier one managed to record,
+        which is still on the current basis -- the cached history is not,
+        which is the whole reason the ticker is excluded.
+        """
+        entry = {"reason": failure["reason"], "detected": detected}
+        valuation = failure.get("valuation") or (previous_entry or {}).get("valuation")
+        if valuation:
+            entry["valuation"] = valuation
+        return entry
+
+    def _record_quarantine(self, prices, since=None, whole=(), clear=False, broken=None, recovered=()) -> dict:
+        """Record every ticker that must be excluded from allocations and return the record. Writes no prices.
+
+        ``broken`` maps tickers whose split/dividend re-download failed or
+        came back truncated to ``{"reason", "valuation"}`` -- the valuation
+        being a freshly downloaded close on the *current* adjustment basis,
+        the only number a holding in one can honestly be valued at (see
+        ``_frozen_valuations``). ``recovered`` names tickers whose history
+        was successfully replaced on the new basis, lifting an earlier
+        ``broken`` entry (and only such an entry: a new adjustment basis is
+        no answer to implausible prices). Tickers already in quarantine stay
+        excluded until a full refresh (``clear``) re-checks them, so a
+        refresh cannot quietly bring a poisoned name back. ``since`` and
+        ``whole`` scope the implausibility check (see ``_newly_implausible``).
+        """
+        previous = self.store.load_quarantine()
+        record = {} if clear else dict(previous)
+        newly = self._newly_implausible(prices, since, whole, record)
         self._lift_cured_basis_failures(record, recovered)
         detected = pd.Timestamp.now().strftime("%Y-%m-%d")
-        record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in (broken or {}).items()})
+        for ticker, failure in (broken or {}).items():
+            record[ticker] = self._basis_entry(failure, previous.get(ticker), detected)
         record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in newly.items()})
         for ticker, reason in newly.items():
             self.log(
@@ -588,7 +631,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         prices = pd.concat([archive, new_rows.reindex(columns=archive.columns)])
         broken = {}
         if rebase:
-            prices, broken = self._rebase(prices, archive, rebase, unverified, len(previously_live))
+            prices, broken = self._rebase(prices, archive, rebase, unverified, len(previously_live), fresh=fresh)
         repaired = [ticker for ticker in rebase if ticker not in broken]
         record = self._record_quarantine(prices, since=last, whole=repaired, broken=broken, recovered=repaired)
         self._publish(current.universe, prices, record)
@@ -635,7 +678,10 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         so it takes only the fresh history -- and if that came back truncated,
         its cached history is kept intact and the ticker is excluded instead,
         the same choice ``_repair_readjusted`` makes on the incremental path.
-        Returns ``(merged, readjusted tickers, {excluded ticker: reason})``.
+        Returns ``(merged, readjusted tickers, {excluded ticker: {reason,
+        valuation}})``, the valuation being a close on the basis Yahoo
+        serves now, so a holding in an excluded ticker is not valued on the
+        superseded basis its cached history is stuck on.
         """
         readjusted = self._readjusted_tickers(cached, fresh)
         if readjusted:
@@ -656,8 +702,29 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 # Keep the old basis whole rather than persist a stub: the column stays
                 # internally consistent, and the next refresh can still detect the split.
                 merged[ticker] = cached[ticker].reindex(merged.index)
-                broken[ticker] = self._basis_failure(ticker, fresh_days, cached_days)
+                broken[ticker] = {
+                    "reason": self._basis_failure(ticker, fresh_days, cached_days),
+                    # Too short to optimize on, but its newest close is still a
+                    # real price on today's basis: enough to value a holding.
+                    "valuation": self._newest_close([fresh], ticker),
+                }
         return merged.dropna(how="all"), readjusted, broken
+
+    @staticmethod
+    def _newest_close(frames, ticker: str):
+        """Newest close for ``ticker`` across ``frames`` in order, as ``{"close", "as_of"}``; None if none has one.
+
+        Every frame passed here is a fresh download, so whatever it holds is
+        on the adjustment basis Yahoo is serving today -- which is exactly
+        what a ticker whose re-basing failed needs, and what its cached
+        history can no longer provide.
+        """
+        for frame in frames:
+            if frame is not None and not frame.empty and ticker in frame.columns:
+                closes = frame[ticker].dropna()
+                if not closes.empty:
+                    return {"close": float(closes.iloc[-1]), "as_of": str(closes.index[-1].date())}
+        return None
 
     def _basis_failure(self, ticker: str, fresh_days: int, cached_days: int) -> str:
         """Log why a re-adjusted ticker is excluded rather than re-based, and return the reason to record."""
@@ -677,14 +744,14 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         """Return true if the newest cached row already reaches today, so there is nothing to fetch."""
         return (last + timedelta(days=1)).strftime("%Y-%m-%d") >= pd.Timestamp.now().strftime("%Y-%m-%d")
 
-    def _rebase(self, prices, archive, rebase: list, exempt, live: int) -> tuple:
+    def _rebase(self, prices, archive, rebase: list, exempt, live: int, *, fresh=None) -> tuple:
         """Re-download ``rebase`` tickers' histories whole, refuse a mass *new* failure, and note the outcome.
 
         ``exempt`` names tickers already waiting on a re-download: those
         failing again is expected, and counting them would let a few
         accumulated failures block every future refresh.
         """
-        prices, broken = self._repair_readjusted(prices, rebase, archive)
+        prices, broken = self._repair_readjusted(prices, rebase, archive, fresh)
         self._refuse_mass_repair_failure({t: r for t, r in broken.items() if t not in exempt}, live)
         self._record_readjustments(rebase, broken)
         return prices, broken
@@ -763,7 +830,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         mismatched = ((new - old).abs() / old.abs() > self.READJUSTED_TOLERANCE).any()
         return list(columns[mismatched])
 
-    def _repair_readjusted(self, prices: pd.DataFrame, tickers: list, cached: pd.DataFrame) -> tuple:
+    def _repair_readjusted(self, prices: pd.DataFrame, tickers: list, cached: pd.DataFrame, fresh=None) -> tuple:
         """Replace ``tickers``' full history with a fresh download on today's adjustment basis.
 
         A handful of tickers split or go ex-dividend on any given day, so
@@ -774,8 +841,12 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         bases -- and the ticker is excluded instead. Nothing is deleted: the
         old basis is still every close that ticker ever had, and the next
         refresh sees the same mismatch and tries the repair again. Returns
-        ``(prices, {excluded ticker: reason})`` so the caller can quarantine
-        the excluded names where reports will show them.
+        ``(prices, {excluded ticker: reason}, {excluded ticker: valuation})``
+        so the caller can quarantine the excluded names where reports will
+        show them, and still value a holding in one: each entry is
+        ``{reason, valuation}``, and ``fresh`` -- the refresh's own download
+        -- supplies that valuation on the current basis when the repair
+        request itself came back with too few closes to use.
         """
         self.log(
             f"wolvwealth: {len(tickers)} ticker(s) need their full history re-downloaded (a split or dividend "
@@ -791,7 +862,13 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 prices[ticker] = repaired[ticker].reindex(prices.index)
             else:
                 prices[ticker] = cached[ticker].reindex(prices.index)
-                broken[ticker] = self._basis_failure(ticker, fresh_days, cached_days)
+                broken[ticker] = {
+                    "reason": self._basis_failure(ticker, fresh_days, cached_days),
+                    # The truncated repair first (its newest close is the most
+                    # recent one there is), then the refresh's own download. Both
+                    # are current basis; the cached column this ticker keeps is not.
+                    "valuation": self._newest_close([repaired, fresh], ticker),
+                }
         return prices, broken
 
     def _stale_by(self, max_age_days: int) -> int:

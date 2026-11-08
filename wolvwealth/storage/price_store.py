@@ -24,7 +24,7 @@ import pandas as pd
 from wolvwealth.domain.errors import DataError
 from wolvwealth.domain.market import clean_prices
 from wolvwealth.domain.holdings_parse import TICKER_RE
-from wolvwealth.domain.numbers import is_plausible_tbill_rate
+from wolvwealth.domain.numbers import is_number, is_plausible_tbill_rate
 
 #: Column holding mu in the stats file; lowercase so it cannot collide with a ticker.
 EXPECTED_RETURN_COLUMN = "expected_return"
@@ -39,6 +39,20 @@ def _replace(path: pathlib.Path, write) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _clean_valuation(valuation):
+    """Return ``{"close", "as_of"}`` if it is a believable dated close, else None."""
+    if not isinstance(valuation, dict):
+        return None
+    close, as_of = valuation.get("close"), valuation.get("as_of")
+    if not is_number(close) or close <= 0:
+        return None
+    try:
+        day = pd.Timestamp(as_of)
+    except (ValueError, TypeError):
+        return None
+    return {"close": float(close), "as_of": str(day.date())}
 
 
 class PriceStore:
@@ -154,18 +168,30 @@ class PriceStore:
         _replace(self.tbill_path, lambda path: path.write_text(payload, encoding="utf-8"))
 
     def load_quarantine(self) -> dict:
-        """Return ``{ticker: {"reason", "detected"}}`` for tickers excluded as implausible; {} if none or unreadable."""
+        """Return ``{ticker: {"reason", "detected"[, "valuation"]}}`` for excluded tickers; {} if none or unreadable.
+
+        ``valuation`` is ``{"close", "as_of"}``: a price on the *current*
+        adjustment basis for a ticker excluded because a split/dividend
+        re-download failed, whose cached history is therefore on a
+        superseded basis and cannot be used to value a holding. Dropped
+        unless it is a believable close, so a hand-edited or truncated file
+        degrades to "no valuation" rather than to a wrong one.
+        """
         try:
             data = json.loads(self.quarantine_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
         if not isinstance(data, dict):
             return {}
-        return {
-            ticker: {"reason": str(entry.get("reason", "")), "detected": str(entry.get("detected", ""))}
-            for ticker, entry in data.items()
-            if isinstance(ticker, str) and TICKER_RE.match(ticker) and isinstance(entry, dict)
-        }
+        record = {}
+        for ticker, entry in data.items():
+            if not (isinstance(ticker, str) and TICKER_RE.match(ticker) and isinstance(entry, dict)):
+                continue
+            record[ticker] = {"reason": str(entry.get("reason", "")), "detected": str(entry.get("detected", ""))}
+            valuation = _clean_valuation(entry.get("valuation"))
+            if valuation is not None:
+                record[ticker]["valuation"] = valuation
+        return record
 
     def save_quarantine(self, record: dict) -> None:
         """Overwrite the quarantine list (removing the file when it is empty)."""

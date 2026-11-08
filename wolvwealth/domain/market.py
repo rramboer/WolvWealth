@@ -155,7 +155,9 @@ class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one
     #: the ones computed on demand as much as the precomputed ones. The app
     #: always uses the default; backtests compare alternatives.
     estimator: str = ESTIMATOR
-    #: Quarantined tickers' last believable close: ``{ticker: (close, date)}``.
+    #: Quarantined tickers' best trustworthy close: ``{ticker: (close, date)}``,
+    #: built by the market-data service (which knows *why* each was excluded,
+    #: and so which close is safe -- see its ``_frozen_valuations``).
     #: The snapshot blanks a quarantined ticker's prices entirely, so without
     #: this a held position in one could not be totalled and the whole
     #: request would fail. Consulted only by ``can_value``,

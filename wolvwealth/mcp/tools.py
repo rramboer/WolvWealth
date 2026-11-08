@@ -239,7 +239,7 @@ TOOLS = (
             "close predates as_of (throttled; their last close is carried forward). In unattended runs also "
             "check quarantined "
             "(names that cannot be bought because their downloaded prices were implausible or irrecoverable; a "
-            "held position in one is kept frozen at its last believable close, not sold) and readjusted "
+            "held position in one is kept frozen at the most recent trustworthy close, not sold) and readjusted "
             "(names whose entire history was legitimately re-downloaded after a split or dividend in the last 30 "
             "days -- their numbers changed basis, not meaning). Pass `tickers` to validate symbols in one call."
         ),
