@@ -19,7 +19,7 @@ TBILL_MAX_AGE_DAYS = 30
 _UNLOADED = object()
 
 
-def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None) -> dict:
+def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None, readjustments: dict = None) -> dict:
     """Describe the price snapshot's freshness: the report the API and the MCP server both publish.
 
     ``stale`` is the same judgement the startup refresh makes, so a reader
@@ -46,6 +46,13 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None) 
         # Unattended runs (agents, schedules) read this report, not the logs:
         # an excluded name must be visible where the decision is made.
         report["quarantined"] = quarantine
+    if readjustments:
+        # Same audience: a split or dividend makes a refresh re-download that
+        # ticker's entire history, and a scheduled run must be able to see
+        # that its numbers changed basis (or that the re-download failed and
+        # the name is quarantined) without reading logs. Dated notes, not
+        # state: current exclusions are always under "quarantined".
+        report["readjusted"] = readjustments
     short = data.short_history()
     if short:
         report["short_history"] = short
@@ -55,6 +62,11 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None) 
             "the web app also refreshes in the background when started."
         )
     return report
+
+
+def service_status(service: "MarketDataService", data: MarketData, max_age_days: int) -> dict:
+    """``status()`` over the service's own stored records: the one composition every surface publishes."""
+    return status(data, service.tbill, max_age_days, service.quarantine, service.readjustments)
 
 
 def classify_tickers(data: MarketData, tickers) -> dict:
@@ -125,6 +137,11 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     #: change prices, never the number of trading days, so the guard cannot
     #: reject a genuine re-adjustment.
     MIN_HISTORY_COVERAGE = 0.9
+
+    #: How long a note about a re-downloaded (split/dividend) history stays in
+    #: the market report. Long enough that a weekly scheduled run cannot miss
+    #: it, short enough that the report stays about recent events.
+    READJUSTMENT_NOTE_DAYS = 30
 
     def __init__(
         self,
@@ -256,16 +273,20 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         fresh = clean_prices(raw, minimum_rows=0, latest=pd.Timestamp.now().normalize())
         return fresh.reindex(columns=tickers) if not fresh.empty else fresh
 
-    def _quarantine(self, prices: pd.DataFrame, since=None, whole=(), clear: bool = False) -> pd.DataFrame:
+    def _quarantine(self, prices: pd.DataFrame, since=None, whole=(), clear: bool = False, broken=None) -> pd.DataFrame:
         """Blank every ticker whose downloaded history moves implausibly, record why, and return the result.
 
         ``since`` limits the check to rows from that date on (the cached
         history before it was checked when it arrived); ``whole`` names
-        tickers whose entire history was just replaced. Tickers already in
-        quarantine stay blank until a full refresh (``clear``) re-checks them,
-        so a refresh cannot quietly bring a poisoned name back. If more than
-        MAX_WENT_DARK_FRACTION of the live tickers look implausible at once,
-        the download as a whole is not trusted and nothing is written.
+        tickers whose entire history was just replaced; ``broken`` maps
+        tickers already blanked by the caller (a split/dividend re-download
+        that failed or came back truncated) to their reasons, so the
+        exclusion is in the report agents read, not only in a log. Tickers
+        already in quarantine stay blank until a full refresh (``clear``)
+        re-checks them, so a refresh cannot quietly bring a poisoned name
+        back. If more than MAX_WENT_DARK_FRACTION of the live tickers look
+        implausible at once, the download as a whole is not trusted and
+        nothing is written.
         """
         window = prices if since is None else prices.loc[since:]
         found = implausible_moves(window)
@@ -280,6 +301,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 "not overwriting the price cache. Try again later."
             )
         detected = pd.Timestamp.now().strftime("%Y-%m-%d")
+        record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in (broken or {}).items()})
         record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in newly.items()})
         for ticker, reason in newly.items():
             self.log(
@@ -411,9 +433,12 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         if new_rows.empty and not readjusted:
             return False
         prices = pd.concat([current.prices, new_rows.reindex(columns=current.prices.columns)])
+        broken = {}
         if readjusted:
-            prices = self._repair_readjusted(prices, readjusted)
-        prices = self._quarantine(prices, since=last, whole=readjusted)
+            prices, broken = self._repair_readjusted(prices, readjusted)
+            self._refuse_mass_repair_failure(broken, len(previously_live))
+            self._record_readjustments(readjusted, broken)
+        prices = self._quarantine(prices, since=last, whole=readjusted, broken=broken)
         self._save_prices(prices)
         columns = self._stats_columns(current.universe, prices)
         self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices, columns))
@@ -439,16 +464,19 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 f"{len(lost)} of {len(previously_live)} live tickers came back without a current price "
                 "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
             )
-        prices = self._merge_full_download(cached, fresh)
+        prices, readjusted, broken = self._merge_full_download(cached, fresh)
+        self._refuse_mass_repair_failure(broken, len(previously_live))
+        if readjusted:
+            self._record_readjustments(readjusted, broken)
         # After the throttling check, which must count what came back, not what was then judged implausible.
-        prices = self._quarantine(prices, clear=True)
+        prices = self._quarantine(prices, clear=True, broken=broken)
         self._save_prices(prices)
         universe = self.data.universe
         columns = self._stats_columns(universe, prices)
         self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
         return True
 
-    def _merge_full_download(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
+    def _merge_full_download(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> tuple:
         """Lay a full re-download over the cache: fresh wins where both have a close, the cache fills the rest.
 
         A ticker the download misses entirely keeps its cached history and
@@ -458,7 +486,8 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         dividend): its cached rows are on the old basis and must not survive,
         so it takes only the fresh history -- and if that came back truncated,
         it is blanked rather than shortened, the same choice
-        ``_repair_readjusted`` makes on the incremental path.
+        ``_repair_readjusted`` makes on the incremental path. Returns
+        ``(merged, readjusted tickers, {blanked ticker: reason})``.
         """
         readjusted = self._readjusted_tickers(cached, fresh)
         if readjusted:
@@ -469,21 +498,73 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         merged = fresh.combine_first(cached.drop(columns=readjusted, errors="ignore"))
         # Universe (market-cap) column order; a ticker no longer in the universe is dropped, as before.
         merged = merged.reindex(columns=fresh.columns)
+        broken = {}
         for ticker in readjusted:
             fresh_days, cached_days = int(fresh[ticker].count()), int(cached[ticker].count())
             if fresh_days < self.MIN_HISTORY_COVERAGE * cached_days:
                 merged[ticker] = float("nan")
-                self.log(self._truncated_history_notice(ticker, fresh_days, cached_days))
-        return merged.dropna(how="all")
+                broken[ticker] = self._blank_truncated(ticker, fresh_days, cached_days)
+        return merged.dropna(how="all"), readjusted, broken
 
-    @staticmethod
-    def _truncated_history_notice(ticker: str, fresh_days: int, cached_days: int) -> str:
-        """Say why a re-adjusted ticker was blanked instead of taking its re-downloaded history."""
-        return (
-            f"wolvwealth: only {fresh_days} of {ticker}'s {cached_days} cached trading day(s) came back after "
-            "its split/dividend (throttled?); a history that short would pass it off as a recent listing, so it "
-            "is excluded from allocations until a later refresh downloads the full history."
+    def _blank_truncated(self, ticker: str, fresh_days: int, cached_days: int) -> str:
+        """Log why a re-adjusted ticker was blanked instead of taking its re-download; return the reason to record."""
+        reason = (
+            f"changed adjustment basis (split or dividend) but only {fresh_days} of its {cached_days} cached "
+            "trading days could be re-downloaded"
         )
+        self.log(
+            f"wolvwealth: {ticker} {reason} (throttled?); a history that short would pass it off as a recent "
+            "listing, so it is excluded from allocations until `wolvwealth refresh-data --full` downloads "
+            "the full history."
+        )
+        return reason
+
+    def _refuse_mass_repair_failure(self, broken: dict, live: int) -> None:
+        """Raise rather than blank an implausible share of live tickers over failed split/dividend re-downloads.
+
+        One or two names coming back empty or truncated is Yahoo throttling
+        those names; dozens at once means the refresh download itself cannot
+        be trusted, and persisting it would quarantine a swath of the
+        tradeable universe in one unattended run.
+        """
+        if len(broken) > max(3, self.MAX_WENT_DARK_FRACTION * live):
+            raise RuntimeError(
+                f"{len(broken)} re-adjusted tickers' histories came back empty or truncated "
+                "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
+            )
+
+    def _record_readjustments(self, readjusted: list, broken: dict) -> None:
+        """Note which tickers' whole histories were re-downloaded after a split/dividend, and how that went.
+
+        The market report carries these notes for READJUSTMENT_NOTE_DAYS, so
+        a user (or an agent on a schedule) who did not watch the refresh
+        learns that every number in a ticker's history legitimately changed,
+        or that the ticker vanished from the tradeable list because the
+        re-download failed -- instead of discovering either by surprise.
+        """
+        today = pd.Timestamp.now().normalize()
+        cutoff = today - timedelta(days=self.READJUSTMENT_NOTE_DAYS)
+
+        def recent(note) -> bool:
+            try:
+                return pd.Timestamp(note["detected"]) >= cutoff
+            except (ValueError, TypeError):
+                return False  # hand-edited or from a buggy build: an undatable note cannot expire, so drop it
+
+        record = {ticker: note for ticker, note in self.store.load_readjustments().items() if recent(note)}
+        for ticker in readjusted:
+            outcome = (
+                "history could not be re-downloaded; quarantined"
+                if ticker in broken
+                else "history replaced on the new adjustment basis"
+            )
+            record[ticker] = {"detected": today.strftime("%Y-%m-%d"), "outcome": outcome}
+        self.store.save_readjustments(record)
+
+    @property
+    def readjustments(self) -> dict:
+        """Recent split/dividend re-downloads: ``{ticker: {detected, outcome}}`` (see ``_record_readjustments``)."""
+        return self.store.load_readjustments()
 
     def _readjusted_tickers(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> list:
         """Tickers whose freshly served prices contradict the cache on overlapping days.
@@ -503,7 +584,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         mismatched = ((new - old).abs() / old.abs() > self.READJUSTED_TOLERANCE).any()
         return list(columns[mismatched])
 
-    def _repair_readjusted(self, prices: pd.DataFrame, tickers: list) -> pd.DataFrame:
+    def _repair_readjusted(self, prices: pd.DataFrame, tickers: list) -> tuple:
         """Replace ``tickers``' full history with a fresh download on today's adjustment basis.
 
         A handful of tickers split or go ex-dividend on any given day, so
@@ -511,7 +592,9 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         truncates (throttled) is blanked rather than kept: a history that
         mixes two adjustment bases poisons the optimizer, and one cut down
         to a recent tail poses as a new listing; an empty column is merely
-        excluded until a later refresh picks it up.
+        excluded until a full refresh recovers it. Returns
+        ``(prices, {blanked ticker: reason})`` so the caller can quarantine
+        the blanked names where reports will show them.
         """
         self.log(
             f"wolvwealth: {len(tickers)} ticker(s) changed adjustment basis (split or dividend); "
@@ -519,6 +602,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         )
         repaired = self._fetch(tickers, self.history_start)
         prices = prices.copy()
+        broken = {}
         for ticker in tickers:
             cached_days = int(prices[ticker].count())
             fresh_days = int(repaired[ticker].count()) if ticker in repaired.columns else 0
@@ -526,8 +610,8 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 prices[ticker] = repaired[ticker].reindex(prices.index)
             else:
                 prices[ticker] = float("nan")
-                self.log(self._truncated_history_notice(ticker, fresh_days, cached_days))
-        return prices
+                broken[ticker] = self._blank_truncated(ticker, fresh_days, cached_days)
+        return prices, broken
 
     def _stale_by(self, max_age_days: int) -> int:
         """Return the cache's age in days if it is past ``max_age_days``, else 0."""

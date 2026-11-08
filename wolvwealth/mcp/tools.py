@@ -191,9 +191,7 @@ def market(services: Services) -> MarketData:
 def market_status(services: Services, arguments: dict) -> dict:
     """Freshness of the price cache, the T-bill reference, and an optional symbol check."""
     data = market(services)
-    report = market_data.status(
-        data, services.market.tbill, services.settings.auto_refresh_max_age_days, services.market.quarantine
-    )
+    report = market_data.service_status(services.market, data, services.settings.auto_refresh_max_age_days)
     if "tickers" in arguments:
         tickers = arguments["tickers"]
         if not isinstance(tickers, list) or not all(isinstance(t, str) for t in tickers):
@@ -233,7 +231,10 @@ TOOLS = (
             "is computed from; prices are a local cache, never live quotes), age_days, stale (true when older than "
             "a week, with a refresh_hint to pass to the user), the current 13-week T-bill yield (tbill_rate) as a "
             "reference risk-free rate, the universe aliases, and under short_history any tradeable name with "
-            "too little price history to be optimized on by default. Pass `tickers` to validate symbols in one call."
+            "too little price history to be optimized on by default. In unattended runs also check quarantined "
+            "(names excluded because their downloaded prices were implausible or irrecoverable) and readjusted "
+            "(names whose entire history was legitimately re-downloaded after a split or dividend in the last 30 "
+            "days -- their numbers changed basis, not meaning). Pass `tickers` to validate symbols in one call."
         ),
         input_schema=MARKET_STATUS_SCHEMA,
         handler=market_status,

@@ -78,6 +78,9 @@ def test_a_split_ticker_gets_its_whole_history_re_downloaded_on_disk_and_in_memo
     assert prices["BBB"].pct_change().abs().max() < 0.3
     # The repair was a single-ticker request from the start of history.
     assert calls[1] == (["BBB"], "2020-01-01")
+    # The event is in the market report, not only in a log: an agent on a schedule learns
+    # that every cached number for BBB changed legitimately.
+    assert "replaced" in service.readjustments["BBB"]["outcome"] and "BBB" not in service.quarantine
 
 
 @pytest.mark.parametrize(
@@ -94,12 +97,22 @@ def test_an_overlap_that_agrees_appends_without_any_repair_download(tmp_path, ra
 
 def test_a_failed_repair_blanks_the_ticker_instead_of_mixing_bases(tmp_path):
     service, store = build_service(tmp_path)
-    download, _full, _calls = splitting_downloader(service, fail_repair=True)
+    download, full, _calls = splitting_downloader(service, fail_repair=True)
     service.downloader = download
     assert service.refresh() is True
     prices = store.load_prices()
     assert prices["BBB"].isna().all(), "a mixed-basis history must never be persisted"
     assert prices["AAA"].notna().any()
+    # The failure is in the report agents read: quarantined with the reason, and noted as an event.
+    assert "adjustment basis" in service.quarantine["BBB"]["reason"]
+    assert "quarantined" in service.readjustments["BBB"]["outcome"]
+    # The next refresh must not regrow a days-long stub for BBB: a correct-but-tiny history
+    # masquerades as a recent listing just as the truncated download would have.
+    new_dates = pd.bdate_range(full.index[-1] + pd.Timedelta(days=1), periods=2)
+    more = pd.concat([full, pd.DataFrame({t: [full[t].iloc[-1]] * 2 for t in full.columns}, index=new_dates)])
+    service.downloader = lambda tickers, start, **_kwargs: more.loc[more.index >= start, list(tickers)]
+    assert service.refresh() is True
+    assert store.load_prices()["BBB"].isna().all(), "quarantine holds until a full history returns"
 
 
 def test_a_truncated_repair_is_rejected_like_a_failed_one(tmp_path):
@@ -115,6 +128,34 @@ def test_a_truncated_repair_is_rejected_like_a_failed_one(tmp_path):
     assert prices["BBB"].isna().all(), "a shortened history must be excluded, not adopted"
     assert prices["AAA"].notna().any()
     assert any("BBB" in line and "excluded" in line for line in logged)
+    # The report says exactly how short the re-download was, so the exclusion is explainable.
+    assert "only 30 of its 403" in service.quarantine["BBB"]["reason"]
+    assert "quarantined" in service.readjustments["BBB"]["outcome"]
+
+
+def test_a_mass_repair_failure_refuses_the_refresh_instead_of_blanking_the_market(tmp_path):
+    """If every 'split' ticker's re-download comes back empty, the download is the problem:
+    persisting it would quarantine a swath of the tradeable universe in one unattended run."""
+    service, store = build_service(tmp_path)
+    cached = service.data.prices
+    new_dates = pd.bdate_range(cached.index[-1] + pd.Timedelta(days=1), periods=2)
+    rescaled = pd.concat(
+        [cached * 0.5, pd.DataFrame({t: [cached[t].iloc[-1] * 0.5] * 2 for t in cached.columns}, index=new_dates)]
+    ).round(2)
+    calls = []
+
+    def download(tickers, start, **_kwargs):
+        calls.append(list(tickers))
+        if len(calls) > 1:  # every repair request comes back empty
+            return rescaled.loc[:, list(tickers)] * float("nan")
+        return rescaled.loc[rescaled.index >= start, list(tickers)]
+
+    service.downloader = download
+    before = store.load_prices()
+    with pytest.raises(RuntimeError, match="empty or truncated"):
+        service.refresh()
+    pd.testing.assert_frame_equal(store.load_prices(), before)
+    assert service.quarantine == {} and service.readjustments == {}
 
 
 @pytest.mark.parametrize("served", ["only the cached overlap", "nothing at all"])

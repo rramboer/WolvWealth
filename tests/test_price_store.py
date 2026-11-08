@@ -89,6 +89,17 @@ def test_sidecars_round_trip_and_read_corrupt_as_absent(tmp_path):
         assert store.load_quarantine() == {}
     store.save_quarantine({})
     assert not store.quarantine_path.exists()
+    assert store.load_readjustments() == {}
+    note = {"detected": "2026-11-06", "outcome": "history replaced on the new adjustment basis"}
+    store.save_readjustments({"BBB": note})
+    assert store.load_readjustments() == {"BBB": note}
+    store.readjustments_path.write_text('{"BBB": {"outcome": "x"}, "../evil": {}, "CCC": 5}', encoding="utf-8")
+    assert store.load_readjustments() == {"BBB": {"detected": "", "outcome": "x"}}
+    for corrupt in ("not json", "[1]"):
+        store.readjustments_path.write_text(corrupt, encoding="utf-8")
+        assert store.load_readjustments() == {}
+    store.save_readjustments({})
+    assert not store.readjustments_path.exists()
 
 
 def test_the_ticker_list_is_normalized_and_an_unusable_one_is_a_data_error(tmp_path):

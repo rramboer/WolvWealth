@@ -53,6 +53,7 @@ class PriceStore:
         self.stats_meta_path = self.prices_path.with_name("market_stats.json")
         self.tbill_path = self.prices_path.with_name("tbill_rate.json")
         self.quarantine_path = self.prices_path.with_name("quarantine.json")
+        self.readjustments_path = self.prices_path.with_name("readjustments.json")
 
     def load_universe(self) -> list:
         """Tickers, one per line, in file order (descending market cap); upper-cased, first occurrence wins.
@@ -173,6 +174,28 @@ class PriceStore:
             return
         payload = json.dumps(record, indent=2, sort_keys=True)
         _replace(self.quarantine_path, lambda path: path.write_text(payload, encoding="utf-8"))
+
+    def load_readjustments(self) -> dict:
+        """Return ``{ticker: {"detected", "outcome"}}`` for recent split/dividend re-downloads; {} if unreadable."""
+        try:
+            data = json.loads(self.readjustments_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            ticker: {"detected": str(entry.get("detected", "")), "outcome": str(entry.get("outcome", ""))}
+            for ticker, entry in data.items()
+            if isinstance(ticker, str) and TICKER_RE.match(ticker) and isinstance(entry, dict)
+        }
+
+    def save_readjustments(self, record: dict) -> None:
+        """Overwrite the re-adjustment notes (removing the file when there are none)."""
+        if not record:
+            self.readjustments_path.unlink(missing_ok=True)
+            return
+        payload = json.dumps(record, indent=2, sort_keys=True)
+        _replace(self.readjustments_path, lambda path: path.write_text(payload, encoding="utf-8"))
 
     def load_stats(self):
         """Return ``(meta, mu, cov)`` from the statistics cache, or None if it is absent."""

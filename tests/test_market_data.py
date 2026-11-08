@@ -168,6 +168,13 @@ def test_a_full_refresh_takes_only_the_fresh_history_for_a_re_adjusted_ticker(tm
         store = PriceStore(root / "historical_prices.parquet", root / "universe.csv")
         store.save_universe(tickers)
         store.save_prices(cached)
+        # A note past its 30 days, and one with an unusable date: both must be gone afterwards.
+        store.save_readjustments(
+            {
+                "TK7": {"detected": "2020-01-15", "outcome": "history replaced on the new adjustment basis"},
+                "TK6": {"detected": "someday", "outcome": "history replaced on the new adjustment basis"},
+            }
+        )
         new_dates = pd.bdate_range(cached.index[-1] + pd.Timedelta(days=1), periods=2)
         full = pd.concat([cached, pd.DataFrame({t: [cached[t].iloc[-1]] * 2 for t in tickers}, index=new_dates)])
         full["TK1"] = (full["TK1"] * 0.5).round(2)  # 2:1 split: the served history is rescaled end to end
@@ -179,15 +186,21 @@ def test_a_full_refresh_takes_only_the_fresh_history_for_a_re_adjusted_ticker(tm
 
         service = MarketDataService(store, "2020-01-01", downloader=downloader, log=lambda *_: None)
         assert service.refresh(full=True) is True
-        return store.load_prices(), full
+        return store.load_prices(), full, service
 
-    merged, full = run(truncated=False)
+    merged, full, service = run(truncated=False)
     pd.testing.assert_series_equal(merged["TK1"], full["TK1"], check_names=False, check_freq=False)
     assert merged["TK1"].pct_change().abs().max() < 0.3, "no old-basis row survives to fake a crash"
+    # The event is in the market report, and stale notes expired rather than piling up.
+    assert "replaced" in service.readjustments["TK1"]["outcome"] and "TK1" not in service.quarantine
+    assert list(service.readjustments) == ["TK1"]
 
-    merged, _full = run(truncated=True)
+    merged, _full, service = run(truncated=True)
     assert merged["TK1"].isna().all(), "a truncated new-basis history is excluded, not adopted"
     assert merged["TK0"].notna().all()
+    # The exclusion is explained where agents look: quarantined with the day counts, plus the event note.
+    assert "only 60 of its 400" in service.quarantine["TK1"]["reason"]
+    assert "quarantined" in service.readjustments["TK1"]["outcome"]
 
 
 def test_refresh_recomputes_stats_for_the_new_rows(tmp_path):

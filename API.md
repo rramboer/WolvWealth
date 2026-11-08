@@ -66,7 +66,8 @@ Price-cache freshness and the symbols a request may use.
 | `tickers` | The full tradeable list, so symbols can be validated without a round trip. Includes the `short_history` names |
 | `tbill_rate` | 13-week US Treasury bill yield as a fraction, fetched from Yahoo at the last price refresh. A reference for choosing a `risk_free_rate`; the app never applies it on its own. `null` until the first refresh |
 | `tbill_as_of` | Date of that yield, or `null` |
-| `quarantined` | Present only when some tickers were excluded because their downloaded prices were implausible (a one-day move beyond 5x either way): `{ticker: {"reason", "detected"}}`. They are untradeable until `wolvwealth refresh-data --full` downloads a believable history. Check this before acting on trades, especially in unattended runs |
+| `quarantined` | Present only when some tickers were excluded because their downloaded prices were implausible (a one-day move beyond 5x either way) or because the full history a split/dividend made necessary could not be re-downloaded: `{ticker: {"reason", "detected"}}`. They are untradeable until `wolvwealth refresh-data --full` downloads a believable history. Check this before acting on trades, especially in unattended runs |
+| `readjusted` | Present only when a refresh in the last 30 days detected that a ticker's adjustment basis changed (a split or dividend rescales the entire served history) and re-downloaded it whole: `{ticker: {"detected", "outcome"}}`. `outcome` says whether the history was replaced on the new basis (every cached number for that ticker changed, legitimately) or could not be re-downloaded (the ticker is then under `quarantined`). Dated notes about events, not current state: exclusions in force are always under `quarantined` |
 
 `universe_size` exceeds `tradeable_size` because the ticker list keeps names that were
 acquired, renamed or delisted. Those are excluded from aliases and rejected if named.

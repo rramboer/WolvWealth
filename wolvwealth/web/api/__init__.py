@@ -75,9 +75,7 @@ def market():
     """
     data = context.market()
     services = context.services()
-    report = market_data.status(
-        data, services.market.tbill, services.settings.auto_refresh_max_age_days, services.market.quarantine
-    )
+    report = market_data.service_status(services.market, data, services.settings.auto_refresh_max_age_days)
     report["tickers"] = list(data.tradeable)
     return flask.jsonify(report)
 

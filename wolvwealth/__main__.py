@@ -316,6 +316,8 @@ def cmd_refresh_data(args, services: Services) -> int:
         print("Prices already up to date.")
     if market.tbill is not None:
         print(f"13-week T-bill yield: {market.tbill['rate']:.2%} as of {market.tbill['as_of']}.")
+    for ticker, note in market.readjustments.items():
+        print(f"Re-adjusted {ticker} (split or dividend detected {note['detected']}): {note['outcome']}.")
     for ticker, entry in market.quarantine.items():
         print(f"Quarantined {ticker} (excluded from allocations since {entry['detected']}): {entry['reason']}.")
     return 0

@@ -28,6 +28,11 @@ def test_market_endpoint_reports_freshness_tickers_and_the_tbill(client, service
     services.price_store.save_quarantine({"DDD": {"reason": "moved 40.00x in one day", "detected": "2026-11-06"}})
     assert client.get("/api/market/").get_json()["quarantined"]["DDD"]["reason"] == "moved 40.00x in one day"
     services.price_store.save_quarantine({})
+    assert "readjusted" not in body
+    note = {"detected": "2026-11-06", "outcome": "history replaced on the new adjustment basis"}
+    services.price_store.save_readjustments({"BBB": note})
+    assert client.get("/api/market/").get_json()["readjusted"]["BBB"] == note
+    services.price_store.save_readjustments({})
     services.market.set_data(dated_to_today(market))
     services.market.set_tbill(0.0412, "2026-10-30")
     body = client.get("/api/market/").get_json()
