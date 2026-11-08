@@ -148,6 +148,7 @@ def test_market_status_reports_freshness_and_classifies_tickers(mcp, services):
     assert report["tickers"] == {
         "tradeable": ["AAA", "CCC"],
         "short_history": [],
+        "quarantined": [],
         "no_current_price": ["BBB"],
         "unknown": ["ZZZ"],
     }

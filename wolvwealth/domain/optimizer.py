@@ -97,8 +97,8 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     unoptimized: dict = dataclasses.field(default_factory=dict)
     #: Ticker -> days of history, for the ones in ``unoptimized`` (for the messages).
     unoptimized_days: dict = dataclasses.field(default_factory=dict)
-    #: Ticker -> why it is kept rather than sized: "short_history" or
-    #: "no_current_price". Reporting only -- the solver sees the weights
+    #: Ticker -> why it is kept rather than sized: "short_history",
+    #: "no_current_price" or "quarantined". Reporting only -- the solver sees the weights
     #: above and nothing else -- so it stays out of the memo keys.
     unoptimized_reason: dict = dataclasses.field(default_factory=dict)
 
@@ -243,10 +243,13 @@ def _parse_holdings(payload, request, market) -> None:
             raise ValidationError(f"Invalid symbol in initial_holdings: {ticker}.")
         if not market.can_value(ticker.upper()):
             # Never quoted at all: there is no number to put on the position,
-            # so this is the one holding that still has to be an error.
+            # so this is the one holding that still has to be an error. A
+            # quarantined holding never lands here -- its last believable
+            # close survives in frozen_valuations, so can_value stays true.
             raise ValidationError(
-                f"No price ever recorded for {ticker.upper()} in initial_holdings, so the position cannot be "
-                "valued. Remove it, or run `wolvwealth refresh-data --full` to download its history."
+                f"No price has ever been downloaded for {ticker.upper()} in initial_holdings, so the position "
+                "cannot be valued. Remove it, or run `wolvwealth refresh-data --full` to try downloading its "
+                "history (it may simply have none: delisted before the cache begins, or never served by Yahoo)."
             )
         if not is_number(shares):
             raise ValidationError(
@@ -280,7 +283,13 @@ def _set_unoptimized(request, market) -> None:
         if shares <= 0:
             continue
         days = market.history_days[ticker]
-        if ticker not in market.latest_prices:
+        if ticker not in market.latest_prices and ticker in market.frozen_valuations:
+            # Quarantined: the snapshot blanks its prices, so it has no
+            # current quote by construction. Its own reason, because the way
+            # out differs: not "wait for a refresh to quote it", but "a
+            # refresh must download a believable history".
+            reason = "quarantined"
+        elif ticker not in market.latest_prices:
             reason = "no_current_price"
         elif days < request.min_history_days:
             reason = "short_history"
@@ -857,7 +866,7 @@ def _describe_unoptimized(request: OptimizationRequest, market: MarketData) -> d
             "history_days": request.unoptimized_days[ticker],
             "percent_weight": round(weight * 100, 2),
         }
-        if reason == "no_current_price":
+        if reason in ("no_current_price", "quarantined"):
             # The position is being valued at a price nobody is quoting today;
             # saying how old it is turns a hidden assumption into a stated one.
             entry["priced_as_of"] = str(market.valuation_date(ticker))
@@ -886,6 +895,13 @@ def _unoptimized_note(request: OptimizationRequest, kept: float) -> str:
             f"Some have no close in the last {MAX_STALE_DAYS} trading days, so there is no price to trade them "
             "at; they are valued at their last known close (date above) and will be optimized normally once a "
             "refresh quotes them again. If one has been delisted or renamed, remove it from the holdings."
+        )
+    if "quarantined" in reasons:
+        parts.append(
+            "Some are quarantined: their downloaded prices failed a plausibility check, so there is no price "
+            "that can be trusted to trade them at; they are valued at their last believable close (date above). "
+            "The market status report gives the reason for each under `quarantined`; a refresh that downloads "
+            "a believable history (try `wolvwealth refresh-data --full`) returns them to normal optimization."
         )
     return " ".join(parts)
 

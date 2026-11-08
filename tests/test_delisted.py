@@ -98,4 +98,4 @@ def test_api_still_refuses_a_holding_that_never_had_a_price(client, services, ma
     services.market.set_data(MarketData.build(market.universe, prices))
     response = client.post("/api/optimize/", json={"initial_cash": 1000, "initial_holdings": {"CCC": 1}})
     assert response.status_code == 400
-    assert "No price ever recorded for CCC" in response.get_json()["error"]["message"]
+    assert "No price has ever been downloaded for CCC" in response.get_json()["error"]["message"]

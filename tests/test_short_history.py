@@ -303,6 +303,7 @@ def test_market_report_names_the_excluded_tickers(client, services, with_young):
     assert market_data.classify_tickers(with_young, ["aaa", "ddd", "zzz"]) == {
         "tradeable": ["AAA"],
         "short_history": ["DDD"],
+        "quarantined": [],
         "no_current_price": [],
         "unknown": ["ZZZ"],
     }

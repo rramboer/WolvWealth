@@ -43,7 +43,9 @@ OPTIMIZE_SCHEMA = {
         "initial_holdings": {
             "type": "object",
             "additionalProperties": {"type": "number", "minimum": 0},
-            "description": "Ticker to share count. Valued at the cached close and pooled with the cash.",
+            "description": "Ticker to share count. Valued at the cached close and pooled with the cash. A held "
+            "ticker with no current quote (delisted, throttled, or quarantined) is kept at its current size and "
+            "reported under `unoptimized` rather than refused or sold.",
         },
         "universe": {
             "type": "array",
@@ -132,8 +134,10 @@ MARKET_STATUS_SCHEMA = {
         "tickers": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Optional symbols to check. Each comes back as tradeable, no_current_price (known but "
-            "delisted or renamed), or unknown.",
+            "description": "Optional symbols to check. Each comes back as tradeable, short_history (tradeable, "
+            "but refused in a universe unless min_history_days is lowered), quarantined (excluded because its "
+            "downloaded prices failed a plausibility check; the reason is under `quarantined` in this report), "
+            "no_current_price (known but delisted, renamed, or not quoted recently), or unknown.",
         }
     },
     "additionalProperties": False,
@@ -234,7 +238,8 @@ TOOLS = (
             "too little price history to be optimized on by default, and under stale_prices any whose newest "
             "close predates as_of (throttled; their last close is carried forward). In unattended runs also "
             "check quarantined "
-            "(names excluded because their downloaded prices were implausible or irrecoverable) and readjusted "
+            "(names that cannot be bought because their downloaded prices were implausible or irrecoverable; a "
+            "held position in one is kept frozen at its last believable close, not sold) and readjusted "
             "(names whose entire history was legitimately re-downloaded after a split or dividend in the last 30 "
             "days -- their numbers changed basis, not meaning). Pass `tickers` to validate symbols in one call."
         ),

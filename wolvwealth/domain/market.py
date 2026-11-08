@@ -116,6 +116,27 @@ def implausible_moves(prices: pd.DataFrame) -> dict:
     return found
 
 
+def last_believable_close(series: pd.Series):
+    """Return ``(close, date)`` of the newest close that precedes any implausible move, or None if there is none.
+
+    For valuing a held position in a quarantined ticker: the first flagged
+    move and everything from it on may be corrupt, so the newest close before
+    it is the last number worth putting on the position. A history with no
+    implausible move (quarantined because a split/dividend re-download
+    failed, say) yields its newest close.
+    """
+    closes = series.dropna()
+    if closes.empty:
+        return None
+    ratio = closes / closes.shift(1)
+    flagged = (ratio > MAX_DAILY_MOVE) | (ratio < 1 / MAX_DAILY_MOVE)
+    if flagged.any():
+        closes = closes[closes.index < flagged.idxmax()]
+        if closes.empty:
+            return None
+    return float(closes.iloc[-1]), closes.index[-1].date()
+
+
 @dataclasses.dataclass(frozen=True)
 class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one read model; see below
     """Ticker universe plus daily adjusted closes, with optional precomputed statistics.
@@ -134,13 +155,30 @@ class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one
     #: the ones computed on demand as much as the precomputed ones. The app
     #: always uses the default; backtests compare alternatives.
     estimator: str = ESTIMATOR
+    #: Quarantined tickers' last believable close: ``{ticker: (close, date)}``.
+    #: The snapshot blanks a quarantined ticker's prices entirely, so without
+    #: this a held position in one could not be totalled and the whole
+    #: request would fail. Consulted only by ``can_value``,
+    #: ``valuation_price`` and ``valuation_date`` -- never by
+    #: ``latest_prices`` or ``tradeable`` -- so a quarantined name stays
+    #: unbuyable however recent its last believable close is. Membership here
+    #: is also how the snapshot knows a ticker is quarantined at all, which
+    #: the refusal messages use to say so instead of guessing "delisted".
+    frozen_valuations: dict = dataclasses.field(default_factory=dict)
     #: Memoized optimizer solutions for exactly these prices. Not part of the
     #: snapshot's identity, so it is excluded from equality and repr; a
     #: refreshed snapshot starts empty and cannot serve stale solutions.
     solutions: LRUCache = dataclasses.field(default_factory=LRUCache, compare=False, repr=False)
 
     @classmethod
-    def build(cls, universe, prices: pd.DataFrame, stats: MarketStats = None, estimator: str = None) -> "MarketData":
+    def build(  # pylint: disable=too-many-arguments  # mirrors the fields; every caller names what it passes
+        cls,
+        universe,
+        prices: pd.DataFrame,
+        stats: MarketStats = None,
+        estimator: str = None,
+        frozen_valuations: dict = None,
+    ) -> "MarketData":
         """Normalize the universe to a tuple of upper-case tickers.
 
         The estimator defaults to the one ``stats`` were computed with, and
@@ -153,7 +191,7 @@ class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one
             raise ValueError(f"Unknown expected-return estimator {estimator!r}; choose from {', '.join(ESTIMATORS)}.")
         if stats is not None and stats.estimator != estimator:
             raise ValueError(f"stats were computed with {stats.estimator!r}, not {estimator!r}")
-        return cls(tuple(str(t).upper() for t in universe), prices, stats, estimator)
+        return cls(tuple(str(t).upper() for t in universe), prices, stats, estimator, frozen_valuations or {})
 
     def with_estimator(self, estimator: str) -> "MarketData":
         """Return a snapshot of the same prices under another estimator, with no statistics and no memo carried over.
@@ -320,8 +358,13 @@ class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one
         return self.latest_prices[ticker]
 
     def can_value(self, ticker: str) -> bool:
-        """Return true if the ticker has ever had a close, so a position in it can be totalled."""
-        return ticker in self.latest_prices or ticker in self._last_known
+        """Return true if the ticker has ever had a close, so a position in it can be totalled.
+
+        A quarantined ticker's closes are blanked from the snapshot, but its
+        last believable one survives in ``frozen_valuations``, so holding one
+        never makes a portfolio untotallable.
+        """
+        return ticker in self.latest_prices or ticker in self._last_known or ticker in self.frozen_valuations
 
     def valuation_price(self, ticker: str) -> float:
         """Price for valuing a held position: the current one, else the last known close at any age.
@@ -335,13 +378,17 @@ class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one
         """
         if ticker in self.latest_prices:
             return self.latest_prices[ticker]
-        return self._last_known[ticker][0]
+        if ticker in self._last_known:
+            return self._last_known[ticker][0]
+        return self.frozen_valuations[ticker][0]
 
     def valuation_date(self, ticker: str):
         """Date of the close ``valuation_price`` uses for the ticker. KeyError if it never traded."""
         if ticker in self._price_dates:
             return self._price_dates[ticker]
-        return self._last_known[ticker][1]
+        if ticker in self._last_known:
+            return self._last_known[ticker][1]
+        return self.frozen_valuations[ticker][1]
 
     def value(self, holdings: dict) -> float:
         """Market value of a holdings map, valuing each position at the best price available for it."""
@@ -404,6 +451,12 @@ class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one
                 # held tickers in the universe, so naming it must not fail.
                 if entry.upper() in held:
                     continue
+                if entry.upper() in self.frozen_valuations:
+                    raise ValueError(
+                        f"{entry.upper()} is quarantined: its downloaded prices failed a plausibility check, so "
+                        "it cannot be bought. The market status report gives the reason under `quarantined`; a "
+                        "refresh that downloads a believable history lifts the exclusion."
+                    )
                 raise ValueError(
                     f"No current price for {entry.upper()}: delisted, renamed, or not quoted in the last "
                     f"{MAX_STALE_DAYS} trading days (Yahoo may be throttling it)."

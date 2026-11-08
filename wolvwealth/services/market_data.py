@@ -22,7 +22,14 @@ from datetime import timedelta
 import pandas as pd
 
 from wolvwealth.domain.errors import DataError
-from wolvwealth.domain.market import MIN_HISTORY_DAYS, UNIVERSE_ALIASES, MarketData, clean_prices, implausible_moves
+from wolvwealth.domain.market import (
+    MIN_HISTORY_DAYS,
+    UNIVERSE_ALIASES,
+    MarketData,
+    clean_prices,
+    implausible_moves,
+    last_believable_close,
+)
 from wolvwealth.domain.numbers import TBILL_RATE_RANGE, is_plausible_tbill_rate
 from wolvwealth.domain.stats import ESTIMATOR, MarketStats
 from wolvwealth.market import yahoo
@@ -102,15 +109,19 @@ def classify_tickers(data: MarketData, tickers) -> dict:
 
     A short-history name can be held and valued, but a universe refuses it
     unless the request lowers ``min_history_days``; it goes in its own
-    bucket so the caller learns that before building the request.
+    bucket so the caller learns that before building the request. A
+    quarantined name gets its own bucket too: calling it "no current price"
+    would read as delisted, when the market report has the actual reason.
     """
-    report = {"tradeable": [], "short_history": [], "no_current_price": [], "unknown": []}
+    report = {"tradeable": [], "short_history": [], "quarantined": [], "no_current_price": [], "unknown": []}
     for raw in tickers:
         ticker = str(raw).upper()
         if data.has_price(ticker) and data.history_days[ticker] < MIN_HISTORY_DAYS:
             report["short_history"].append(ticker)
         elif data.has_price(ticker):
             report["tradeable"].append(ticker)
+        elif ticker in data and ticker in data.frozen_valuations:
+            report["quarantined"].append(ticker)
         elif ticker in data:
             report["no_current_price"].append(ticker)
         else:
@@ -287,8 +298,14 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 self.store.save_prices(downloaded)
         self._loaded_stamp = self.store.prices_stamp()
         self._archive = self.store.load_prices()
-        served = self._exclude(self._archive, self.store.load_quarantine())
-        return MarketData.build(universe, served, self._load_or_compute_stats(universe, served))
+        record = self.store.load_quarantine()
+        served = self._exclude(self._archive, record)
+        return MarketData.build(
+            universe,
+            served,
+            self._load_or_compute_stats(universe, served),
+            frozen_valuations=self._frozen_valuations(self._archive, record),
+        )
 
     def _exclude(self, prices: pd.DataFrame, record: dict) -> pd.DataFrame:
         """Return the snapshot view of the archive: quarantined tickers blanked, the archive itself untouched.
@@ -305,6 +322,23 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         served[blanked] = float("nan")
         return served
 
+    @staticmethod
+    def _frozen_valuations(prices: pd.DataFrame, record: dict) -> dict:
+        """Each quarantined ticker's last believable close, read from the archive before ``_exclude`` blanks it.
+
+        ``{ticker: (close, date)}``, so a held position in a quarantined name
+        is still valued (and frozen) instead of failing the whole request.
+        Only tickers with at least one believable close appear; one whose
+        history is empty genuinely cannot be valued.
+        """
+        frozen = {}
+        for ticker in record:
+            if ticker in prices.columns:
+                valuation = last_believable_close(prices[ticker])
+                if valuation is not None:
+                    frozen[ticker] = valuation
+        return frozen
+
     def _save_prices(self, prices) -> None:
         """Write the archive and remember the result as this process's own, so it is not re-read as foreign."""
         self.store.save_prices(prices)
@@ -316,7 +350,12 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self._save_prices(prices)
         served = self._exclude(prices, record)
         columns = self._stats_columns(universe, served)
-        self._data = MarketData.build(universe, served, self._compute_and_save_stats(served, columns))
+        self._data = MarketData.build(
+            universe,
+            served,
+            self._compute_and_save_stats(served, columns),
+            frozen_valuations=self._frozen_valuations(prices, record),
+        )
 
     def _fetch(self, tickers, start_date) -> pd.DataFrame:
         """Download and clean: the one gate every price from the network passes through.
@@ -366,8 +405,9 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in newly.items()})
         for ticker, reason in newly.items():
             self.log(
-                f"wolvwealth: quarantined {ticker}: its downloaded prices {reason}. It is excluded from "
-                "allocations until `wolvwealth refresh-data --full` downloads a believable history."
+                f"wolvwealth: quarantined {ticker}: its downloaded prices {reason}. It cannot be bought, and a "
+                "held position is kept at its last believable close, until a `wolvwealth refresh-data --full` "
+                "downloads a believable history."
             )
         self.store.save_quarantine(record)
         return record

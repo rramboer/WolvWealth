@@ -67,7 +67,7 @@ Price-cache freshness and the symbols a request may use.
 | `tickers` | The full tradeable list, so symbols can be validated without a round trip. Includes the `short_history` names |
 | `tbill_rate` | 13-week US Treasury bill yield as a fraction, fetched from Yahoo at the last price refresh. A reference for choosing a `risk_free_rate`; the app never applies it on its own. `null` until the first refresh |
 | `tbill_as_of` | Date of that yield, or `null` |
-| `quarantined` | Present only when some tickers were excluded because their downloaded prices were implausible (a one-day move beyond 5x either way) or because the full history a split/dividend made necessary could not be re-downloaded: `{ticker: {"reason", "detected"}}`. They are untradeable until `wolvwealth refresh-data --full` downloads a believable history. Check this before acting on trades, especially in unattended runs |
+| `quarantined` | Present only when some tickers were excluded because their downloaded prices were implausible (a one-day move beyond 5x either way) or because the full history a split/dividend made necessary could not be re-downloaded: `{ticker: {"reason", "detected"}}`. They cannot be bought (naming one in a `universe` is refused), and a held position in one is kept at its current size, valued at its last believable close, and reported under `unoptimized` with reason `quarantined` rather than failing the request. The exclusion lifts when a refresh (usually `wolvwealth refresh-data --full`) downloads a believable history. Check this before acting on trades, especially in unattended runs |
 | `readjusted` | Present only when a refresh in the last 30 days detected that a ticker's adjustment basis changed (a split or dividend rescales the entire served history) and re-downloaded it whole: `{ticker: {"detected", "outcome"}}`. `outcome` says whether the history was replaced on the new basis (every cached number for that ticker changed, legitimately) or could not be re-downloaded (the ticker is then under `quarantined`). Dated notes about events, not current state: exclusions in force are always under `quarantined` |
 
 `universe_size` exceeds `tradeable_size` because the ticker list keeps names that were
@@ -87,7 +87,7 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | Field | Type | Meaning | Default |
 |---|---|---|---|
 | `initial_cash` | number ≥ 0 | Cash to invest, USD | `0` |
-| `initial_holdings` | object | Ticker → share count. Valued at the `as_of` close and pooled with cash. A ticker not quoted recently is still valued, at its last close, and kept rather than sold (see `stale_prices` and `unoptimized`); only one that has never had a price at all is an error | `{}` |
+| `initial_holdings` | object | Ticker → share count. Valued at the `as_of` close and pooled with cash. A ticker not quoted recently is still valued, at its last close, and kept rather than sold (see `stale_prices` and `unoptimized`); a quarantined one is likewise kept, valued at its last believable close; only one that has never had a price at all is an error | `{}` |
 | `workspace` + `portfolio` | string | Load cash and holdings from a stored portfolio instead. `workspace` falls back to the browser session. Explicit `initial_cash`/`initial_holdings` still win | — |
 | `universe` | array | Tickers and/or aliases to allocate across. Aliases skip tickers with fewer than `min_history_days` of prices; naming one is refused with the days it has and the override that would admit it | `top500` |
 | `min_history_days` | integer ≥ 2 | Trading days of price history a ticker needs to be in the universe. The estimators annualize whatever history exists, so a company listed three weeks ago that rose 15% shows an expected return in the thousands of percent at almost no measured risk, and the solver puts the maximum weight there. A **held** ticker under the minimum is neither sized nor sold: it is kept at its current size, the rest is optimized around it, and the response lists it under `unoptimized`. Lower this only knowingly; `GET /api/market/` lists the excluded names under `short_history` | `252` (one trading year) |
@@ -252,18 +252,21 @@ says which prices that applies to and how old they are. `trading_days_stale` is 
 held position priced from beyond the window — see `unoptimized`.
 
 **`unoptimized`** — present only when some held ticker cannot be sized: it has fewer than
-`min_history_days` of prices, or no close in the last 10 trading days. Such a position is kept
-at exactly its current size (it appears in `optimized_portfolio` with the shares held and
-produces no trade), the rest of the money is optimized around it, and it is left out of
-`metrics` — though its value *is* included in `portfolio_value`, since the shares are
-genuinely owned. `positions` maps each ticker to a `reason` (`"short_history"` or
-`"no_current_price"`), its `history_days` and `percent_weight`, plus `priced_as_of` when the
-reason is `no_current_price`; `note` says the same in words with the remedy for each. A kept
-position above `max_weight`, or a `max_positions` that the kept positions use up, is refused as
-an infeasible constraint set with those remedies. To sell a `short_history` position instead,
+`min_history_days` of prices, no close in the last 10 trading days, or it is quarantined. Such
+a position is kept at exactly its current size (it appears in `optimized_portfolio` with the
+shares held and produces no trade), the rest of the money is optimized around it, and it is
+left out of `metrics` — though its value *is* included in `portfolio_value`, since the shares
+are genuinely owned. `positions` maps each ticker to a `reason` (`"short_history"`,
+`"no_current_price"` or `"quarantined"`), its `history_days` and `percent_weight`, plus
+`priced_as_of` when the position is valued from an old close (the last known close for
+`no_current_price`, the last believable one — the newest close before the implausible move —
+for `quarantined`); `note` says the same in words with the remedy for each. A kept position
+above `max_weight`, or a `max_positions` that the kept positions use up, is refused as an
+infeasible constraint set with those remedies. To sell a `short_history` position instead,
 lower `min_history_days` to its count and leave it out of `universe`; a `no_current_price` one
 becomes ordinary again as soon as a refresh quotes it, so if it was delisted or renamed, remove
-it from your holdings rather than waiting.
+it from your holdings rather than waiting; a `quarantined` one becomes ordinary when a refresh
+downloads a believable history (see `quarantined` in `GET /api/market/` for the reason).
 
 **`metrics`** — figures describing the portfolio actually returned, including any
 `max_positions` re-solve, and excluding any `unoptimized` positions:
