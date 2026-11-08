@@ -367,6 +367,43 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self.store.save_quarantine(record)
         return record
 
+    @staticmethod
+    def _unverifiable(archive: pd.DataFrame, overlap_start, new_rows: pd.DataFrame) -> list:
+        """Tickers returning data today with nothing in the overlap window to check their basis against.
+
+        The overlap is the only evidence a refresh has that the prices it is
+        about to append continue the ones it holds. A ticker with no close in
+        that window offers none, so appending would be a guess -- and if a
+        split happened while it was away, a wrong one that reads as a crash.
+        Re-downloading its history instead costs one small request and is
+        self-limiting: a ticker absent from the last trading days is already
+        untradeable, so this only ever fires for names coming back.
+        """
+        overlap = archive.loc[overlap_start:]
+        return [
+            ticker
+            for ticker in archive.columns
+            if ticker in new_rows.columns and overlap[ticker].isna().all() and new_rows[ticker].notna().any()
+        ]
+
+    def _pending_basis_failures(self) -> list:
+        """Tickers still waiting for a full history on the current adjustment basis.
+
+        Read from the quarantine record rather than re-derived from the
+        overlap, because the overlap stops being able to show it: a failed
+        repair leaves the ticker blank from that day on, so once more than
+        OVERLAP_ROWS days have passed there is nothing left for a fresh
+        download to disagree with. The refresh would then see no split,
+        append new-basis rows onto the old-basis history, and manufacture
+        the very crash the repair exists to prevent -- silently, since an
+        ordinary split is a step the implausible-move guard lets through.
+        """
+        return [
+            ticker
+            for ticker, entry in self.store.load_quarantine().items()
+            if entry["reason"].startswith(BASIS_FAILURE_REASON)
+        ]
+
     def _lift_cured_basis_failures(self, record: dict, recovered) -> None:
         """Drop ``recovered`` tickers from ``record`` where they were excluded only for a failed re-basing.
 
@@ -496,16 +533,24 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         # Against the archive, so a ticker the snapshot excludes is still
         # checked for a split and can still be recovered by this refresh.
         archive = self._archive
-        readjusted = self._readjusted_tickers(archive, fresh)
-        if new_rows.empty and not readjusted:
+        # A ticker whose earlier repair failed is re-based again no matter what the overlap
+        # says, as is one the overlap could not speak for: those are the cases where
+        # appending would join two adjustment bases.
+        unverified = self._pending_basis_failures() + self._unverifiable(archive, overlap_start, new_rows)
+        unverified = [t for t in dict.fromkeys(unverified) if t in archive.columns]
+        rebase = list(dict.fromkeys(self._readjusted_tickers(archive, fresh) + unverified))
+        if new_rows.empty and not rebase:
             return False
         prices = pd.concat([archive, new_rows.reindex(columns=archive.columns)])
         broken = {}
-        if readjusted:
-            prices, broken = self._repair_readjusted(prices, readjusted, archive)
-            self._refuse_mass_repair_failure(broken, len(previously_live))
-            self._record_readjustments(readjusted, broken)
-        repaired = [ticker for ticker in readjusted if ticker not in broken]
+        if rebase:
+            prices, broken = self._repair_readjusted(prices, rebase, archive)
+            # Only failures that are new: a ticker already waiting on a re-download failing
+            # again is expected, and must not block every future refresh once a few pile up.
+            newly_broken = {t: r for t, r in broken.items() if t not in unverified}
+            self._refuse_mass_repair_failure(newly_broken, len(previously_live))
+            self._record_readjustments(rebase, broken)
+        repaired = [ticker for ticker in rebase if ticker not in broken]
         record = self._record_quarantine(prices, since=last, whole=repaired, broken=broken, recovered=repaired)
         self._publish(current.universe, prices, record)
         return True
@@ -531,7 +576,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 f"{len(lost)} of {len(previously_live)} live tickers came back without a current price "
                 "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
             )
-        prices, readjusted, broken = self._merge_full_download(cached, fresh)
+        prices, readjusted, broken = self._merge_full_download(cached, fresh, self._pending_basis_failures())
         self._refuse_mass_repair_failure(broken, len(previously_live))
         if readjusted:
             self._record_readjustments(readjusted, broken)
@@ -540,7 +585,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self._publish(universe, prices, record)
         return True
 
-    def _merge_full_download(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> tuple:
+    def _merge_full_download(self, cached: pd.DataFrame, fresh: pd.DataFrame, pending=()) -> tuple:
         """Lay a full re-download over the cache: fresh wins where both have a close, the cache fills the rest.
 
         A ticker the download misses entirely keeps its cached history and
@@ -563,7 +608,10 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         # Universe (market-cap) column order; a ticker no longer in the universe is dropped, as before.
         merged = merged.reindex(columns=fresh.columns)
         broken = {}
-        for ticker in readjusted:
+        # Pending tickers are re-checked too: this refresh clears the whole quarantine
+        # record, so one whose full history still did not arrive must re-earn its entry
+        # rather than quietly return to allocations on a superseded basis.
+        for ticker in dict.fromkeys(list(readjusted) + [t for t in pending if t in cached.columns]):
             fresh_days, cached_days = int(fresh[ticker].count()), int(cached[ticker].count())
             if fresh_days < self.MIN_HISTORY_COVERAGE * cached_days:
                 # Keep the old basis whole rather than persist a stub: the column stays
@@ -674,8 +722,8 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         the excluded names where reports will show them.
         """
         self.log(
-            f"wolvwealth: {len(tickers)} ticker(s) changed adjustment basis (split or dividend); "
-            f"re-downloading their full history: {', '.join(tickers)}"
+            f"wolvwealth: {len(tickers)} ticker(s) need their full history re-downloaded (a split or dividend "
+            f"re-based it, or an earlier attempt was throttled): {', '.join(tickers)}"
         )
         repaired = self._fetch(tickers, self.history_start)
         prices = prices.copy()

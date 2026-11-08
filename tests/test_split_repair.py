@@ -149,6 +149,56 @@ def test_a_later_successful_repair_recovers_the_ticker_from_the_kept_history(tmp
     assert service.data.prices["BBB"].pct_change().abs().max() < 0.3, "no split-sized step survives"
 
 
+def test_a_pending_repair_is_retried_however_long_it_has_been_waiting(tmp_path):
+    """Regression: the "needs re-basing" flag was re-derived from a 5-day overlap every time.
+
+    A failed repair leaves the ticker's own column blank from that day on, so once more than
+    OVERLAP_ROWS days had passed the overlap held nothing to disagree with, the split went
+    undetected, and the refresh appended new-basis rows straight onto the old-basis history --
+    re-creating the phantom crash the whole repair exists to prevent, and quietly, because a
+    2:1 split is a 0.5x step that the implausible-move guard is not meant to catch.
+    """
+    service, store = build_service(tmp_path)
+    cached = service.data.prices
+    split_day = cached.index[-1]
+    # Yahoo has re-based BBB and keeps refusing the full history; days keep arriving meanwhile.
+    rescaled = cached.copy()
+    rescaled["BBB"] = (rescaled["BBB"] * 0.5).round(2)
+    extra = pd.bdate_range(split_day + pd.Timedelta(days=1), periods=3 * MarketDataService.OVERLAP_ROWS)
+    served = pd.concat(
+        [rescaled, pd.DataFrame({t: [rescaled[t].iloc[-1]] * len(extra) for t in cached.columns}, index=extra)]
+    )
+    repairs = []
+    visible = {"through": extra[0]}
+
+    def download(tickers, start, **_kwargs):
+        if list(tickers) == ["BBB"]:  # the repair request, always throttled
+            repairs.append(start)
+            return served.loc[:, ["BBB"]] * float("nan")
+        window = served.loc[served.index <= visible["through"]]
+        return window.loc[window.index >= start, list(tickers)]
+
+    service.downloader = download
+    for day in extra:  # one refresh per day, each bringing one more row
+        visible["through"] = day
+        service.refresh()
+
+    assert len(repairs) > MarketDataService.OVERLAP_ROWS, "the repair must still be retried once the overlap moves on"
+    # Whatever happened, BBB's stored history must never mix the two bases.
+    bbb = store.load_prices()["BBB"].dropna()
+    assert bbb.pct_change().abs().max() < 0.3, "old-basis and new-basis rows were concatenated"
+    assert "BBB" not in service.data.tradeable, "an unrepaired ticker stays out of allocations"
+
+    # Belt and braces: even with the record of why BBB is excluded gone (deleted, corrupt,
+    # hand-edited), an unverifiable column must not be appended to on a guess.
+    store.quarantine_path.unlink()
+    visible["through"] = served.index[-1] + pd.Timedelta(days=1)
+    served.loc[visible["through"]] = served.iloc[-1]
+    service.refresh()
+    recovered = store.load_prices()["BBB"].dropna()
+    assert recovered.pct_change().abs().max() < 0.3, "the basis was guessed without evidence for it"
+
+
 def test_a_basis_failure_never_lifts_a_quarantine_recorded_for_bad_prices(tmp_path):
     """Only a cured basis failure is lifted; an implausible-price exclusion is not cured by a split."""
     service, store = build_service(tmp_path)
