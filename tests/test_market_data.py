@@ -196,7 +196,9 @@ def test_a_full_refresh_takes_only_the_fresh_history_for_a_re_adjusted_ticker(tm
     assert list(service.readjustments) == ["TK1"]
 
     merged, _full, service = run(truncated=True)
-    assert merged["TK1"].isna().all(), "a truncated new-basis history is excluded, not adopted"
+    assert service.data.prices["TK1"].isna().all(), "a truncated new-basis history is excluded, not adopted"
+    # ...but excluding it must not delete it: the old basis stays whole on disk, recoverable.
+    pd.testing.assert_series_equal(merged["TK1"].loc[cached.index], cached["TK1"], check_names=False, check_freq=False)
     assert merged["TK0"].notna().all()
     # The exclusion is explained where agents look: quarantined with the day counts, plus the event note.
     assert "only 60 of its 400" in service.quarantine["TK1"]["reason"]

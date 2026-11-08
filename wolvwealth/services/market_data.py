@@ -1,4 +1,20 @@
-"""MarketDataService: the process-wide price snapshot and how it gets refreshed."""
+"""MarketDataService: the process-wide price snapshot and how it gets refreshed.
+
+Two frames, deliberately distinct. The *archive* is the Parquet file: every
+close ever downloaded, and prices are only ever added to it or corrected in
+place -- a refresh never shortens a history, and never deletes one. The
+*snapshot* is what the optimizer reads: the archive with excluded tickers
+blanked (see ``_exclude``).
+
+Keeping them apart is what makes a bad refresh recoverable. Exclusions are
+judgements about data that may be wrong, or that a later download will cure
+-- a throttled split repair, a corrupt close. Writing those judgements into
+the file would destroy the evidence they were made from: the next refresh
+would have nothing to compare a download against, nothing to fall back to,
+and a ticker listed for decades whose repair was throttled would be gone for
+good. So exclusions live in ``quarantine.json`` and are re-applied to the
+archive on every load.
+"""
 
 import threading
 from datetime import timedelta
@@ -14,6 +30,13 @@ from wolvwealth.storage.price_store import PriceStore
 
 #: A T-bill quote older than this is not the "current" yield it would be presented as.
 TBILL_MAX_AGE_DAYS = 30
+
+#: Opening words of the quarantine reason recorded when a split/dividend
+#: re-download failed or came back truncated. Such a ticker is excluded while
+#: its cached history sits on a superseded adjustment basis, so a later
+#: refresh that does replace the history lifts exactly these entries --
+#: never one recorded for implausible prices, which a new basis does not cure.
+BASIS_FAILURE_REASON = "changed adjustment basis"
 
 #: Marks the T-bill reference as not yet read from disk (None means read, and absent).
 _UNLOADED = object()
@@ -163,6 +186,10 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self._tbill = _UNLOADED
         self.stats_universe_size = stats_universe_size
         self._data = None
+        #: Every close on disk, including tickers the snapshot excludes. The
+        #: refresh merges into this, never into the blanked snapshot, so an
+        #: exclusion can always be undone by a later download.
+        self._archive = None
         #: ``PriceStore.prices_stamp()`` of the file the snapshot was loaded
         #: from (or that this process last wrote), so ``reload_if_changed``
         #: can tell another process's refresh from its own.
@@ -181,6 +208,9 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     def set_data(self, data: MarketData) -> None:
         """Replace the snapshot in memory (tests, backtests). Does not write to disk."""
         self._data = data
+        # Keep the archive coherent with the snapshot: a caller that injects
+        # prices and then refreshes must merge into those, not into the file.
+        self._archive = data.prices
 
     def loaded(self) -> bool:
         """Return true once a snapshot is in memory (reading ``data`` before then loads or builds the cache)."""
@@ -243,7 +273,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 self.log("wolvwealth: no price history cache, downloading 2006 -> today (this takes a while)...")
                 downloaded = self._download(universe, self.history_start)
                 if len(downloaded) >= 2:
-                    downloaded = self._quarantine(downloaded, clear=True)
+                    self._record_quarantine(downloaded, clear=True)
                 if len(downloaded) < 2:
                     raise DataError(
                         "The first price download returned no usable history (offline, or Yahoo is throttling). "
@@ -251,13 +281,37 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                     )
                 self.store.save_prices(downloaded)
         self._loaded_stamp = self.store.prices_stamp()
-        prices = self.store.load_prices()
-        return MarketData.build(universe, prices, self._load_or_compute_stats(universe, prices))
+        self._archive = self.store.load_prices()
+        served = self._exclude(self._archive, self.store.load_quarantine())
+        return MarketData.build(universe, served, self._load_or_compute_stats(universe, served))
+
+    def _exclude(self, prices: pd.DataFrame, record: dict) -> pd.DataFrame:
+        """Return the snapshot view of the archive: quarantined tickers blanked, the archive itself untouched.
+
+        Blanking happens here, on the way to the optimizer, and never on the
+        way to disk. An excluded ticker therefore keeps every close it ever
+        had, so lifting the exclusion is a matter of re-reading the file
+        rather than re-downloading a history Yahoo may not serve again.
+        """
+        blanked = [ticker for ticker in record if ticker in prices.columns]
+        if not blanked:
+            return prices
+        served = prices.copy()
+        served[blanked] = float("nan")
+        return served
 
     def _save_prices(self, prices) -> None:
-        """Write the cache and remember the result as this process's own, so it is not re-read as foreign."""
+        """Write the archive and remember the result as this process's own, so it is not re-read as foreign."""
         self.store.save_prices(prices)
+        self._archive = prices
         self._loaded_stamp = self.store.prices_stamp()
+
+    def _publish(self, universe, prices: pd.DataFrame, record: dict) -> None:
+        """Persist the archive and swap in the snapshot built from it, with ``record``'s tickers excluded."""
+        self._save_prices(prices)
+        served = self._exclude(prices, record)
+        columns = self._stats_columns(universe, served)
+        self._data = MarketData.build(universe, served, self._compute_and_save_stats(served, columns))
 
     def _fetch(self, tickers, start_date) -> pd.DataFrame:
         """Download and clean: the one gate every price from the network passes through.
@@ -273,20 +327,21 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         fresh = clean_prices(raw, minimum_rows=0, latest=pd.Timestamp.now().normalize())
         return fresh.reindex(columns=tickers) if not fresh.empty else fresh
 
-    def _quarantine(self, prices: pd.DataFrame, since=None, whole=(), clear: bool = False, broken=None) -> pd.DataFrame:
-        """Blank every ticker whose downloaded history moves implausibly, record why, and return the result.
+    def _record_quarantine(self, prices, since=None, whole=(), clear=False, broken=None, recovered=()) -> dict:
+        """Record every ticker that must be excluded from allocations and return the record. Writes no prices.
 
-        ``since`` limits the check to rows from that date on (the cached
-        history before it was checked when it arrived); ``whole`` names
-        tickers whose entire history was just replaced; ``broken`` maps
-        tickers already blanked by the caller (a split/dividend re-download
-        that failed or came back truncated) to their reasons, so the
-        exclusion is in the report agents read, not only in a log. Tickers
-        already in quarantine stay blank until a full refresh (``clear``)
-        re-checks them, so a refresh cannot quietly bring a poisoned name
-        back. If more than MAX_WENT_DARK_FRACTION of the live tickers look
-        implausible at once, the download as a whole is not trusted and
-        nothing is written.
+        ``since`` limits the implausibility check to rows from that date on
+        (the cached history before it was checked when it arrived); ``whole``
+        names tickers whose entire history was just replaced; ``broken`` maps
+        tickers whose split/dividend re-download failed or came back
+        truncated to their reasons; ``recovered`` names tickers whose history
+        was successfully replaced on the new basis, lifting an earlier
+        ``broken`` entry (and only such an entry: a new adjustment basis is
+        no answer to implausible prices). Tickers already in quarantine stay
+        excluded until a full refresh (``clear``) re-checks them, so a
+        refresh cannot quietly bring a poisoned name back. If more than
+        MAX_WENT_DARK_FRACTION of the live tickers look implausible at once,
+        the download as a whole is not trusted and nothing is written.
         """
         window = prices if since is None else prices.loc[since:]
         found = implausible_moves(window)
@@ -300,6 +355,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 f"{len(newly)} tickers moved implausibly in the downloaded prices (corrupt or tampered data?); "
                 "not overwriting the price cache. Try again later."
             )
+        self._lift_cured_basis_failures(record, recovered)
         detected = pd.Timestamp.now().strftime("%Y-%m-%d")
         record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in (broken or {}).items()})
         record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in newly.items()})
@@ -308,12 +364,25 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 f"wolvwealth: quarantined {ticker}: its downloaded prices {reason}. It is excluded from "
                 "allocations until `wolvwealth refresh-data --full` downloads a believable history."
             )
-        blanked = [ticker for ticker in record if ticker in prices.columns]
-        if blanked:
-            prices = prices.copy()
-            prices[blanked] = float("nan")
         self.store.save_quarantine(record)
-        return prices
+        return record
+
+    def _lift_cured_basis_failures(self, record: dict, recovered) -> None:
+        """Drop ``recovered`` tickers from ``record`` where they were excluded only for a failed re-basing.
+
+        The cure is specific: their history now exists whole on the current
+        adjustment basis, which is exactly what the exclusion was waiting
+        for. An entry recorded for implausible prices is left alone -- a
+        split says nothing about whether those prices were believable.
+        """
+        for ticker in recovered:
+            entry = record.get(ticker)
+            if entry and entry["reason"].startswith(BASIS_FAILURE_REASON):
+                del record[ticker]
+                self.log(
+                    f"wolvwealth: {ticker}'s full history was re-downloaded on the new adjustment basis; "
+                    "it is back in allocations."
+                )
 
     @property
     def quarantine(self) -> dict:
@@ -422,26 +491,23 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         if fresh.empty:
             return False
         previously_live = current.prices.iloc[-1].dropna().index
-        went_dark = [t for t in previously_live if t in fresh and fresh[t].isna().all()]
-        if len(went_dark) > self.MAX_WENT_DARK_FRACTION * len(previously_live):
-            raise RuntimeError(
-                f"{len(went_dark)} of {len(previously_live)} live tickers returned no data "
-                "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
-            )
+        self._refuse_mass_blackout(fresh, previously_live)
         new_rows = fresh[fresh.index > last]
-        readjusted = self._readjusted_tickers(current.prices, fresh)
+        # Against the archive, so a ticker the snapshot excludes is still
+        # checked for a split and can still be recovered by this refresh.
+        archive = self._archive
+        readjusted = self._readjusted_tickers(archive, fresh)
         if new_rows.empty and not readjusted:
             return False
-        prices = pd.concat([current.prices, new_rows.reindex(columns=current.prices.columns)])
+        prices = pd.concat([archive, new_rows.reindex(columns=archive.columns)])
         broken = {}
         if readjusted:
-            prices, broken = self._repair_readjusted(prices, readjusted)
+            prices, broken = self._repair_readjusted(prices, readjusted, archive)
             self._refuse_mass_repair_failure(broken, len(previously_live))
             self._record_readjustments(readjusted, broken)
-        prices = self._quarantine(prices, since=last, whole=readjusted, broken=broken)
-        self._save_prices(prices)
-        columns = self._stats_columns(current.universe, prices)
-        self._data = MarketData.build(current.universe, prices, self._compute_and_save_stats(prices, columns))
+        repaired = [ticker for ticker in readjusted if ticker not in broken]
+        record = self._record_quarantine(prices, since=last, whole=repaired, broken=broken, recovered=repaired)
+        self._publish(current.universe, prices, record)
         return True
 
     def _refresh_full(self) -> bool:
@@ -454,9 +520,10 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         the cache additively, and a download that lost too many live tickers
         outright is refused before anything is written.
         """
-        cached = self.data.prices
-        fresh = self._download(self.data.universe, self.history_start)
-        previously_live = cached.iloc[-1].dropna().index
+        universe = self.data.universe  # loads the cache, and with it the archive, if this is the first access
+        cached = self._archive
+        fresh = self._download(universe, self.history_start)
+        previously_live = self.data.prices.iloc[-1].dropna().index
         came_back = fresh.iloc[-1].dropna().index if not fresh.empty else pd.Index([])
         lost = previously_live.difference(came_back)
         if len(lost) > self.MAX_WENT_DARK_FRACTION * len(previously_live):
@@ -469,11 +536,8 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         if readjusted:
             self._record_readjustments(readjusted, broken)
         # After the throttling check, which must count what came back, not what was then judged implausible.
-        prices = self._quarantine(prices, clear=True, broken=broken)
-        self._save_prices(prices)
-        universe = self.data.universe
-        columns = self._stats_columns(universe, prices)
-        self._data = MarketData.build(universe, prices, self._compute_and_save_stats(prices, columns))
+        record = self._record_quarantine(prices, clear=True, broken=broken)
+        self._publish(universe, prices, record)
         return True
 
     def _merge_full_download(self, cached: pd.DataFrame, fresh: pd.DataFrame) -> tuple:
@@ -485,9 +549,9 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         exception is a ticker whose adjustment basis changed (split or
         dividend): its cached rows are on the old basis and must not survive,
         so it takes only the fresh history -- and if that came back truncated,
-        it is blanked rather than shortened, the same choice
-        ``_repair_readjusted`` makes on the incremental path. Returns
-        ``(merged, readjusted tickers, {blanked ticker: reason})``.
+        its cached history is kept intact and the ticker is excluded instead,
+        the same choice ``_repair_readjusted`` makes on the incremental path.
+        Returns ``(merged, readjusted tickers, {excluded ticker: reason})``.
         """
         readjusted = self._readjusted_tickers(cached, fresh)
         if readjusted:
@@ -502,25 +566,36 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         for ticker in readjusted:
             fresh_days, cached_days = int(fresh[ticker].count()), int(cached[ticker].count())
             if fresh_days < self.MIN_HISTORY_COVERAGE * cached_days:
-                merged[ticker] = float("nan")
-                broken[ticker] = self._blank_truncated(ticker, fresh_days, cached_days)
+                # Keep the old basis whole rather than persist a stub: the column stays
+                # internally consistent, and the next refresh can still detect the split.
+                merged[ticker] = cached[ticker].reindex(merged.index)
+                broken[ticker] = self._basis_failure(ticker, fresh_days, cached_days)
         return merged.dropna(how="all"), readjusted, broken
 
-    def _blank_truncated(self, ticker: str, fresh_days: int, cached_days: int) -> str:
-        """Log why a re-adjusted ticker was blanked instead of taking its re-download; return the reason to record."""
+    def _basis_failure(self, ticker: str, fresh_days: int, cached_days: int) -> str:
+        """Log why a re-adjusted ticker is excluded rather than re-based, and return the reason to record."""
         reason = (
-            f"changed adjustment basis (split or dividend) but only {fresh_days} of its {cached_days} cached "
+            f"{BASIS_FAILURE_REASON} (split or dividend) but only {fresh_days} of its {cached_days} cached "
             "trading days could be re-downloaded"
         )
         self.log(
             f"wolvwealth: {ticker} {reason} (throttled?); a history that short would pass it off as a recent "
-            "listing, so it is excluded from allocations until `wolvwealth refresh-data --full` downloads "
-            "the full history."
+            "listing, so its cached history is kept as it was and the ticker is excluded from allocations "
+            "until a refresh re-downloads it whole."
         )
         return reason
 
+    def _refuse_mass_blackout(self, fresh: pd.DataFrame, previously_live) -> None:
+        """Raise if an implausible share of tickers that had a price yesterday returned nothing today."""
+        went_dark = [t for t in previously_live if t in fresh and fresh[t].isna().all()]
+        if len(went_dark) > self.MAX_WENT_DARK_FRACTION * len(previously_live):
+            raise RuntimeError(
+                f"{len(went_dark)} of {len(previously_live)} live tickers returned no data "
+                "(Yahoo rate limiting?); not overwriting the price cache. Try again later."
+            )
+
     def _refuse_mass_repair_failure(self, broken: dict, live: int) -> None:
-        """Raise rather than blank an implausible share of live tickers over failed split/dividend re-downloads.
+        """Raise rather than exclude an implausible share of live tickers over failed split/dividend re-downloads.
 
         One or two names coming back empty or truncated is Yahoo throttling
         those names; dozens at once means the refresh download itself cannot
@@ -554,7 +629,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         record = {ticker: note for ticker, note in self.store.load_readjustments().items() if recent(note)}
         for ticker in readjusted:
             outcome = (
-                "history could not be re-downloaded; quarantined"
+                "history could not be re-downloaded; cached history kept, ticker quarantined"
                 if ticker in broken
                 else "history replaced on the new adjustment basis"
             )
@@ -584,17 +659,19 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         mismatched = ((new - old).abs() / old.abs() > self.READJUSTED_TOLERANCE).any()
         return list(columns[mismatched])
 
-    def _repair_readjusted(self, prices: pd.DataFrame, tickers: list) -> tuple:
+    def _repair_readjusted(self, prices: pd.DataFrame, tickers: list, cached: pd.DataFrame) -> tuple:
         """Replace ``tickers``' full history with a fresh download on today's adjustment basis.
 
         A handful of tickers split or go ex-dividend on any given day, so
-        this is one small request. A ticker the repair download misses or
-        truncates (throttled) is blanked rather than kept: a history that
-        mixes two adjustment bases poisons the optimizer, and one cut down
-        to a recent tail poses as a new listing; an empty column is merely
-        excluded until a full refresh recovers it. Returns
-        ``(prices, {blanked ticker: reason})`` so the caller can quarantine
-        the blanked names where reports will show them.
+        this is one small request. When the repair download misses a ticker
+        or comes back truncated (throttled), its cached history is restored
+        exactly as it was -- including dropping the new-basis rows this
+        refresh appended, which would otherwise leave the column mixing two
+        bases -- and the ticker is excluded instead. Nothing is deleted: the
+        old basis is still every close that ticker ever had, and the next
+        refresh sees the same mismatch and tries the repair again. Returns
+        ``(prices, {excluded ticker: reason})`` so the caller can quarantine
+        the excluded names where reports will show them.
         """
         self.log(
             f"wolvwealth: {len(tickers)} ticker(s) changed adjustment basis (split or dividend); "
@@ -604,13 +681,13 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         prices = prices.copy()
         broken = {}
         for ticker in tickers:
-            cached_days = int(prices[ticker].count())
+            cached_days = int(cached[ticker].count())
             fresh_days = int(repaired[ticker].count()) if ticker in repaired.columns else 0
             if fresh_days and fresh_days >= self.MIN_HISTORY_COVERAGE * cached_days:
                 prices[ticker] = repaired[ticker].reindex(prices.index)
             else:
-                prices[ticker] = float("nan")
-                broken[ticker] = self._blank_truncated(ticker, fresh_days, cached_days)
+                prices[ticker] = cached[ticker].reindex(prices.index)
+                broken[ticker] = self._basis_failure(ticker, fresh_days, cached_days)
         return prices, broken
 
     def _stale_by(self, max_age_days: int) -> int:

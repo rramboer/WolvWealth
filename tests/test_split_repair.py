@@ -95,42 +95,69 @@ def test_an_overlap_that_agrees_appends_without_any_repair_download(tmp_path, ra
     assert len(store.load_prices()) == len(synthetic_market().prices) + 3
 
 
-def test_a_failed_repair_blanks_the_ticker_instead_of_mixing_bases(tmp_path):
+@pytest.mark.parametrize("how", ["fail_repair", "truncate_repair"], ids=["empty", "truncated"])
+def test_a_failed_repair_excludes_the_ticker_but_keeps_its_history_on_disk(tmp_path, how):
+    """A repair that cannot deliver the new basis must not cost the old one.
+
+    Regression (two of them): the shortened download used to be adopted, so a decades-old
+    ticker looked like a recent listing; then it was blanked, which destroyed the only copy
+    of its history and left nothing to recover from or to detect the next split against.
+    """
+    logged = []
+    cached = synthetic_market().prices
+    service, store = build_service(tmp_path)
+    service.log = logged.append
+    download, _full, _calls = splitting_downloader(service, **{how: True})
+    service.downloader = download
+    assert service.refresh() is True
+
+    # Excluded from the optimizer: no mixed-basis or stub history ever reaches it.
+    assert "BBB" not in service.data.tradeable
+    assert service.data.prices["BBB"].isna().all()
+    # But every close it ever had is still on disk, untouched and on one consistent basis.
+    on_disk = store.load_prices()
+    pd.testing.assert_series_equal(on_disk["BBB"].loc[cached.index], cached["BBB"], check_names=False, check_freq=False)
+    assert on_disk["BBB"].loc[on_disk.index > cached.index[-1]].isna().all(), "no new-basis rows mixed in"
+    assert on_disk["AAA"].notna().any()
+    # And the exclusion is explained where agents look.
+    assert "adjustment basis" in service.quarantine["BBB"]["reason"]
+    assert "quarantined" in service.readjustments["BBB"]["outcome"]
+    assert any("BBB" in line and "excluded" in line for line in logged)
+    if how == "truncate_repair":
+        assert "only 30 of its 400" in service.quarantine["BBB"]["reason"]
+
+
+def test_a_later_successful_repair_recovers_the_ticker_from_the_kept_history(tmp_path):
+    """The point of keeping the history: the next refresh re-detects the split and can fix it."""
     service, store = build_service(tmp_path)
     download, full, _calls = splitting_downloader(service, fail_repair=True)
     service.downloader = download
     assert service.refresh() is True
-    prices = store.load_prices()
-    assert prices["BBB"].isna().all(), "a mixed-basis history must never be persisted"
-    assert prices["AAA"].notna().any()
-    # The failure is in the report agents read: quarantined with the reason, and noted as an event.
-    assert "adjustment basis" in service.quarantine["BBB"]["reason"]
-    assert "quarantined" in service.readjustments["BBB"]["outcome"]
-    # The next refresh must not regrow a days-long stub for BBB: a correct-but-tiny history
-    # masquerades as a recent listing just as the truncated download would have.
+    assert "BBB" not in service.data.tradeable
+
+    # Yahoo is no longer throttling: the same refresh now serves the whole rescaled history.
     new_dates = pd.bdate_range(full.index[-1] + pd.Timedelta(days=1), periods=2)
     more = pd.concat([full, pd.DataFrame({t: [full[t].iloc[-1]] * 2 for t in full.columns}, index=new_dates)])
     service.downloader = lambda tickers, start, **_kwargs: more.loc[more.index >= start, list(tickers)]
     assert service.refresh() is True
-    assert store.load_prices()["BBB"].isna().all(), "quarantine holds until a full history returns"
+
+    # The quarantine lifted on its own -- no `--full` needed -- and the history is on the new basis.
+    assert service.quarantine == {} and "BBB" in service.data.tradeable
+    pd.testing.assert_series_equal(
+        store.load_prices()["BBB"], more["BBB"].reindex(store.load_prices().index), check_names=False
+    )
+    assert service.data.prices["BBB"].pct_change().abs().max() < 0.3, "no split-sized step survives"
 
 
-def test_a_truncated_repair_is_rejected_like_a_failed_one(tmp_path):
-    """Regression: Yahoo throttled all but the tail of a repair download, and the decades-old
-    ticker was persisted with a month of history, as if it had just listed."""
-    logged = []
+def test_a_basis_failure_never_lifts_a_quarantine_recorded_for_bad_prices(tmp_path):
+    """Only a cured basis failure is lifted; an implausible-price exclusion is not cured by a split."""
     service, store = build_service(tmp_path)
-    service.log = logged.append
-    download, _full, _calls = splitting_downloader(service, truncate_repair=True)
+    store.save_quarantine({"BBB": {"reason": "moved 40.00x in one day on 2020-05-01", "detected": "2026-11-01"}})
+    download, _full, _calls = splitting_downloader(service)  # BBB splits and repairs cleanly
     service.downloader = download
     assert service.refresh() is True
-    prices = store.load_prices()
-    assert prices["BBB"].isna().all(), "a shortened history must be excluded, not adopted"
-    assert prices["AAA"].notna().any()
-    assert any("BBB" in line and "excluded" in line for line in logged)
-    # The report says exactly how short the re-download was, so the exclusion is explainable.
-    assert "only 30 of its 403" in service.quarantine["BBB"]["reason"]
-    assert "quarantined" in service.readjustments["BBB"]["outcome"]
+    assert "BBB" in service.quarantine, "a new adjustment basis is no answer to implausible prices"
+    assert "BBB" not in service.data.tradeable
 
 
 def test_a_mass_repair_failure_refuses_the_refresh_instead_of_blanking_the_market(tmp_path):
@@ -209,9 +236,13 @@ def test_a_poisoned_download_never_reaches_the_cache(tmp_path, poison, check):
         return rows
 
     service.downloader = download
+    before = store.load_prices()
     assert service.refresh() is True
-    assert check(store.load_prices(), service)
-    assert check(service.data.prices, service), "the served snapshot matches what was saved"
+    # The snapshot the optimizer reads is what must be clean.
+    assert check(service.data.prices, service)
+    # Values that were never believable are dropped on arrival, so they are absent from disk too;
+    # an *exclusion* is only a judgement, and must leave the archive able to outlive it.
+    assert store.load_prices()["AAA"].count() >= before["AAA"].count(), "a refresh never removes days"
 
 
 def test_a_quarantine_is_reported_survives_refreshes_and_only_a_clean_full_refresh_lifts_it(tmp_path, monkeypatch):
@@ -233,7 +264,10 @@ def test_a_quarantine_is_reported_survives_refreshes_and_only_a_clean_full_refre
         return pd.concat([store.load_prices().loc[start:, list(tickers)], rows])
 
     service.downloader = more_rows
-    assert service.refresh() is True and store.load_prices()["BBB"].isna().all()
+    assert service.refresh() is True
+    assert "BBB" not in service.data.tradeable and service.data.prices["BBB"].isna().all()
+    # Excluded in the snapshot, intact on disk: the archive is what a later refresh re-judges.
+    assert store.load_prices()["BBB"].count() >= len(clean)
 
     # Too many implausible names at once is a bad download, not a bad market: nothing is written.
     before = store.load_prices()
