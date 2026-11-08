@@ -6,7 +6,7 @@ import pytest
 from conftest import synthetic_market
 from wolvwealth.domain import optimizer
 from wolvwealth.domain.errors import ValidationError
-from wolvwealth.domain.market import MarketData
+from wolvwealth.domain.market import MAX_STALE_DAYS, MarketData
 
 BASE = {"initial_cash": 10_000, "universe": ["AAA", "BBB", "CCC"]}
 
@@ -162,13 +162,31 @@ def test_a_failed_solve_is_not_remembered(market, monkeypatch):
     assert optimizer.optimize(BASE, market)["optimized_portfolio"]
 
 
-def test_latest_prices_skip_delisted_tickers(market):
+def test_a_throttled_day_carries_the_last_close_forward_and_says_so(market):
+    """One missing day must not unprice a ticker: that is the whole main path (see MAX_STALE_DAYS)."""
     prices = market.prices.copy()
     prices.loc[prices.index[-1], "BBB"] = np.nan
+    snapshot = MarketData.build(market.universe, prices)
+    carried = float(prices["BBB"].iloc[-2])
+    assert snapshot.has_price("BBB") and snapshot.price("BBB") == pytest.approx(carried)
+    assert snapshot.stale_prices["BBB"] == {
+        "as_of": str(prices.index[-2].date()),
+        "trading_days_stale": 1,
+    }
+    assert "AAA" not in snapshot.stale_prices, "a ticker that printed today is not reported as stale"
+    assert snapshot.value({"BBB": 2}) == pytest.approx(2 * carried)
+
+
+def test_latest_prices_skip_tickers_quoted_nowhere_in_the_window(market):
+    prices = market.prices.copy()
+    prices.loc[prices.index[-(MAX_STALE_DAYS + 1) :], "BBB"] = np.nan
     snapshot = MarketData.build(market.universe, prices)
     assert not snapshot.has_price("BBB")
     assert snapshot.has_price("AAA")
     with pytest.raises(KeyError):
         snapshot.price("BBB")
     assert snapshot.price("AAA") == pytest.approx(float(prices["AAA"].iloc[-1]))
+    # Valuing a position someone holds still works, at the last close there was.
+    last = float(prices["BBB"].dropna().iloc[-1])
+    assert snapshot.can_value("BBB") and snapshot.valuation_price("BBB") == pytest.approx(last)
     assert snapshot.value({"AAA": 2}) == pytest.approx(2 * float(prices["AAA"].iloc[-1]))

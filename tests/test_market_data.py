@@ -150,8 +150,10 @@ def test_a_full_refresh_merges_over_the_cache_so_throttling_cannot_shorten_a_his
     assert merged["TK2"].count() == len(full)
     pd.testing.assert_series_equal(merged["TK2"], full["TK2"], check_names=False, check_freq=False)
     assert service.data.has_price("TK2") and service.data.history_days["TK2"] == len(full)
-    # The empty ticker keeps its history but has no current price until something recovers it.
-    assert merged["TK3"].count() == len(cached) and not service.data.has_price("TK3")
+    # The empty ticker keeps its history, and the two days it missed are inside the staleness
+    # window, so it stays priceable from its last close rather than dropping out of the market.
+    assert merged["TK3"].count() == len(cached)
+    assert service.data.has_price("TK3") and service.data.stale_prices["TK3"]["trading_days_stale"] == 2
     pd.testing.assert_series_equal(
         merged["TK3"].iloc[: len(cached)], cached["TK3"], check_names=False, check_freq=False
     )

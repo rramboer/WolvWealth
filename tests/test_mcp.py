@@ -22,7 +22,7 @@ from conftest import synthetic_market
 from test_api_contract import DOCUMENTED
 from test_background_refresh import appending_downloader, build_service
 from wolvwealth.config import REPO_ROOT, Settings
-from wolvwealth.domain.market import MarketData
+from wolvwealth.domain.market import MAX_STALE_DAYS, MarketData
 from wolvwealth.mcp import protocol, server, tools
 from wolvwealth.mcp.server import McpServer
 from wolvwealth.services.container import Services
@@ -137,18 +137,22 @@ def test_unknown_tool_and_bad_arguments_are_protocol_errors(mcp):
 def test_market_status_reports_freshness_and_classifies_tickers(mcp, services):
     services.market.set_tbill(0.0412, "2026-10-30")
     prices = services.market.data.prices.copy()
-    prices.iloc[-1, prices.columns.get_loc("BBB")] = np.nan  # delisted: known, but no current price
+    # BBB quoted nowhere in the staleness window: known, but no current price.
+    prices.iloc[-(MAX_STALE_DAYS + 1) :, prices.columns.get_loc("BBB")] = np.nan
+    prices.iloc[-1, prices.columns.get_loc("CCC")] = np.nan  # merely throttled today: still tradeable
     services.market.set_data(MarketData.build(services.market.data.universe, prices))
-    report = tool_result(mcp, "market_status", {"tickers": ["aaa", "bbb", "ZZZ"]})["structuredContent"]
+    report = tool_result(mcp, "market_status", {"tickers": ["aaa", "bbb", "ccc", "ZZZ"]})["structuredContent"]
     assert report["as_of"].startswith("2021-") and report["age_days"] > 365 and report["stale"] is True
     assert "refresh-data" in report["refresh_hint"]
     assert report["tbill_rate"] == 0.0412 and report["universe_aliases"][0] == "top100"
     assert report["tickers"] == {
-        "tradeable": ["AAA"],
+        "tradeable": ["AAA", "CCC"],
         "short_history": [],
         "no_current_price": ["BBB"],
         "unknown": ["ZZZ"],
     }
+    assert report["stale_prices"]["CCC"]["trading_days_stale"] == 1, "carried forward, and said so"
+    assert "BBB" not in report["stale_prices"], "no current price at all is not a stale price"
     assert "tickers" not in tool_result(mcp, "market_status")["structuredContent"]
     wrong = tool_result(mcp, "market_status", {"tickers": "AAA"})
     assert wrong["isError"] is True and "list of strings" in text_of(wrong)

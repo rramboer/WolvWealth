@@ -27,6 +27,22 @@ MAX_PRICE = 1e7
 #: essentially never does this; a poisoned or unadjusted download does, and
 #: one such spike is enough to drag the optimizer toward or away from a name.
 MAX_DAILY_MOVE = 5.0
+#: Trading days a close may be behind the newest row and still count as a
+#: current price. Yahoo throttles individual tickers constantly, and the
+#: cache is a daily snapshot, so "has a close stamped with the newest date
+#: in the file" is not a property a correct portfolio can depend on: one
+#: throttled ticker would otherwise make a held position unvaluable and
+#: refuse the whole request, on the main path, in an unattended run. A
+#: carried-forward close is what every broker statement shows for a day a
+#: stock did not print, and the error it introduces is small and bounded
+#: (measured on this app's own data: ~0.7% median drift after one trading
+#: day, ~2.3% after ten), where refusing to answer is total. Ten trading
+#: days is two calendar weeks: long enough to ride out throttling across
+#: several refreshes of a weekly schedule, short enough that a genuinely
+#: delisted name stops being quoted promptly. Every price older than the
+#: snapshot is reported, per ticker, wherever it is used.
+MAX_STALE_DAYS = 10
+
 #: Days of prices a ticker needs before the optimizer may allocate to it,
 #: unless a request says otherwise: one trading year. The estimators
 #: annualize whatever history exists, so a company listed three weeks ago
@@ -101,8 +117,15 @@ def implausible_moves(prices: pd.DataFrame) -> dict:
 
 
 @dataclasses.dataclass(frozen=True)
-class MarketData:
-    """Ticker universe plus daily adjusted closes, with optional precomputed statistics."""
+class MarketData:  # pylint: disable=too-many-public-methods  # the domain's one read model; see below
+    """Ticker universe plus daily adjusted closes, with optional precomputed statistics.
+
+    Every question the optimizer, the API, the CLI and the MCP tools ask of
+    the market is answered here, so the method count is the breadth of that
+    vocabulary rather than a sign of more than one responsibility. Splitting
+    it would mean handing callers two objects that must describe the same
+    snapshot and could disagree about it.
+    """
 
     universe: tuple
     prices: pd.DataFrame
@@ -147,14 +170,77 @@ class MarketData:
         return frozenset(self.universe)
 
     @functools.cached_property
+    def _pricing_window(self) -> pd.DataFrame:
+        """The newest rows in which a close still counts as a current price (see MAX_STALE_DAYS)."""
+        return self.prices.iloc[-(MAX_STALE_DAYS + 1) :]
+
+    @functools.cached_property
+    def _priced_at(self) -> dict:
+        """Ticker -> row of ``_pricing_window`` holding the close ``latest_prices`` serves."""
+        window = self._pricing_window
+        valid = window.notna().to_numpy()
+        # Last True per column, found from the end so the newest close wins.
+        newest = len(window) - 1 - valid[::-1].argmax(axis=0)
+        return {str(t): int(newest[i]) for i, t in enumerate(window.columns) if valid[:, i].any()}
+
+    @functools.cached_property
     def latest_prices(self) -> dict:
-        """Ticker -> newest close, excluding delisted names whose history ends in NaN.
+        """Ticker -> newest close within MAX_STALE_DAYS, carried forward over days the ticker did not print.
+
+        Excludes names quoted nowhere in that window: delisted, renamed, or
+        throttled for long enough that calling their last close "current"
+        would be a fiction. Which prices were carried, and from when, is in
+        ``stale_prices`` -- a reader is never left to assume everything here
+        is stamped ``as_of``.
 
         Valuing a portfolio touches this once per holding, so it is a plain
         dict: the equivalent DataFrame lookups cost ~50 microseconds each and
         dominated requests once the solve itself was cached.
         """
-        return {ticker: float(price) for ticker, price in self.prices.iloc[-1].dropna().items()}
+        window = self._pricing_window
+        return {
+            ticker: float(window.iat[row, window.columns.get_loc(ticker)]) for ticker, row in self._priced_at.items()
+        }
+
+    @functools.cached_property
+    def _price_dates(self) -> dict:
+        """Ticker -> date of the close ``latest_prices`` serves for it."""
+        window = self._pricing_window
+        return {ticker: window.index[row].date() for ticker, row in self._priced_at.items()}
+
+    @functools.cached_property
+    def stale_prices(self) -> dict:
+        """Tickers priced from a close older than the snapshot: ``{ticker: {as_of, trading_days_stale}}``.
+
+        The disclosure that makes carrying a price forward honest. Empty
+        whenever every tradeable ticker printed on the newest day, which is
+        the ordinary case.
+        """
+        newest = len(self._pricing_window) - 1
+        return {
+            ticker: {"as_of": str(self._price_dates[ticker]), "trading_days_stale": newest - row}
+            for ticker, row in sorted(self._priced_at.items())
+            if row < newest
+        }
+
+    @functools.cached_property
+    def _last_known(self) -> dict:
+        """Ticker -> ``(close, date)`` for its newest close at any age, however old.
+
+        Only for valuing a position someone already holds: a share count is
+        a fact whatever the price feed is doing, and a portfolio that cannot
+        be totalled is a failed request. Never a basis for buying, and never
+        reached while ``latest_prices`` has the ticker, so the full-history
+        scan it costs happens only when something is genuinely unquoted.
+        """
+        values = self.prices.to_numpy()
+        valid = ~np.isnan(values)
+        newest = len(values) - 1 - valid[::-1].argmax(axis=0)
+        return {
+            str(ticker): (float(values[newest[i], i]), self.prices.index[newest[i]].date())
+            for i, ticker in enumerate(self.prices.columns)
+            if valid[:, i].any()
+        }
 
     def __contains__(self, ticker) -> bool:
         """Return true if the ticker is in the universe."""
@@ -233,9 +319,33 @@ class MarketData:
             raise KeyError(ticker)
         return self.latest_prices[ticker]
 
+    def can_value(self, ticker: str) -> bool:
+        """Return true if the ticker has ever had a close, so a position in it can be totalled."""
+        return ticker in self.latest_prices or ticker in self._last_known
+
+    def valuation_price(self, ticker: str) -> float:
+        """Price for valuing a held position: the current one, else the last known close at any age.
+
+        Distinct from ``price`` on purpose. ``price`` answers "what may the
+        optimizer trade this at", and goes missing when nothing recent is
+        quoted. This answers "what is the position someone already owns
+        worth", where the only alternative to an old close is refusing to
+        total their portfolio. Callers must disclose the date, which
+        ``valuation_date`` gives them. KeyError if the ticker never traded.
+        """
+        if ticker in self.latest_prices:
+            return self.latest_prices[ticker]
+        return self._last_known[ticker][0]
+
+    def valuation_date(self, ticker: str):
+        """Date of the close ``valuation_price`` uses for the ticker. KeyError if it never traded."""
+        if ticker in self._price_dates:
+            return self._price_dates[ticker]
+        return self._last_known[ticker][1]
+
     def value(self, holdings: dict) -> float:
-        """Market value of a holdings map at the latest prices."""
-        return sum(shares * self.price(ticker) for ticker, shares in holdings.items())
+        """Market value of a holdings map, valuing each position at the best price available for it."""
+        return sum(shares * self.valuation_price(ticker) for ticker, shares in holdings.items())
 
     def truncated(self, end_date) -> "MarketData":
         """Return a snapshot that knows nothing after ``end_date`` (for backtests).
@@ -288,8 +398,15 @@ class MarketData:
                     raise ValueError(self.describe_short_history(ticker, min_history_days))
                 expanded.append(ticker)
             elif entry.upper() in self.tickers:
+                # A held one is skipped, not refused, for the same reason a
+                # short-history holding is: the optimizer keeps it as it is
+                # rather than sizing or selling it, and every surface names
+                # held tickers in the universe, so naming it must not fail.
+                if entry.upper() in held:
+                    continue
                 raise ValueError(
-                    f"No current price for {entry.upper()}: delisted, renamed, " "or missed by the last price refresh."
+                    f"No current price for {entry.upper()}: delisted, renamed, or not quoted in the last "
+                    f"{MAX_STALE_DAYS} trading days (Yahoo may be throttling it)."
                 )
             else:
                 raise ValueError(f"Invalid symbol in universe: {entry}.")

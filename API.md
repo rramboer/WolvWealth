@@ -63,6 +63,7 @@ Price-cache freshness and the symbols a request may use.
 | `universe_aliases` | Shorthands accepted in `universe` |
 | `min_history_days` | Trading days of price history a ticker needs before a universe includes it, unless the request lowers it (see `POST /api/optimize/`) |
 | `short_history` | Present only when some tradeable tickers have fewer than `min_history_days` of prices: `{ticker: days}`. Aliases skip them and naming one is refused unless the request lowers `min_history_days`. They can still be held and valued |
+| `stale_prices` | Present only when some tradeable tickers' newest close predates `as_of`: `{ticker: {"as_of", "trading_days_stale"}}`. Yahoo throttles individual symbols, so a few names routinely miss a day; their last close is carried forward (up to 10 trading days) rather than the ticker being treated as unpriced, and this field is the disclosure. Past 10 trading days a ticker drops out of `tickers` entirely |
 | `tickers` | The full tradeable list, so symbols can be validated without a round trip. Includes the `short_history` names |
 | `tbill_rate` | 13-week US Treasury bill yield as a fraction, fetched from Yahoo at the last price refresh. A reference for choosing a `risk_free_rate`; the app never applies it on its own. `null` until the first refresh |
 | `tbill_as_of` | Date of that yield, or `null` |
@@ -86,7 +87,7 @@ Every field is optional, but the portfolio must be worth more than zero — supp
 | Field | Type | Meaning | Default |
 |---|---|---|---|
 | `initial_cash` | number ≥ 0 | Cash to invest, USD | `0` |
-| `initial_holdings` | object | Ticker → share count. Valued at the `as_of` close and pooled with cash | `{}` |
+| `initial_holdings` | object | Ticker → share count. Valued at the `as_of` close and pooled with cash. A ticker not quoted recently is still valued, at its last close, and kept rather than sold (see `stale_prices` and `unoptimized`); only one that has never had a price at all is an error | `{}` |
 | `workspace` + `portfolio` | string | Load cash and holdings from a stored portfolio instead. `workspace` falls back to the browser session. Explicit `initial_cash`/`initial_holdings` still win | — |
 | `universe` | array | Tickers and/or aliases to allocate across. Aliases skip tickers with fewer than `min_history_days` of prices; naming one is refused with the days it has and the override that would admit it | `top500` |
 | `min_history_days` | integer ≥ 2 | Trading days of price history a ticker needs to be in the universe. The estimators annualize whatever history exists, so a company listed three weeks ago that rose 15% shows an expected return in the thousands of percent at almost no measured risk, and the solver puts the maximum weight there. A **held** ticker under the minimum is neither sized nor sold: it is kept at its current size, the rest is optimized around it, and the response lists it under `unoptimized`. Lower this only knowingly; `GET /api/market/` lists the excluded names under `short_history` | `252` (one trading year) |
@@ -243,15 +244,26 @@ order frees cash before spending it. A position that does not change produces no
 does a difference too small to show at 4 decimals. Share counts are fractional; round them if
 your broker requires whole shares, accepting the small drift that introduces.
 
-**`unoptimized`** — present only when some held ticker has fewer than `min_history_days` of
-prices. Such a position is kept at exactly its current size (it appears in
-`optimized_portfolio` with the shares held and produces no trade), the rest of the money is
-optimized around it, and it is left out of `metrics`, since the statistics that would describe
-it are the ones too thin to trust. `positions` maps each such ticker to its `history_days` and
-`percent_weight`; `note` says so in words and names the `min_history_days` that would admit it.
-A kept position above `max_weight`, or a `max_positions` that the kept positions use up, is
-refused as an infeasible constraint set with those remedies. To sell such a position instead,
-lower `min_history_days` to its count and leave it out of `universe`.
+**`stale_prices`** — present only when some ticker in the result was priced from a close older
+than `as_of`: `{ticker: {"as_of", "trading_days_stale"}}`. Yahoo throttles individual symbols,
+so a snapshot routinely holds a few names that missed a day; the last close is carried forward
+(up to 10 trading days) so one throttled symbol cannot fail the whole request, and this field
+says which prices that applies to and how old they are. `trading_days_stale` is `null` for a
+held position priced from beyond the window — see `unoptimized`.
+
+**`unoptimized`** — present only when some held ticker cannot be sized: it has fewer than
+`min_history_days` of prices, or no close in the last 10 trading days. Such a position is kept
+at exactly its current size (it appears in `optimized_portfolio` with the shares held and
+produces no trade), the rest of the money is optimized around it, and it is left out of
+`metrics` — though its value *is* included in `portfolio_value`, since the shares are
+genuinely owned. `positions` maps each ticker to a `reason` (`"short_history"` or
+`"no_current_price"`), its `history_days` and `percent_weight`, plus `priced_as_of` when the
+reason is `no_current_price`; `note` says the same in words with the remedy for each. A kept
+position above `max_weight`, or a `max_positions` that the kept positions use up, is refused as
+an infeasible constraint set with those remedies. To sell a `short_history` position instead,
+lower `min_history_days` to its count and leave it out of `universe`; a `no_current_price` one
+becomes ordinary again as soon as a refresh quotes it, so if it was delisted or renamed, remove
+it from your holdings rather than waiting.
 
 **`metrics`** — figures describing the portfolio actually returned, including any
 `max_positions` re-solve, and excluding any `unoptimized` positions:

@@ -94,7 +94,11 @@ def test_a_young_holding_is_kept_as_it_is_and_the_rest_is_optimized_around_it(wi
     assert sum(row["percent_weight"] for row in result["optimized_portfolio"].values()) == pytest.approx(100, abs=0.05)
     assert not any(trade["ticker"] == "DDD" for trade in result["trades"]), "a kept position produces no trade"
     assert result["unoptimized"]["positions"] == {
-        "DDD": {"history_days": YOUNG_DAYS, "percent_weight": kept["percent_weight"]}
+        "DDD": {
+            "reason": "short_history",
+            "history_days": YOUNG_DAYS,
+            "percent_weight": kept["percent_weight"],
+        }
     }
     note = result["unoptimized"]["note"]
     assert "Kept at their current size" in note and f"min_history_days of {YOUNG_DAYS} or less" in note

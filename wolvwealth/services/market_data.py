@@ -79,6 +79,11 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None, 
     short = data.short_history()
     if short:
         report["short_history"] = short
+    if data.stale_prices:
+        # Tradeable, but priced from an older close than the snapshot's own
+        # date: throttling makes this routine, and an unattended caller must
+        # be able to see it rather than assume every price is stamped as_of.
+        report["stale_prices"] = data.stale_prices
     if report["stale"]:
         report["refresh_hint"] = (
             f"Prices are {age} days old. Run `wolvwealth refresh-data` in a terminal for current ones; "
@@ -520,8 +525,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
             return self._refresh_full()
         current = self.data
         last = current.prices.index[-1]
-        today = pd.Timestamp.now().strftime("%Y-%m-%d")
-        if (last + timedelta(days=1)).strftime("%Y-%m-%d") >= today:
+        if self._covers_today(last):
             return False
         overlap_start = current.prices.index[-self.OVERLAP_ROWS :][0]
         fresh = self._fetch(current.universe, overlap_start.strftime("%Y-%m-%d"))
@@ -544,12 +548,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         prices = pd.concat([archive, new_rows.reindex(columns=archive.columns)])
         broken = {}
         if rebase:
-            prices, broken = self._repair_readjusted(prices, rebase, archive)
-            # Only failures that are new: a ticker already waiting on a re-download failing
-            # again is expected, and must not block every future refresh once a few pile up.
-            newly_broken = {t: r for t, r in broken.items() if t not in unverified}
-            self._refuse_mass_repair_failure(newly_broken, len(previously_live))
-            self._record_readjustments(rebase, broken)
+            prices, broken = self._rebase(prices, archive, rebase, unverified, len(previously_live))
         repaired = [ticker for ticker in rebase if ticker not in broken]
         record = self._record_quarantine(prices, since=last, whole=repaired, broken=broken, recovered=repaired)
         self._publish(current.universe, prices, record)
@@ -632,6 +631,23 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
             "until a refresh re-downloads it whole."
         )
         return reason
+
+    @staticmethod
+    def _covers_today(last) -> bool:
+        """Return true if the newest cached row already reaches today, so there is nothing to fetch."""
+        return (last + timedelta(days=1)).strftime("%Y-%m-%d") >= pd.Timestamp.now().strftime("%Y-%m-%d")
+
+    def _rebase(self, prices, archive, rebase: list, exempt, live: int) -> tuple:
+        """Re-download ``rebase`` tickers' histories whole, refuse a mass *new* failure, and note the outcome.
+
+        ``exempt`` names tickers already waiting on a re-download: those
+        failing again is expected, and counting them would let a few
+        accumulated failures block every future refresh.
+        """
+        prices, broken = self._repair_readjusted(prices, rebase, archive)
+        self._refuse_mass_repair_failure({t: r for t, r in broken.items() if t not in exempt}, live)
+        self._record_readjustments(rebase, broken)
+        return prices, broken
 
     def _refuse_mass_blackout(self, fresh: pd.DataFrame, previously_live) -> None:
         """Raise if an implausible share of tickers that had a price yesterday returned nothing today."""

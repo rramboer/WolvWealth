@@ -16,7 +16,7 @@ from pypfopt.efficient_frontier import EfficientFrontier
 from wolvwealth.domain import constraints as constraint_rules
 from wolvwealth.domain import trades
 from wolvwealth.domain.errors import DataError, ValidationError
-from wolvwealth.domain.market import MIN_HISTORY_DAYS, MarketData
+from wolvwealth.domain.market import MAX_STALE_DAYS, MIN_HISTORY_DAYS, MarketData
 from wolvwealth.domain.numbers import MAX_AMOUNT, is_number
 
 #: Annual risk-free rate assumed when the request names none: zero, because
@@ -97,6 +97,10 @@ class OptimizationRequest:  # pylint: disable=too-many-instance-attributes
     unoptimized: dict = dataclasses.field(default_factory=dict)
     #: Ticker -> days of history, for the ones in ``unoptimized`` (for the messages).
     unoptimized_days: dict = dataclasses.field(default_factory=dict)
+    #: Ticker -> why it is kept rather than sized: "short_history" or
+    #: "no_current_price". Reporting only -- the solver sees the weights
+    #: above and nothing else -- so it stays out of the memo keys.
+    unoptimized_reason: dict = dataclasses.field(default_factory=dict)
 
     def invested_fraction(self) -> float:
         """Return the share of the portfolio the optimizer is allowed to deploy.
@@ -237,13 +241,12 @@ def _parse_holdings(payload, request, market) -> None:
             raise ValidationError("Invalid initial_holdings. initial_holdings must be list of strings.")
         if ticker.upper() not in market:
             raise ValidationError(f"Invalid symbol in initial_holdings: {ticker}.")
-        if not market.has_price(ticker.upper()):
-            # Without a current price the position cannot be valued, and
-            # valuing it anyway (last known price, or zero) would quietly put
-            # a wrong number on someone's money. Say so instead.
+        if not market.can_value(ticker.upper()):
+            # Never quoted at all: there is no number to put on the position,
+            # so this is the one holding that still has to be an error.
             raise ValidationError(
-                f"No current price for {ticker.upper()} in initial_holdings: delisted, renamed, "
-                "or missed by the last price refresh. Remove it, or run `wolvwealth refresh-data --full`."
+                f"No price ever recorded for {ticker.upper()} in initial_holdings, so the position cannot be "
+                "valued. Remove it, or run `wolvwealth refresh-data --full` to download its history."
             )
         if not is_number(shares):
             raise ValidationError(
@@ -258,22 +261,34 @@ def _parse_holdings(payload, request, market) -> None:
 
 
 def _set_unoptimized(request, market) -> None:
-    """Record the held tickers the minimum history excludes, at their current weights.
+    """Record the held tickers the optimizer must keep rather than size, at their current weights.
 
-    Selling them would act on the same absence of statistics that keeps
-    them out of the universe; the one thing the optimizer knows about such
-    a position is its size today, so that is what it keeps. Lowering
-    ``min_history_days`` to their count turns them back into ordinary
-    tickers: optimized if the universe names them, sold if it does not.
+    Two reasons, one treatment. Too little history means no statistics worth
+    trusting; no current quote means no price to trade at. In both cases the
+    one thing known about the position is its size today, so that is what is
+    kept, and the rest of the money is optimized around it as a cash reserve
+    is. Selling instead would act on the absence of data rather than on any
+    judgement about the holding -- and for an unquoted name it would invent
+    a trade at a price nobody is offering. Lowering ``min_history_days``, or
+    a refresh that quotes the ticker again, turns it back into an ordinary
+    ticker: optimized if the universe names it, sold if it does not.
     """
     total = request.cash + market.value(request.holdings)
     if total == 0:
         return
     for ticker, shares in request.holdings.items():
+        if shares <= 0:
+            continue
         days = market.history_days[ticker]
-        if shares > 0 and days < request.min_history_days:
-            request.unoptimized[ticker] = shares * market.price(ticker) / total
-            request.unoptimized_days[ticker] = days
+        if ticker not in market.latest_prices:
+            reason = "no_current_price"
+        elif days < request.min_history_days:
+            reason = "short_history"
+        else:
+            continue
+        request.unoptimized[ticker] = shares * market.valuation_price(ticker) / total
+        request.unoptimized_days[ticker] = days
+        request.unoptimized_reason[ticker] = reason
     for ticker in request.unoptimized:
         if ticker in request.universe:
             request.universe.remove(ticker)
@@ -351,7 +366,11 @@ def current_weights(request: OptimizationRequest, market: MarketData) -> dict:
     than one; the gap is what the optimizer can deploy without selling.
     """
     total = request.cash + market.value(request.holdings)
-    return {ticker: shares * market.price(ticker) / total for ticker, shares in request.holdings.items() if shares > 0}
+    return {
+        ticker: shares * market.valuation_price(ticker) / total
+        for ticker, shares in request.holdings.items()
+        if shares > 0
+    }
 
 
 def turnover(current: dict, target: dict) -> float:
@@ -745,7 +764,10 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
 
     portfolio = {
         asset: {
-            "shares": round(weight * total_investment / market.price(asset), 4),
+            # valuation_price, not price: a kept position may have no current
+            # quote, and its share count is overwritten with the held one just
+            # below anyway. Every asset the solver chose is quoted by definition.
+            "shares": round(weight * total_investment / market.valuation_price(asset), 4),
             "value": round(weight * total_investment, 2),
             "percent_weight": round(weight * 100, 2),
         }
@@ -770,8 +792,13 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
             "percent_weight": round(cash_weight * 100, 2),
         },
     }
+    stale = _describe_stale_prices(market, set(portfolio) | set(request.holdings))
+    if stale:
+        # Not every price here is stamped as_of: say which are older and how
+        # old, so a reader can judge the plan instead of assuming uniformity.
+        result["stale_prices"] = stale
     if request.unoptimized:
-        result["unoptimized"] = _describe_unoptimized(request)
+        result["unoptimized"] = _describe_unoptimized(request, market)
     if not request.exclude_trades:
         result["trades"] = trades.plan(
             request.holdings,
@@ -801,22 +828,66 @@ def solve(request: OptimizationRequest, market: MarketData) -> dict:
     return result
 
 
-def _describe_unoptimized(request: OptimizationRequest) -> dict:
-    """Describe the positions kept as they are, and how to have them optimized instead, for the response."""
+def _describe_stale_prices(market: MarketData, tickers) -> dict:
+    """Report every ticker in the result priced from a close older than ``as_of``, with that close's date.
+
+    Yahoo throttles individual names, so a snapshot routinely holds a few
+    tickers whose newest close predates the file's own date. Carrying it
+    forward is what keeps a throttled ticker from failing the whole request
+    (see MAX_STALE_DAYS); stating it is what keeps that from being a hidden
+    assumption in a number someone trades on.
+    """
+    stale = {ticker: market.stale_prices[ticker] for ticker in tickers if ticker in market.stale_prices}
+    for ticker in tickers:
+        # Kept positions valued beyond the window are staler still, and are
+        # absent from stale_prices because they have no current price at all.
+        if ticker not in stale and ticker not in market.latest_prices and market.can_value(ticker):
+            stale[ticker] = {"as_of": str(market.valuation_date(ticker)), "trading_days_stale": None}
+    return dict(sorted(stale.items()))
+
+
+def _describe_unoptimized(request: OptimizationRequest, market: MarketData) -> dict:
+    """Describe the positions kept as they are, why, and how to have them optimized instead."""
     kept = sum(request.unoptimized.values())
-    fewest = min(request.unoptimized_days.values())
+    positions = {}
+    for ticker, weight in request.unoptimized.items():
+        reason = request.unoptimized_reason.get(ticker, "short_history")
+        entry = {
+            "reason": reason,
+            "history_days": request.unoptimized_days[ticker],
+            "percent_weight": round(weight * 100, 2),
+        }
+        if reason == "no_current_price":
+            # The position is being valued at a price nobody is quoting today;
+            # saying how old it is turns a hidden assumption into a stated one.
+            entry["priced_as_of"] = str(market.valuation_date(ticker))
+        positions[ticker] = entry
     return {
-        "positions": {
-            ticker: {"history_days": request.unoptimized_days[ticker], "percent_weight": round(weight * 100, 2)}
-            for ticker, weight in request.unoptimized.items()
-        },
-        "note": (
-            f"Kept at their current size, {kept:.1%} of the portfolio, and left out of the metrics: fewer than "
-            f"{request.min_history_days} days of price history is too little to estimate their return and risk, "
-            f"so the optimizer neither sized nor sold them. Pass min_history_days of {fewest} or less to have them "
-            "optimized like any other ticker (which may sell them down or out)."
-        ),
+        "positions": positions,
+        "note": _unoptimized_note(request, kept),
     }
+
+
+def _unoptimized_note(request: OptimizationRequest, kept: float) -> str:
+    """One sentence per reason the kept positions were kept, and the way out of each."""
+    reasons = set(request.unoptimized_reason.values()) or {"short_history"}
+    parts = [f"Kept at their current size, {kept:.1%} of the portfolio, and left out of the metrics."]
+    if "short_history" in reasons:
+        fewest = min(
+            days for t, days in request.unoptimized_days.items() if request.unoptimized_reason[t] == "short_history"
+        )
+        parts.append(
+            f"Some have fewer than {request.min_history_days} days of price history, too little to estimate "
+            f"their return and risk; pass min_history_days of {fewest} or less to have them optimized like any "
+            "other ticker (which may sell them down or out)."
+        )
+    if "no_current_price" in reasons:
+        parts.append(
+            f"Some have no close in the last {MAX_STALE_DAYS} trading days, so there is no price to trade them "
+            "at; they are valued at their last known close (date above) and will be optimized normally once a "
+            "refresh quotes them again. If one has been delisted or renamed, remove it from the holdings."
+        )
+    return " ".join(parts)
 
 
 def _describe_rate(request: OptimizationRequest) -> dict:
