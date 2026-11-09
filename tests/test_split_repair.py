@@ -129,7 +129,9 @@ def test_a_failed_repair_excludes_the_ticker_but_keeps_its_history_on_disk(tmp_p
 
 def test_a_later_successful_repair_recovers_the_ticker_from_the_kept_history(tmp_path):
     """The point of keeping the history: the next refresh re-detects the split and can fix it."""
+    logged = []
     service, store = build_service(tmp_path)
+    service.log = logged.append
     download, full, _calls = splitting_downloader(service, fail_repair=True)
     service.downloader = download
     assert service.refresh() is True
@@ -143,10 +145,45 @@ def test_a_later_successful_repair_recovers_the_ticker_from_the_kept_history(tmp
 
     # The quarantine lifted on its own -- no `--full` needed -- and the history is on the new basis.
     assert service.quarantine == {} and "BBB" in service.data.tradeable
+    assert any("BBB" in line and "back in allocations" in line for line in logged)
     pd.testing.assert_series_equal(
         store.load_prices()["BBB"], more["BBB"].reindex(store.load_prices().index), check_names=False
     )
     assert service.data.prices["BBB"].pct_change().abs().max() < 0.3, "no split-sized step survives"
+
+
+def test_a_recovered_history_is_checked_for_implausible_prices_before_the_quarantine_lifts(tmp_path):
+    """Curing the basis failure is not a pass on the plausibility check the replacement must take.
+
+    Regression: the implausibility check skips tickers already in quarantine (a known exclusion
+    is not re-reported every refresh) and ran *before* the cured basis-failure entry was lifted,
+    so a corrupt full history delivered by the retried repair slipped into allocations unexamined
+    -- hidden behind the very record that said the ticker was excluded.
+    """
+    logged = []
+    service, store = build_service(tmp_path)
+    service.log = logged.append
+    download, full, _calls = splitting_downloader(service, fail_repair=True)
+    service.downloader = download
+    assert service.refresh() is True
+    assert "adjustment basis" in service.quarantine["BBB"]["reason"]
+
+    # Yahoo stops throttling, but the full history it now serves has a poisoned close in it.
+    new_dates = pd.bdate_range(full.index[-1] + pd.Timedelta(days=1), periods=2)
+    more = pd.concat([full, pd.DataFrame({t: [full[t].iloc[-1]] * 2 for t in full.columns}, index=new_dates)])
+    more.iloc[50, more.columns.get_loc("BBB")] *= 30
+    service.downloader = lambda tickers, start, **_kwargs: more.loc[more.index >= start, list(tickers)]
+    assert service.refresh() is True
+
+    # The ticker swaps one exclusion for the other instead of returning to allocations.
+    assert "x in one day" in service.quarantine["BBB"]["reason"]
+    assert "BBB" not in service.data.tradeable and service.data.prices["BBB"].isna().all()
+    assert not any("back in allocations" in line for line in logged)
+    assert any("quarantined BBB" in line for line in logged)
+    # The replaced history is the archive now (new basis, spike and all, never deleted)...
+    assert store.load_prices()["BBB"].count() == more["BBB"].count()
+    # ...so a holding is valued from its believable prefix: on the new basis, before the spike.
+    assert service.data.valuation_price("BBB") == pytest.approx(more["BBB"].iloc[49])
 
 
 def test_a_pending_repair_is_retried_however_long_it_has_been_waiting(tmp_path):

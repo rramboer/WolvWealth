@@ -433,16 +433,29 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         ``_frozen_valuations``). ``recovered`` names tickers whose history
         was successfully replaced on the new basis, lifting an earlier
         ``broken`` entry (and only such an entry: a new adjustment basis is
-        no answer to implausible prices). Tickers already in quarantine stay
+        no answer to implausible prices) -- though a replacement history
+        that itself moves implausibly is re-quarantined under that reason
+        instead of released. Tickers already in quarantine stay
         excluded until a full refresh (``clear``) re-checks them, so a
         refresh cannot quietly bring a poisoned name back. ``since`` and
         ``whole`` scope the implausibility check (see ``_newly_implausible``).
         """
         previous = self.store.load_quarantine()
         record = {} if clear else dict(previous)
+        # Lift before the implausibility check. ``_newly_implausible`` skips
+        # names already in the record (a known exclusion is not re-reported
+        # every refresh), so a recovered ticker's stale basis-failure entry
+        # would otherwise hide its replacement history from the one check
+        # standing between that download and the optimizer.
+        lifted = self._lift_cured_basis_failures(record, recovered)
         newly = self._newly_implausible(prices, since, whole, record)
-        self._lift_cured_basis_failures(record, recovered)
         detected = pd.Timestamp.now().strftime("%Y-%m-%d")
+        for ticker in lifted:
+            if ticker not in newly:
+                self.log(
+                    f"wolvwealth: {ticker}'s full history was re-downloaded on the new adjustment basis "
+                    "and passed the plausibility check; it is back in allocations."
+                )
         for ticker, failure in (broken or {}).items():
             record[ticker] = self._basis_entry(failure, previous.get(ticker), detected)
         record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in newly.items()})
@@ -492,22 +505,25 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
             if entry["reason"].startswith(BASIS_FAILURE_REASON)
         ]
 
-    def _lift_cured_basis_failures(self, record: dict, recovered) -> None:
+    @staticmethod
+    def _lift_cured_basis_failures(record: dict, recovered) -> list:
         """Drop ``recovered`` tickers from ``record`` where they were excluded only for a failed re-basing.
 
         The cure is specific: their history now exists whole on the current
         adjustment basis, which is exactly what the exclusion was waiting
         for. An entry recorded for implausible prices is left alone -- a
         split says nothing about whether those prices were believable.
+        Returns the lifted tickers rather than announcing them: "back in
+        allocations" is only true of a replacement history that also passes
+        the implausibility check, which the caller runs after this.
         """
+        lifted = []
         for ticker in recovered:
             entry = record.get(ticker)
             if entry and entry["reason"].startswith(BASIS_FAILURE_REASON):
                 del record[ticker]
-                self.log(
-                    f"wolvwealth: {ticker}'s full history was re-downloaded on the new adjustment basis; "
-                    "it is back in allocations."
-                )
+                lifted.append(ticker)
+        return lifted
 
     @property
     def quarantine(self) -> dict:
