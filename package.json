@@ -7,7 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "WolvWealth Team",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "@babel/plugin-transform-runtime": "^7.23.3",
     "@babel/preset-env": "^7.23.3",
