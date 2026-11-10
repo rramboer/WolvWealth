@@ -9,7 +9,10 @@ venv3/
 .pytest_cache
 bundle.js
 *node_modules*
-*/var/*
+var/
+.env
+.env.*
+!.env.example
 *~
 *.lock
 *.swp
