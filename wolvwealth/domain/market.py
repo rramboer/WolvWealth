@@ -27,6 +27,13 @@ MAX_PRICE = 1e7
 #: essentially never does this; a poisoned or unadjusted download does, and
 #: one such spike is enough to drag the optimizer toward or away from a name.
 MAX_DAILY_MOVE = 5.0
+#: Closes a ticker must still have after an implausible move truncates its
+#: history for the remainder to be worth serving. Below this there is too
+#: little left to estimate anything from, so the ticker is excluded instead.
+#: Deliberately far under MIN_HISTORY_DAYS: a name with 30 trusted closes is
+#: kept out of universes by the seasoning rule anyway, but can still be held,
+#: valued and reported, which total exclusion would prevent.
+MIN_TRUSTED_DAYS = 30
 #: Trading days a close may be behind the newest row and still count as a
 #: current price. Yahoo throttles individual tickers constantly, and the
 #: cache is a daily snapshot, so "has a close stamped with the newest date
@@ -97,22 +104,135 @@ def clean_prices(prices, minimum_rows: int = 2, latest=None) -> pd.DataFrame:
     return frame
 
 
-def implausible_moves(prices: pd.DataFrame) -> dict:
-    """Return ``{ticker: description}`` for every ticker with a day-over-day move beyond MAX_DAILY_MOVE.
+def _beyond_band(ratio) -> bool:
+    """Return true if a one-day ratio is outside the believable band (NaN is never beyond it)."""
+    return bool(ratio > MAX_DAILY_MOVE or ratio < 1 / MAX_DAILY_MOVE)
+
+
+def _describe_move(closes: pd.Series, position: int) -> str:
+    """Say what happened at ``position``, against the close before it."""
+    previous, close = closes.iloc[position - 1], closes.iloc[position]
+    return f"moved {close / previous:.2f}x in one day on {closes.index[position].date()} ({previous:g} -> {close:g})"
+
+
+def classify_implausible(closes: pd.Series, accepted=(), since=None):
+    """Judge one ticker's closes, returning what to stop using, or None if nothing is suspect.
+
+    A single price series cannot prove whether a 6x day was a real
+    repricing or a corrupt print, so the question asked here is the one it
+    *can* answer: does removing the day restore continuity?
+
+    - **It reverts.** The next close returns to where the move started, so
+      the day is an isolated bad print. Only that close is dropped
+      (``masked_days``); the ticker keeps trading on the rest.
+    - **It persists.** The price stayed at the new level, so either the
+      market repriced the company or the feed changed basis. Either way the
+      history across the jump is a poor basis for estimating return and
+      risk, so only prices from that day on are used (``untrusted_before``).
+      That holds whichever of the two it was, which is why the verdict does
+      not depend on resolving the unanswerable question.
+    - **Nothing usable is left.** Too few closes follow the jump to serve,
+      so the ticker is excluded outright (``scope`` ``"ticker"``).
+
+    ``accepted`` holds dates a human adjudicated as real; those are never
+    flagged again, and each becomes the level later days are measured from.
+    A one-day round trip is two moves on two dates, so accepting the spike
+    and not its reversal leaves the reversal to be judged on its own --
+    deliberately, since "that price was real" says nothing about the next
+    one. ``since`` ignores days before it, which were judged when they
+    arrived.
+    """
+    closes = closes.dropna()
+    if len(closes) < 2:
+        return None
+    values = closes.to_numpy()
+    start = None if since is None else pd.Timestamp(since)
+    masked, cut = [], None
+    # The close each day is judged against: the newest one still believed.
+    # A print marked for masking never becomes the baseline, or the day it
+    # reverts would be measured from the bad number and a single corrupt
+    # close would read as two moves -- a spike, then a crash back.
+    baseline = 0
+    for position in range(1, len(values)):
+        day = closes.index[position]
+        if not _beyond_band(values[position] / values[baseline]):
+            baseline = position
+            continue
+        if str(day.date()) in accepted or (start is not None and day < start):
+            # Settled, by a person or by an earlier refresh. It stands as
+            # the level everything after it is measured from.
+            baseline = position
+            continue
+        # Does the next close come back to where the move began? With no
+        # close after it yet there is nothing to judge, and dropping one
+        # print is the smaller mistake than distrusting a whole history --
+        # if the move turns out to persist, the next refresh sees the jump
+        # again (now with a successor) and truncates then.
+        reverts = position + 1 < len(values) and not _beyond_band(values[position + 1] / values[baseline])
+        if reverts or position + 1 >= len(values):
+            masked.append(position)
+            continue
+        cut, baseline = position, position
+    if cut is None and not masked:
+        return None
+    if cut is not None:
+        return _persistent_finding(closes, cut, [p for p in masked if p > cut])
+    first = masked[0]
+    if first == len(values) - 1:
+        tail = ", with no later close yet to tell a bad print from a repricing, so it is not used for now"
+    else:
+        tail = " and back the next close, so that one print is not used"
+    others = f" ({len(masked) - 1} other such print(s) too)" if len(masked) > 1 else ""
+    return {
+        "reason": _describe_move(closes, first) + tail + others,
+        "scope": "partial",
+        "masked_days": [str(closes.index[p].date()) for p in masked],
+    }
+
+
+def _persistent_finding(closes: pd.Series, cut: int, masked) -> dict:
+    """Describe a move the price stayed at: truncate the history, or give up on the ticker."""
+    day = closes.index[cut]
+    moved = _describe_move(closes, cut)
+    remaining = len(closes) - cut
+    if remaining < MIN_TRUSTED_DAYS:
+        return {
+            "reason": f"{moved} and stayed there, with only {remaining} close(s) after it -- too few to estimate "
+            "anything from, so the ticker is excluded",
+            "scope": "ticker",
+        }
+    entry = {
+        "reason": f"{moved} and stayed there, so closes before {day.date()} are not used ({remaining} remain)",
+        "scope": "partial",
+        "untrusted_before": str(day.date()),
+    }
+    if masked:
+        entry["masked_days"] = [str(closes.index[p].date()) for p in masked]
+    return entry
+
+
+def implausible_moves(prices: pd.DataFrame, accepted=None, since=None) -> dict:
+    """Return ``{ticker: finding}`` for every ticker whose closes move implausibly (see ``classify_implausible``).
 
     Each close is compared with the previous close that exists, so a gap
-    (a throttled day, a trading halt) does not hide a jump across it.
+    (a throttled day, a trading halt) does not hide a jump across it. The
+    frame-wide comparison is only a filter: the few tickers it turns up are
+    then judged one at a time, so the usual case of nothing suspect costs
+    one vectorized pass.
     """
-    previous = prices.ffill().shift(1)
-    ratio = prices / previous
+    if prices.empty:
+        return {}
+    accepted = accepted or {}
+    ratio = prices / prices.ffill().shift(1)
     flagged = (ratio > MAX_DAILY_MOVE) | (ratio < 1 / MAX_DAILY_MOVE)
+    window = flagged if since is None else flagged.loc[pd.Timestamp(since) :]
+    if window.empty:
+        return {}
     found = {}
-    for ticker in prices.columns[flagged.any()]:
-        day = flagged.index[flagged[ticker].to_numpy()][0]
-        found[str(ticker)] = (
-            f"moved {ratio.at[day, ticker]:.2f}x in one day on {day.date()} "
-            f"({previous.at[day, ticker]:g} -> {prices.at[day, ticker]:g})"
-        )
+    for ticker in prices.columns[window.any().to_numpy()]:
+        finding = classify_implausible(prices[ticker], accepted.get(str(ticker), ()), since)
+        if finding is not None:
+            found[str(ticker)] = finding
     return found
 
 

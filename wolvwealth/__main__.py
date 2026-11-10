@@ -73,6 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mcp.add_argument("--config", action="store_true", help="Print the JSON an AI app needs to start this server")
 
+    accept = sub.add_parser(
+        "accept-price",
+        help="Record that a flagged one-day price move was real, so it stops excluding prices",
+        description="The plausibility check cannot tell a real one-day collapse or repricing from corrupt "
+        "data, because a single price series does not contain the answer. Use this when you know a flagged "
+        "move really happened: the date is never flagged again, by any later refresh, and the ticker is "
+        "re-judged immediately. `refresh-data` prints the ticker and date to pass here.",
+    )
+    accept.add_argument("ticker", help="Ticker whose move was real, e.g. CVAC")
+    accept.add_argument("date", help="Day of the move, YYYY-MM-DD, as printed by refresh-data")
+
     sub.add_parser("reset-db", help="Delete var/wolvwealth.sqlite3 and recreate it with the demo seed")
     sub.add_parser("dump-db", help="Print every workspace, portfolio, and holding")
     return parser
@@ -320,6 +331,25 @@ def cmd_refresh_data(args, services: Services) -> int:
         print(f"Re-adjusted {ticker} (split or dividend detected {note['detected']}): {note['outcome']}.")
     for ticker, entry in market.quarantine.items():
         print(f"Quarantined {ticker} (excluded from allocations since {entry['detected']}): {entry['reason']}.")
+    for ticker, entry in market.price_exclusions.items():
+        print(
+            f"{ticker} still trades, but some of its prices are unused (since {entry['detected']}): "
+            f"{entry['reason']}."
+        )
+    if market.quarantine or market.price_exclusions:
+        print("If one of those moves really happened, run `wolvwealth accept-price TICKER DATE` to keep it.")
+    return 0
+
+
+def cmd_accept_price(args, services: Services) -> int:
+    """Accept a flagged price move as real and re-judge the ticker."""
+    ticker = args.ticker.strip().upper()
+    remaining = services.market.accept_price_move(ticker, args.date)
+    print(f"Accepted {ticker}'s price move on {args.date}; it will not be flagged again.")
+    if remaining is None:
+        print(f"{ticker} now uses its full price history.")
+    else:
+        print(f"{ticker} is still restricted for another reason: {remaining['reason']}.")
     return 0
 
 
@@ -358,6 +388,7 @@ COMMANDS = {
     "optimize": cmd_optimize,
     "mcp": cmd_mcp,
     "refresh-data": cmd_refresh_data,
+    "accept-price": cmd_accept_price,
     "reset-db": cmd_reset_db,
     "dump-db": cmd_dump_db,
 }

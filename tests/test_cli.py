@@ -91,7 +91,9 @@ def test_refresh_data_full_re_downloads_everything_and_a_failed_download_is_a_me
     out = capsys.readouterr().out
     assert "Full re-download, 2006 -> today" in out and "Done. Prices now end 2021-" in out
     assert "T-bill" not in out, "no T-bill line until one has been fetched"
-    assert "Quarantined DDD (excluded from allocations since " in out and "x in one day" in out
+    # A spike that reverts costs one close, not the company: the CLI says so and names the fix.
+    assert "DDD still trades, but some of its prices are unused" in out and "x in one day" in out
+    assert "wolvwealth accept-price TICKER DATE" in out
     saved = services.price_store.load_prices()
 
     def offline(*_args, **_kwargs):

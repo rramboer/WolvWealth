@@ -41,6 +41,49 @@ def _replace(path: pathlib.Path, write) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _clean_day(value):
+    """Return ``value`` as a ``YYYY-MM-DD`` string, or None if it is not a date.
+
+    ``pd.Timestamp(None)`` is NaT rather than an error, and ``str`` of that
+    is the plausible-looking ``"NaT"``, so missing has to be rejected
+    explicitly or an absent field becomes a date that blanks nothing.
+    """
+    if value is None:
+        return None
+    try:
+        stamp = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        return None
+    return None if pd.isna(stamp) else str(stamp.date())
+
+
+def _clean_exclusion(entry: dict) -> dict:
+    """Return one quarantine entry with only well-formed fields kept (see ``PriceStore.load_quarantine``)."""
+    clean = {
+        "reason": str(entry.get("reason", "")),
+        "detected": str(entry.get("detected", "")),
+        # Unknown or absent reads as the strongest scope: a record from
+        # before partial exclusions existed excluded the whole ticker.
+        "scope": "partial" if entry.get("scope") == "partial" else "ticker",
+    }
+    valuation = _clean_valuation(entry.get("valuation"))
+    if valuation is not None:
+        clean["valuation"] = valuation
+    if clean["scope"] == "partial":
+        before = _clean_day(entry.get("untrusted_before"))
+        if before is not None:
+            clean["untrusted_before"] = before
+        days = entry.get("masked_days")
+        masked = sorted({d for d in (_clean_day(v) for v in days) if d}) if isinstance(days, list) else []
+        if masked:
+            clean["masked_days"] = masked
+        if "untrusted_before" not in clean and not masked:
+            # A partial exclusion that excludes nothing would blank nothing
+            # and hide nothing; treat the entry as unusable, not as a licence.
+            clean["scope"] = "ticker"
+    return clean
+
+
 def _clean_valuation(valuation):
     """Return ``{"close", "as_of"}`` if it is a believable dated close, else None."""
     if not isinstance(valuation, dict):
@@ -55,8 +98,13 @@ def _clean_valuation(valuation):
     return {"close": float(close), "as_of": str(day.date())}
 
 
-class PriceStore:
-    """Read and write the price cache, the statistics cache, and the ticker list."""
+class PriceStore:  # pylint: disable=too-many-instance-attributes  # one attribute per file it owns; see below
+    """Read and write the price cache, the statistics cache, and the ticker list.
+
+    Every attribute is the location of one file this store owns, named
+    after it. Folding them into a mapping would only trade a named
+    attribute for a string key at every call site.
+    """
 
     def __init__(self, prices_path: pathlib.Path, universe_path: pathlib.Path, legacy_csv_paths=()) -> None:
         """Remember paths; nothing is read until asked."""
@@ -68,6 +116,7 @@ class PriceStore:
         self.tbill_path = self.prices_path.with_name("tbill_rate.json")
         self.quarantine_path = self.prices_path.with_name("quarantine.json")
         self.readjustments_path = self.prices_path.with_name("readjustments.json")
+        self.accepted_path = self.prices_path.with_name("accepted_moves.json")
 
     def load_universe(self) -> list:
         """Tickers, one per line, in file order (descending market cap); upper-cased, first occurrence wins.
@@ -168,14 +217,23 @@ class PriceStore:
         _replace(self.tbill_path, lambda path: path.write_text(payload, encoding="utf-8"))
 
     def load_quarantine(self) -> dict:
-        """Return ``{ticker: {"reason", "detected"[, "valuation"]}}`` for excluded tickers; {} if none or unreadable.
+        """Return ``{ticker: entry}`` for excluded prices; {} if none or unreadable.
 
-        ``valuation`` is ``{"close", "as_of"}``: a price on the *current*
-        adjustment basis for a ticker excluded because a split/dividend
-        re-download failed, whose cached history is therefore on a
-        superseded basis and cannot be used to value a holding. Dropped
-        unless it is a believable close, so a hand-edited or truncated file
-        degrades to "no valuation" rather than to a wrong one.
+        An entry always has ``reason``, ``detected`` and ``scope``, and
+        optionally:
+
+        - ``valuation`` (``{"close", "as_of"}``) -- a price on the *current*
+          adjustment basis for a ticker excluded because a split/dividend
+          re-download failed, whose cached history is therefore on a
+          superseded basis and cannot be used to value a holding.
+        - ``untrusted_before`` / ``masked_days`` -- the partial exclusions
+          (see ``domain.market.classify_implausible``).
+
+        ``scope`` defaults to ``"ticker"``, so a record written before
+        partial exclusions existed keeps meaning exactly what it did. Every
+        field is dropped unless it is well formed, so a hand-edited or
+        truncated file degrades to a weaker exclusion rather than to a
+        wrong one.
         """
         try:
             data = json.loads(self.quarantine_path.read_text(encoding="utf-8"))
@@ -187,10 +245,7 @@ class PriceStore:
         for ticker, entry in data.items():
             if not (isinstance(ticker, str) and TICKER_RE.match(ticker) and isinstance(entry, dict)):
                 continue
-            record[ticker] = {"reason": str(entry.get("reason", "")), "detected": str(entry.get("detected", ""))}
-            valuation = _clean_valuation(entry.get("valuation"))
-            if valuation is not None:
-                record[ticker]["valuation"] = valuation
+            record[ticker] = _clean_exclusion(entry)
         return record
 
     def save_quarantine(self, record: dict) -> None:
@@ -200,6 +255,37 @@ class PriceStore:
             return
         payload = json.dumps(record, indent=2, sort_keys=True)
         _replace(self.quarantine_path, lambda path: path.write_text(payload, encoding="utf-8"))
+
+    def load_accepted_moves(self) -> dict:
+        """Return ``{ticker: [date, ...]}`` of price moves a human judged real; {} if none or unreadable.
+
+        The adjudication layer over a heuristic that cannot be right every
+        time: a genuine one-day collapse or repricing is indistinguishable
+        from corruption in a single series, so a person who knows which it
+        was records that here, once, and no later refresh re-decides it.
+        """
+        try:
+            data = json.loads(self.accepted_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        accepted = {}
+        for ticker, days in data.items():
+            if not (isinstance(ticker, str) and TICKER_RE.match(ticker) and isinstance(days, list)):
+                continue
+            clean = sorted({day for day in (_clean_day(value) for value in days) if day})
+            if clean:
+                accepted[ticker] = clean
+        return accepted
+
+    def save_accepted_moves(self, accepted: dict) -> None:
+        """Overwrite the accepted-move list (removing the file when it is empty)."""
+        if not accepted:
+            self.accepted_path.unlink(missing_ok=True)
+            return
+        payload = json.dumps(accepted, indent=2, sort_keys=True)
+        _replace(self.accepted_path, lambda path: path.write_text(payload, encoding="utf-8"))
 
     def load_readjustments(self) -> dict:
         """Return ``{ticker: {"detected", "outcome"}}`` for recent split/dividend re-downloads; {} if unreadable."""

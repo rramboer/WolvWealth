@@ -22,12 +22,18 @@ from wolvwealth.services import market_data
 from wolvwealth.services.market_data import MarketDataService
 from wolvwealth.storage.price_store import PriceStore
 
+#: Closes left after the spike in the ``quarantined`` fixture: fewer than
+#: MIN_TRUSTED_DAYS, so there is nothing worth serving and the whole ticker
+#: goes. A spike with a long believable tail is only a partial exclusion
+#: (see test_price_checks.py); this fixture is for the unsalvageable case.
+TAIL = 5
+
 
 @pytest.fixture
 def quarantined(services):
-    """The service after a full refresh whose download spiked DDD 40x, quarantining it. Returns (services, prices)."""
+    """The service after a full refresh whose download left DDD unusable. Returns (services, prices)."""
     spiked = synthetic_market().prices
-    spiked.iloc[100, spiked.columns.get_loc("DDD")] *= 40
+    spiked.iloc[-TAIL:, spiked.columns.get_loc("DDD")] *= 40
     services.market.downloader = lambda tickers, _start, **_k: spiked.loc[:, list(tickers)]
     assert services.market.refresh(full=True)
     return services, spiked
@@ -48,7 +54,8 @@ def test_a_quarantined_ticker_is_blanked_from_the_snapshot_but_keeps_a_frozen_va
     assert data.prices["DDD"].isna().all() and "DDD" not in data.tradeable, "unbuyable, with nothing for the solver"
     assert services.price_store.load_prices()["DDD"].notna().all(), "the archive keeps every close"
     close, day = data.frozen_valuations["DDD"]
-    assert (close, day) == (float(spiked["DDD"].iloc[99]), spiked.index[99].date()), "the close before the spike"
+    before = -TAIL - 1
+    assert (close, day) == (float(spiked["DDD"].iloc[before]), spiked.index[before].date()), "before the spike"
     assert data.can_value("DDD") and data.valuation_price("DDD") == close and data.valuation_date("DDD") == day
 
 
@@ -170,7 +177,7 @@ def test_an_implausible_move_still_values_from_the_cache_since_the_download_is_w
     services, spiked = quarantined
     data = services.market.data
     assert "valuation" not in services.market.quarantine["DDD"], "no fresh close is trusted for a spiked ticker"
-    assert data.valuation_price("DDD") == pytest.approx(float(spiked["DDD"].iloc[99]))
+    assert data.valuation_price("DDD") == pytest.approx(float(spiked["DDD"].iloc[-TAIL - 1]))
 
 
 def test_naming_a_quarantined_ticker_in_the_universe_without_holding_it_says_why(quarantined):

@@ -80,15 +80,54 @@ def test_sidecars_round_trip_and_read_corrupt_as_absent(tmp_path):
         store.tbill_path.write_text(corrupt, encoding="utf-8")
         assert store.load_tbill() is None, f"a corrupt sidecar reads as absent, never as an error: {corrupt}"
     assert store.load_quarantine() == {}
-    store.save_quarantine({"BBB": {"reason": "moved 9x", "detected": "2026-11-06"}})
-    assert store.load_quarantine() == {"BBB": {"reason": "moved 9x", "detected": "2026-11-06"}}
+    whole = {"reason": "moved 9x", "detected": "2026-11-06", "scope": "ticker"}
+    store.save_quarantine({"BBB": whole})
+    assert store.load_quarantine() == {"BBB": whole}
+    # A partial exclusion round-trips its dates; a record written before scopes
+    # existed reads as the whole-ticker exclusion it was.
+    partial = {
+        "reason": "spiked",
+        "detected": "2026-11-06",
+        "scope": "partial",
+        "untrusted_before": "2020-03-05",
+        "masked_days": ["2019-07-01", "2021-02-02"],
+    }
+    store.save_quarantine({"BBB": partial})
+    assert store.load_quarantine() == {"BBB": partial}
     store.quarantine_path.write_text('{"BBB": {"reason": "x"}, "../evil": {}, "CCC": 5}', encoding="utf-8")
-    assert store.load_quarantine() == {"BBB": {"reason": "x", "detected": ""}}
+    assert store.load_quarantine() == {"BBB": {"reason": "x", "detected": "", "scope": "ticker"}}
+    # A partial entry whose dates are all unusable would blank nothing, so it
+    # falls back to excluding the ticker rather than quietly excusing it.
+    for broken in ('{"scope": "partial"}', '{"scope": "partial", "untrusted_before": "nope"}'):
+        store.quarantine_path.write_text('{"BBB": %s}' % broken, encoding="utf-8")
+        assert store.load_quarantine()["BBB"]["scope"] == "ticker"
+    store.quarantine_path.write_text(
+        '{"BBB": {"scope": "partial", "masked_days": ["2020-01-02", null, "junk"]}}', encoding="utf-8"
+    )
+    assert store.load_quarantine()["BBB"] == {
+        "reason": "",
+        "detected": "",
+        "scope": "partial",
+        "masked_days": ["2020-01-02"],
+    }
     for corrupt in ("not json", "[1]"):
         store.quarantine_path.write_text(corrupt, encoding="utf-8")
         assert store.load_quarantine() == {}
     store.save_quarantine({})
     assert not store.quarantine_path.exists()
+    assert store.load_accepted_moves() == {}
+    store.save_accepted_moves({"BBB": ["2021-01-27"]})
+    assert store.load_accepted_moves() == {"BBB": ["2021-01-27"]}
+    store.accepted_path.write_text(
+        '{"BBB": ["2021-01-27", "2021-01-27", "junk"], "../evil": ["2021-01-27"], "CCC": 5, "DDD": []}',
+        encoding="utf-8",
+    )
+    assert store.load_accepted_moves() == {"BBB": ["2021-01-27"]}, "deduplicated, dated, and symbol-shaped only"
+    for corrupt in ("not json", "[1]"):
+        store.accepted_path.write_text(corrupt, encoding="utf-8")
+        assert store.load_accepted_moves() == {}
+    store.save_accepted_moves({})
+    assert not store.accepted_path.exists()
     assert store.load_readjustments() == {}
     note = {"detected": "2026-11-06", "outcome": "history replaced on the new adjustment basis"}
     store.save_readjustments({"BBB": note})

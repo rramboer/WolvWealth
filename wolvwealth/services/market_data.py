@@ -21,35 +21,38 @@ from datetime import timedelta
 
 import pandas as pd
 
-from wolvwealth.domain.errors import DataError
+from wolvwealth.domain.errors import DataError, ValidationError
+from wolvwealth.domain.holdings_parse import TICKER_RE
 from wolvwealth.domain.market import (
     MIN_HISTORY_DAYS,
     UNIVERSE_ALIASES,
     MarketData,
+    classify_implausible,
     clean_prices,
     implausible_moves,
-    last_believable_close,
 )
 from wolvwealth.domain.numbers import TBILL_RATE_RANGE, is_plausible_tbill_rate
 from wolvwealth.domain.stats import ESTIMATOR, MarketStats
 from wolvwealth.market import yahoo
+from wolvwealth.services import price_checks
+from wolvwealth.services.price_checks import BASIS_FAILURE_REASON  # re-exported: the reason text basis failures carry
 from wolvwealth.storage.price_store import PriceStore
 
 #: A T-bill quote older than this is not the "current" yield it would be presented as.
 TBILL_MAX_AGE_DAYS = 30
 
-#: Opening words of the quarantine reason recorded when a split/dividend
-#: re-download failed or came back truncated. Such a ticker is excluded while
-#: its cached history sits on a superseded adjustment basis, so a later
-#: refresh that does replace the history lifts exactly these entries --
-#: never one recorded for implausible prices, which a new basis does not cure.
-BASIS_FAILURE_REASON = "changed adjustment basis"
-
 #: Marks the T-bill reference as not yet read from disk (None means read, and absent).
 _UNLOADED = object()
 
 
-def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None, readjustments: dict = None) -> dict:
+def status(  # pylint: disable=too-many-arguments  # one report, assembled from the service's separate records
+    data: MarketData,
+    tbill,
+    max_age_days: int,
+    quarantine: dict = None,
+    readjustments: dict = None,
+    price_exclusions: dict = None,
+) -> dict:
     """Describe the price snapshot's freshness: the report the API and the MCP server both publish.
 
     ``stale`` is the same judgement the startup refresh makes, so a reader
@@ -76,6 +79,12 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None, 
         # Unattended runs (agents, schedules) read this report, not the logs:
         # an excluded name must be visible where the decision is made.
         report["quarantined"] = quarantine
+    if price_exclusions:
+        # Tradeable, and allocated to like any other name -- just estimated
+        # from fewer closes. Reported apart from "quarantined" so an agent
+        # is not told a name is untradeable when it is not, and so the
+        # ordinary outcome of the check does not read as an alarm.
+        report["price_exclusions"] = price_exclusions
     if readjustments:
         # Same audience: a split or dividend makes a refresh re-download that
         # ticker's entire history, and a scheduled run must be able to see
@@ -101,7 +110,14 @@ def status(data: MarketData, tbill, max_age_days: int, quarantine: dict = None, 
 
 def service_status(service: "MarketDataService", data: MarketData, max_age_days: int) -> dict:
     """``status()`` over the service's own stored records: the one composition every surface publishes."""
-    return status(data, service.tbill, max_age_days, service.quarantine, service.readjustments)
+    return status(
+        data,
+        service.tbill,
+        max_age_days,
+        service.quarantine,
+        service.readjustments,
+        service.price_exclusions,
+    )
 
 
 def classify_tickers(data: MarketData, tickers) -> dict:
@@ -299,59 +315,13 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         self._loaded_stamp = self.store.prices_stamp()
         self._archive = self.store.load_prices()
         record = self.store.load_quarantine()
-        served = self._exclude(self._archive, record)
+        served = price_checks.apply_exclusions(self._archive, record)
         return MarketData.build(
             universe,
             served,
             self._load_or_compute_stats(universe, served),
-            frozen_valuations=self._frozen_valuations(self._archive, record),
+            frozen_valuations=price_checks.frozen_valuations(self._archive, record),
         )
-
-    def _exclude(self, prices: pd.DataFrame, record: dict) -> pd.DataFrame:
-        """Return the snapshot view of the archive: quarantined tickers blanked, the archive itself untouched.
-
-        Blanking happens here, on the way to the optimizer, and never on the
-        way to disk. An excluded ticker therefore keeps every close it ever
-        had, so lifting the exclusion is a matter of re-reading the file
-        rather than re-downloading a history Yahoo may not serve again.
-        """
-        blanked = [ticker for ticker in record if ticker in prices.columns]
-        if not blanked:
-            return prices
-        served = prices.copy()
-        served[blanked] = float("nan")
-        return served
-
-    @staticmethod
-    def _frozen_valuations(prices: pd.DataFrame, record: dict) -> dict:
-        """Each quarantined ticker's best trustworthy close, as ``{ticker: (close, date)}``.
-
-        So a held position in a quarantined name is still valued (and
-        frozen) instead of failing the whole request. The two exclusion
-        reasons need different prices, and using the wrong one misstates the
-        position:
-
-        - *Split or dividend re-download failed.* The cached history is on a
-          superseded basis -- after a 2:1 split its closes are twice the real
-          price -- so it must not be used at all. ``_record_quarantine``
-          stored a close from the download that detected the change, which is
-          on the current basis.
-        - *Implausible move.* The download is what is distrusted, so the
-          cached history is used, stopping before the first flagged move.
-
-        Only tickers with such a close appear; one with neither genuinely
-        cannot be valued.
-        """
-        frozen = {}
-        for ticker, entry in record.items():
-            valuation = entry.get("valuation")
-            if valuation:
-                frozen[ticker] = (valuation["close"], pd.Timestamp(valuation["as_of"]).date())
-            elif ticker in prices.columns:
-                believable = last_believable_close(prices[ticker])
-                if believable is not None:
-                    frozen[ticker] = believable
-        return frozen
 
     def _save_prices(self, prices) -> None:
         """Write the archive and remember the result as this process's own, so it is not re-read as foreign."""
@@ -362,13 +332,13 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     def _publish(self, universe, prices: pd.DataFrame, record: dict) -> None:
         """Persist the archive and swap in the snapshot built from it, with ``record``'s tickers excluded."""
         self._save_prices(prices)
-        served = self._exclude(prices, record)
+        served = price_checks.apply_exclusions(prices, record)
         columns = self._stats_columns(universe, served)
         self._data = MarketData.build(
             universe,
             served,
             self._compute_and_save_stats(served, columns),
-            frozen_valuations=self._frozen_valuations(prices, record),
+            frozen_valuations=price_checks.frozen_valuations(prices, record),
         )
 
     def _fetch(self, tickers, start_date) -> pd.DataFrame:
@@ -386,42 +356,36 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         return fresh.reindex(columns=tickers) if not fresh.empty else fresh
 
     def _newly_implausible(self, prices, since, whole, record: dict) -> dict:
-        """Tickers not already excluded whose closes move implausibly, as ``{ticker: reason}``.
+        """Tickers whose closes still move implausibly once ``record`` is applied, as ``{ticker: finding}``.
 
-        ``since`` limits the check to rows from that date on (the cached
-        history before it was checked when it arrived); ``whole`` names
+        Judged against the *served view*, not the raw archive, which is what
+        lets an exclusion settle a question instead of merely suppressing
+        it. A masked print is already gone from the view, so a reverting
+        spike stops being flagged -- while a move that turns out to persist
+        still shows the jump and is re-judged, now with the later close
+        needed to classify it. Prices already excluded therefore need no
+        "skip what is already quarantined" rule, which is what used to hide
+        a replaced history from this check.
+
+        ``since`` ignores days judged when they arrived; ``whole`` names
         tickers whose entire history was just replaced and so must be
-        re-checked end to end. Raises if more than MAX_WENT_DARK_FRACTION of
+        re-judged end to end. Raises if more than MAX_WENT_DARK_FRACTION of
         the live tickers look implausible at once: that is a bad download,
         not a bad market, and nothing should be written from it.
         """
-        window = prices if since is None else prices.loc[since:]
-        found = implausible_moves(window)
-        if whole:
-            found.update(implausible_moves(prices[[t for t in whole if t in prices.columns]]))
-        newly = {ticker: reason for ticker, reason in found.items() if ticker not in record}
+        view = price_checks.apply_exclusions(prices, record)
+        accepted = self.store.load_accepted_moves()
+        found = implausible_moves(view, accepted=accepted, since=since)
+        replaced = [ticker for ticker in whole if ticker in view.columns]
+        if replaced:
+            found.update(implausible_moves(view[replaced], accepted=accepted))
         live = prices.iloc[-1].dropna().index if not prices.empty else pd.Index([])
-        if len(newly) > max(3, self.MAX_WENT_DARK_FRACTION * len(live)):
+        if len(found) > max(3, self.MAX_WENT_DARK_FRACTION * len(live)):
             raise RuntimeError(
-                f"{len(newly)} tickers moved implausibly in the downloaded prices (corrupt or tampered data?); "
+                f"{len(found)} tickers moved implausibly in the downloaded prices (corrupt or tampered data?); "
                 "not overwriting the price cache. Try again later."
             )
-        return newly
-
-    @staticmethod
-    def _basis_entry(failure: dict, previous_entry, detected: str) -> dict:
-        """Quarantine entry for a failed re-basing, carrying a close on the current adjustment basis.
-
-        This refresh's own download first; failing that (nothing came back
-        for the ticker at all), whatever an earlier one managed to record,
-        which is still on the current basis -- the cached history is not,
-        which is the whole reason the ticker is excluded.
-        """
-        entry = {"reason": failure["reason"], "detected": detected}
-        valuation = failure.get("valuation") or (previous_entry or {}).get("valuation")
-        if valuation:
-            entry["valuation"] = valuation
-        return entry
+        return found
 
     def _record_quarantine(self, prices, since=None, whole=(), clear=False, broken=None, recovered=()) -> dict:
         """Record every ticker that must be excluded from allocations and return the record. Writes no prices.
@@ -435,19 +399,19 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         ``broken`` entry (and only such an entry: a new adjustment basis is
         no answer to implausible prices) -- though a replacement history
         that itself moves implausibly is re-quarantined under that reason
-        instead of released. Tickers already in quarantine stay
-        excluded until a full refresh (``clear``) re-checks them, so a
-        refresh cannot quietly bring a poisoned name back. ``since`` and
-        ``whole`` scope the implausibility check (see ``_newly_implausible``).
+        instead of released. ``clear`` re-judges every ticker from scratch,
+        which is how a full refresh lifts an exclusion whose data has since
+        been replaced by a believable download. ``since`` and ``whole``
+        scope the implausibility check (see ``_newly_implausible``).
         """
         previous = self.store.load_quarantine()
         record = {} if clear else dict(previous)
-        # Lift before the implausibility check. ``_newly_implausible`` skips
-        # names already in the record (a known exclusion is not re-reported
-        # every refresh), so a recovered ticker's stale basis-failure entry
-        # would otherwise hide its replacement history from the one check
-        # standing between that download and the optimizer.
-        lifted = self._lift_cured_basis_failures(record, recovered)
+        # Lift before the implausibility check: the check reads the view
+        # that ``record`` produces, so a recovered ticker's stale
+        # basis-failure entry would blank the replacement history and hide
+        # it from the one check standing between that download and the
+        # optimizer.
+        lifted = price_checks.lift_cured_basis_failures(record, recovered)
         newly = self._newly_implausible(prices, since, whole, record)
         detected = pd.Timestamp.now().strftime("%Y-%m-%d")
         for ticker in lifted:
@@ -457,16 +421,26 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                     "and passed the plausibility check; it is back in allocations."
                 )
         for ticker, failure in (broken or {}).items():
-            record[ticker] = self._basis_entry(failure, previous.get(ticker), detected)
-        record.update({ticker: {"reason": reason, "detected": detected} for ticker, reason in newly.items()})
-        for ticker, reason in newly.items():
-            self.log(
-                f"wolvwealth: quarantined {ticker}: its downloaded prices {reason}. It cannot be bought, and a "
-                "held position is kept at its last believable close, until a `wolvwealth refresh-data --full` "
-                "downloads a believable history."
-            )
+            record[ticker] = price_checks.basis_entry(failure, previous.get(ticker), detected)
+        for ticker, finding in newly.items():
+            record[ticker] = price_checks.merge_exclusion(record.get(ticker), finding, detected)
+            self._log_exclusion(ticker, record[ticker])
         self.store.save_quarantine(record)
         return record
+
+    def _log_exclusion(self, ticker: str, entry: dict) -> None:
+        """Say what stopped being used for a ticker, and how to overrule it if the move was real."""
+        if entry["scope"] == "ticker":
+            self.log(
+                f"wolvwealth: quarantined {ticker}: its prices {entry['reason']}. It cannot be bought, and a "
+                f"held position is kept at its last believable close. If that move was real, run "
+                f"`wolvwealth accept-price {ticker} <date>` to keep the history."
+            )
+            return
+        self.log(
+            f"wolvwealth: {ticker}: its prices {entry['reason']}. The ticker still trades on the rest of its "
+            f"history. If that move was real, run `wolvwealth accept-price {ticker} <date>` to keep it all."
+        )
 
     @staticmethod
     def _unverifiable(archive: pd.DataFrame, overlap_start, new_rows: pd.DataFrame) -> list:
@@ -500,35 +474,66 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         ordinary split is a step the implausible-move guard lets through.
         """
         return [
-            ticker
-            for ticker, entry in self.store.load_quarantine().items()
-            if entry["reason"].startswith(BASIS_FAILURE_REASON)
+            ticker for ticker, entry in self.store.load_quarantine().items() if price_checks.is_basis_failure(entry)
         ]
-
-    @staticmethod
-    def _lift_cured_basis_failures(record: dict, recovered) -> list:
-        """Drop ``recovered`` tickers from ``record`` where they were excluded only for a failed re-basing.
-
-        The cure is specific: their history now exists whole on the current
-        adjustment basis, which is exactly what the exclusion was waiting
-        for. An entry recorded for implausible prices is left alone -- a
-        split says nothing about whether those prices were believable.
-        Returns the lifted tickers rather than announcing them: "back in
-        allocations" is only true of a replacement history that also passes
-        the implausibility check, which the caller runs after this.
-        """
-        lifted = []
-        for ticker in recovered:
-            entry = record.get(ticker)
-            if entry and entry["reason"].startswith(BASIS_FAILURE_REASON):
-                del record[ticker]
-                lifted.append(ticker)
-        return lifted
 
     @property
     def quarantine(self) -> dict:
-        """Tickers excluded because their downloaded prices were implausible: ``{ticker: {reason, detected}}``."""
-        return self.store.load_quarantine()
+        """Tickers excluded outright, so they cannot be bought: ``{ticker: entry}`` (see ``load_quarantine``)."""
+        return {t: e for t, e in self.store.load_quarantine().items() if e.get("scope", "ticker") == "ticker"}
+
+    @property
+    def price_exclusions(self) -> dict:
+        """Tickers still tradeable with part of their price history unused: ``{ticker: entry}``.
+
+        The ordinary outcome of the plausibility check, and deliberately
+        not reported as a quarantine: these names allocate and trade
+        normally, they are simply estimated from fewer closes.
+        """
+        return {t: e for t, e in self.store.load_quarantine().items() if e.get("scope", "ticker") == "partial"}
+
+    @property
+    def accepted_moves(self) -> dict:
+        """Price moves a human judged real, which the plausibility check never flags again."""
+        return self.store.load_accepted_moves()
+
+    def accept_price_move(self, ticker: str, day) -> dict:
+        """Record that a flagged move is real, re-judge that ticker, and return what is still excluded (or None).
+
+        The escape hatch any heuristic at this scale needs. 2,590 tickers
+        over twenty years is some thirteen million closes, so legitimate
+        one-day moves past 5x -- a biotech trial result, a collapse, a
+        post-bankruptcy relisting -- are not freak events but a certainty,
+        and no rule reading a single price series can tell them from
+        corruption. A person who knows which it was says so once here, and
+        no later refresh, full or incremental, re-decides it.
+        """
+        ticker = str(ticker).strip().upper()
+        if not TICKER_RE.match(ticker):
+            raise ValidationError(f"Invalid ticker: {ticker!r}.")
+        try:
+            day = str(pd.Timestamp(day).date())
+        except (ValueError, TypeError) as err:
+            raise ValidationError(f"Invalid date: {day!r}. Use YYYY-MM-DD.") from err
+        self.data  # pylint: disable=pointless-statement  # load the archive if this is the first access
+        if ticker not in self._archive.columns:
+            raise ValidationError(f"No price history for {ticker}, so it has no move to accept.")
+        accepted = self.store.load_accepted_moves()
+        accepted[ticker] = sorted(set(accepted.get(ticker, ())) | {day})
+        self.store.save_accepted_moves(accepted)
+        record = self.store.load_quarantine()
+        entry = record.get(ticker)
+        if entry is not None and not price_checks.is_basis_failure(entry):
+            # Re-judge from the archive, which still holds every close the
+            # exclusion hid: accepting one move may leave others standing.
+            finding = classify_implausible(self._archive[ticker], accepted[ticker])
+            if finding is None:
+                del record[ticker]
+            else:
+                record[ticker] = {**finding, "detected": entry.get("detected", day)}
+            self.store.save_quarantine(record)
+            self._data = None  # rebuild the snapshot from the wider view on next access
+        return record.get(ticker)
 
     def _download(self, tickers, start_date):
         """Download prices and say how much of the universe came back empty.

@@ -168,10 +168,11 @@ def test_a_recovered_history_is_checked_for_implausible_prices_before_the_quaran
     assert service.refresh() is True
     assert "adjustment basis" in service.quarantine["BBB"]["reason"]
 
-    # Yahoo stops throttling, but the full history it now serves has a poisoned close in it.
+    # Yahoo stops throttling, but the full history it now serves ends in prices that
+    # jump and stay there, with too little after them to estimate anything from.
     new_dates = pd.bdate_range(full.index[-1] + pd.Timedelta(days=1), periods=2)
     more = pd.concat([full, pd.DataFrame({t: [full[t].iloc[-1]] * 2 for t in full.columns}, index=new_dates)])
-    more.iloc[50, more.columns.get_loc("BBB")] *= 30
+    more.iloc[-3:, more.columns.get_loc("BBB")] *= 30
     service.downloader = lambda tickers, start, **_kwargs: more.loc[more.index >= start, list(tickers)]
     assert service.refresh() is True
 
@@ -183,7 +184,7 @@ def test_a_recovered_history_is_checked_for_implausible_prices_before_the_quaran
     # The replaced history is the archive now (new basis, spike and all, never deleted)...
     assert store.load_prices()["BBB"].count() == more["BBB"].count()
     # ...so a holding is valued from its believable prefix: on the new basis, before the spike.
-    assert service.data.valuation_price("BBB") == pytest.approx(more["BBB"].iloc[49])
+    assert service.data.valuation_price("BBB") == pytest.approx(more["BBB"].iloc[-4])
 
 
 def test_a_pending_repair_is_retried_however_long_it_has_been_waiting(tmp_path):
@@ -292,10 +293,16 @@ def test_a_refresh_that_brings_nothing_new_changes_nothing(tmp_path, served):
 @pytest.mark.parametrize(
     "poison, check",
     [
-        # One absurd close drags the estimates; the name is excluded, not averaged in.
+        # A spike that comes straight back is one bad print, so one close stops being
+        # used -- the ticker keeps trading on the other 400, and is not quarantined.
         (
             lambda rows: rows.iloc.__setitem__((-2, 2), rows.iloc[-3, 2] * 50),
-            lambda prices, service: (prices["CCC"].isna().all() and "CCC" in service.quarantine),
+            lambda prices, service: (
+                np.isnan(prices["CCC"].iloc[-2])
+                and prices["CCC"].count() == len(prices) - 1
+                and "CCC" not in service.quarantine
+                and service.price_exclusions["CCC"]["masked_days"] == [str(prices.index[-2].date())]
+            ),
         ),
         (
             lambda rows: rows.iloc.__setitem__((-2, 2), 1e12),
@@ -332,17 +339,21 @@ def test_a_poisoned_download_never_reaches_the_cache(tmp_path, poison, check):
     assert store.load_prices()["AAA"].count() >= before["AAA"].count(), "a refresh never removes days"
 
 
-def test_a_quarantine_is_reported_survives_refreshes_and_only_a_clean_full_refresh_lifts_it(tmp_path, monkeypatch):
+def test_an_exclusion_is_reported_survives_refreshes_and_only_a_clean_full_refresh_lifts_it(tmp_path):
     service, store = build_service(tmp_path)
     clean = synthetic_market().prices
     spiked = clean.copy()
     spiked.iloc[200, 1] *= 20
+    spiked_day = str(spiked.index[200].date())
     service.downloader = lambda tickers, _start, **_kwargs: spiked.loc[:, list(tickers)]
     assert service.refresh(full=True) is True
-    assert list(service.quarantine) == ["BBB"] and "x in one day on 2020-" in service.quarantine["BBB"]["reason"]
-    assert "BBB" not in service.data.tradeable
+    # One print, come straight back: that close stops being used and nothing else does.
+    assert service.quarantine == {}, "a single bad print is not grounds for excluding a company"
+    assert list(service.price_exclusions) == ["BBB"]
+    assert service.price_exclusions["BBB"]["masked_days"] == [spiked_day]
+    assert "BBB" in service.data.tradeable and service.data.prices["BBB"].count() == len(clean) - 1
 
-    # The next incremental refresh brings believable new rows for BBB; it stays excluded anyway.
+    # The next incremental refresh brings believable new rows for BBB; the close stays masked.
     def more_rows(tickers, start, **_kwargs):
         rows = pd.DataFrame(
             {t: [clean[t].iloc[-1]] * 2 for t in tickers},
@@ -352,8 +363,9 @@ def test_a_quarantine_is_reported_survives_refreshes_and_only_a_clean_full_refre
 
     service.downloader = more_rows
     assert service.refresh() is True
-    assert "BBB" not in service.data.tradeable and service.data.prices["BBB"].isna().all()
-    # Excluded in the snapshot, intact on disk: the archive is what a later refresh re-judges.
+    assert service.price_exclusions["BBB"]["masked_days"] == [spiked_day]
+    assert np.isnan(service.data.prices["BBB"].loc[spiked_day])
+    # Masked in the snapshot, intact on disk: the archive is what a later refresh re-judges.
     assert store.load_prices()["BBB"].count() >= len(clean)
 
     # Too many implausible names at once is a bad download, not a bad market: nothing is written.
@@ -362,7 +374,7 @@ def test_a_quarantine_is_reported_survives_refreshes_and_only_a_clean_full_refre
     service.downloader = lambda tickers, _start, **_kwargs: wrecked.loc[:, list(tickers)]
     with pytest.raises(RuntimeError, match="moved implausibly"):
         service.refresh(full=True)
-    assert store.load_prices().equals(before) and list(service.quarantine) == ["BBB"]
+    assert store.load_prices().equals(before) and list(service.price_exclusions) == ["BBB"]
 
     # A clean full download covers up to today, including the rows the incremental refresh appended.
     healed = pd.concat(
@@ -370,4 +382,5 @@ def test_a_quarantine_is_reported_survives_refreshes_and_only_a_clean_full_refre
     )
     service.downloader = lambda tickers, _start, **_kwargs: healed.loc[:, list(tickers)]
     assert service.refresh(full=True) is True
-    assert service.quarantine == {} and not store.quarantine_path.exists() and "BBB" in service.data.tradeable
+    assert service.price_exclusions == {} and not store.quarantine_path.exists()
+    assert service.data.prices["BBB"].count() == len(healed), "the masked close is back once it is believable"
