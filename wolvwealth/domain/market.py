@@ -200,6 +200,9 @@ def _persistent_finding(closes: pd.Series, cut: int, masked) -> dict:
             "reason": f"{moved} and stayed there, with only {remaining} close(s) after it -- too few to estimate "
             "anything from, so the ticker is excluded",
             "scope": "ticker",
+            # The move behind the verdict, so a second opinion knows what to
+            # ask about. Transient: the merge and the store both drop it.
+            "flagged_on": str(day.date()),
         }
     entry = {
         "reason": f"{moved} and stayed there, so closes before {day.date()} are not used ({remaining} remain)",

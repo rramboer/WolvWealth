@@ -7,6 +7,7 @@ a temp directory and hand it to ``create_app``.
 import dataclasses
 
 from wolvwealth.config import Settings
+from wolvwealth.market import stooq, yahoo
 from wolvwealth.services.market_data import MarketDataService
 from wolvwealth.storage.database import Database
 from wolvwealth.storage.price_store import PriceStore
@@ -36,6 +37,11 @@ class Services:
                 settings.price_history_start,
                 log=log,
                 stats_universe_size=settings.stats_universe_size,
+                # The second opinions a flagged price move gets before it
+                # excludes anything. Wired here, not defaulted in the
+                # service, so tests and ad-hoc constructions stay offline.
+                verifier=stooq.download_closes,
+                splits_source=yahoo.download_splits,
             ),
         )
 

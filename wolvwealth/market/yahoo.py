@@ -82,6 +82,34 @@ def download_tbill_rate() -> tuple:
     return round(float(data.iloc[-1]) / 100, 6), str(data.index[-1].date())
 
 
+def download_splits(ticker: str):
+    """Return ``ticker``'s split history as ``{date -> ratio}`` (2.0 means 2:1), or None if unavailable. Never raises.
+
+    The recorded calendar of the events the refresh otherwise has to infer:
+    a flagged price move that matches a split ratio on its date is an
+    adjustment artifact, not something that happened to the company. One
+    small request per flagged ticker; advisory, so every failure reads as
+    "no answer" rather than an error.
+    """
+    try:
+        splits = yf.Ticker(str(ticker)).splits
+    except Exception:  # pylint: disable=broad-except  # throttled, offline, or an unknown symbol: same "no answer"
+        return None
+    if splits is None or len(splits) == 0:
+        return None
+    calendar = {}
+    for day, size in splits.items():
+        try:
+            size = float(size)
+            day = pd.Timestamp(day)
+            day = (day.tz_localize(None) if day.tzinfo is not None else day).normalize()
+        except (ValueError, TypeError):
+            continue
+        if size > 0:
+            calendar[day] = size
+    return pd.Series(calendar).sort_index() if calendar else None
+
+
 def empty_tickers(prices: pd.DataFrame, tickers=None) -> list:
     """Tickers that came back with no data at all.
 

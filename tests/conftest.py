@@ -114,6 +114,10 @@ def services(tmp_path):
     settings = Settings(var_dir=tmp_path / "var", auto_refresh=False)
     built = Services.build(settings, log=lambda *_: None)
     built.market.set_data(synthetic_market())
+    # No second opinions unless a test wires fakes: the real ones reach the
+    # network, and the suite must run offline (``no_network`` enforces it).
+    built.market.verifier = None
+    built.market.splits_source = None
     return built
 
 

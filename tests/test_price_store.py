@@ -116,13 +116,18 @@ def test_sidecars_round_trip_and_read_corrupt_as_absent(tmp_path):
     store.save_quarantine({})
     assert not store.quarantine_path.exists()
     assert store.load_accepted_moves() == {}
-    store.save_accepted_moves({"BBB": ["2021-01-27"]})
-    assert store.load_accepted_moves() == {"BBB": ["2021-01-27"]}
+    store.save_accepted_moves({"BBB": {"2021-01-27": "moves the same way in stooq's data"}})
+    assert store.load_accepted_moves() == {"BBB": {"2021-01-27": "moves the same way in stooq's data"}}
+    # A file from before the evidence notes existed reads as the same dates, unexplained.
     store.accepted_path.write_text(
-        '{"BBB": ["2021-01-27", "2021-01-27", "junk"], "../evil": ["2021-01-27"], "CCC": 5, "DDD": []}',
+        '{"BBB": ["2021-01-27", "2021-01-27", "junk"], "AAA": {"2021-01-27": 5, "junk": "x"},'
+        ' "../evil": ["2021-01-27"], "CCC": 5, "DDD": []}',
         encoding="utf-8",
     )
-    assert store.load_accepted_moves() == {"BBB": ["2021-01-27"]}, "deduplicated, dated, and symbol-shaped only"
+    assert store.load_accepted_moves() == {
+        "BBB": {"2021-01-27": ""},
+        "AAA": {"2021-01-27": "5"},
+    }, "deduplicated, dated, and symbol-shaped only"
     for corrupt in ("not json", "[1]"):
         store.accepted_path.write_text(corrupt, encoding="utf-8")
         assert store.load_accepted_moves() == {}

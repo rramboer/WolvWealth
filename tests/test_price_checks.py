@@ -102,7 +102,7 @@ def test_accepting_a_move_restores_the_history_and_is_never_re_judged(tmp_path):
     assert service.data.prices["BBB"].count() == len(clean) - 200
 
     assert service.accept_price_move("bbb", "2020-10-08") is None, "nothing is excluded for BBB any more"
-    assert store.load_accepted_moves() == {"BBB": ["2020-10-08"]}
+    assert store.load_accepted_moves() == {"BBB": {"2020-10-08": "accepted via `wolvwealth accept-price`"}}
     assert "BBB" not in store.load_quarantine()
     assert service.data.prices["BBB"].count() == len(clean), "the full history is served again"
 

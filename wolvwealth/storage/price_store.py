@@ -257,12 +257,16 @@ class PriceStore:  # pylint: disable=too-many-instance-attributes  # one attribu
         _replace(self.quarantine_path, lambda path: path.write_text(payload, encoding="utf-8"))
 
     def load_accepted_moves(self) -> dict:
-        """Return ``{ticker: [date, ...]}`` of price moves a human judged real; {} if none or unreadable.
+        """Return ``{ticker: {date: who decided}}`` of price moves judged real; {} if none or unreadable.
 
         The adjudication layer over a heuristic that cannot be right every
         time: a genuine one-day collapse or repricing is indistinguishable
-        from corruption in a single series, so a person who knows which it
-        was records that here, once, and no later refresh re-decides it.
+        from corruption in a single series, so whoever settled it -- a person
+        via ``accept-price``, or a second price source that showed the same
+        move -- records that here, once, with the note saying which, and no
+        later refresh re-decides it. Deleting a line un-decides it. A file
+        from before the notes existed (``{ticker: [date, ...]}``) reads as
+        the same dates with empty notes.
         """
         try:
             data = json.loads(self.accepted_path.read_text(encoding="utf-8"))
@@ -272,11 +276,15 @@ class PriceStore:  # pylint: disable=too-many-instance-attributes  # one attribu
             return {}
         accepted = {}
         for ticker, days in data.items():
-            if not (isinstance(ticker, str) and TICKER_RE.match(ticker) and isinstance(days, list)):
+            if not (isinstance(ticker, str) and TICKER_RE.match(ticker)):
                 continue
-            clean = sorted({day for day in (_clean_day(value) for value in days) if day})
+            if isinstance(days, list):
+                days = {day: "" for day in days}
+            if not isinstance(days, dict):
+                continue
+            clean = {day: str(note) for day, note in ((_clean_day(d), n) for d, n in days.items()) if day}
             if clean:
-                accepted[ticker] = clean
+                accepted[ticker] = dict(sorted(clean.items()))
         return accepted
 
     def save_accepted_moves(self, accepted: dict) -> None:

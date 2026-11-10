@@ -36,6 +36,7 @@ from wolvwealth.domain.stats import ESTIMATOR, MarketStats
 from wolvwealth.market import yahoo
 from wolvwealth.services import price_checks
 from wolvwealth.services.price_checks import BASIS_FAILURE_REASON  # re-exported: the reason text basis failures carry
+from wolvwealth.services.verification import SecondOpinions
 from wolvwealth.storage.price_store import PriceStore
 
 #: A T-bill quote older than this is not the "current" yield it would be presented as.
@@ -198,14 +199,17 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
     #: it, short enough that the report stays about recent events.
     READJUSTMENT_NOTE_DAYS = 30
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments  # every parameter is one injectable collaborator
         self,
         store: PriceStore,
         history_start: str,
+        *,
         downloader=yahoo.download_prices,
         log=print,
         stats_universe_size: int = 500,
         tbill_downloader=None,
+        verifier=None,
+        splits_source=None,
     ) -> None:
         """Wire the store and the download functions (injectable for tests)."""
         self.store = store
@@ -214,6 +218,13 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         #: None means ``yahoo.download_tbill_rate``, looked up at call time
         #: so a test can replace the module function and never reach Yahoo.
         self.tbill_downloader = tbill_downloader
+        #: Second price source a flagged move is checked against, and the
+        #: split calendar that recognizes adjustment artifacts (see
+        #: ``services.verification``). None means not consulted -- the
+        #: default, so tests and ad-hoc constructions stay offline; the
+        #: production container wires the real ones.
+        self.verifier = verifier
+        self.splits_source = splits_source
         self.log = log
         self._tbill = _UNLOADED
         self.stats_universe_size = stats_universe_size
@@ -372,6 +383,13 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         re-judged end to end. Raises if more than MAX_WENT_DARK_FRACTION of
         the live tickers look implausible at once: that is a bad download,
         not a bad market, and nothing should be written from it.
+
+        What survives the scan then gets a second opinion (split calendar,
+        independent price source -- see ``services.verification``), so the
+        return is ``(findings, basis artifacts)``: the artifacts are flagged
+        moves that turned out to be a split applied inconsistently, which
+        the caller records as basis failures so the repair machinery
+        re-downloads them whole.
         """
         view = price_checks.apply_exclusions(prices, record)
         accepted = self.store.load_accepted_moves()
@@ -385,7 +403,14 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
                 f"{len(found)} tickers moved implausibly in the downloaded prices (corrupt or tampered data?); "
                 "not overwriting the price cache. Try again later."
             )
-        return found
+        opinions = SecondOpinions(self.verifier, self.splits_source, self._accept_verified, self.log)
+        return opinions.review(found, view, accepted, since, whole)
+
+    def _accept_verified(self, ticker: str, notes: dict) -> None:
+        """Record moves a second source confirmed as real (``{date: evidence}``), same store a human writes to."""
+        accepted = self.store.load_accepted_moves()
+        accepted.setdefault(ticker, {}).update(notes)
+        self.store.save_accepted_moves(accepted)
 
     def _record_quarantine(self, prices, since=None, whole=(), clear=False, broken=None, recovered=()) -> dict:
         """Record every ticker that must be excluded from allocations and return the record. Writes no prices.
@@ -412,21 +437,29 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         # it from the one check standing between that download and the
         # optimizer.
         lifted = price_checks.lift_cured_basis_failures(record, recovered)
-        newly = self._newly_implausible(prices, since, whole, record)
-        detected = pd.Timestamp.now().strftime("%Y-%m-%d")
+        newly, artifacts = self._newly_implausible(prices, since, whole, record)
         for ticker in lifted:
-            if ticker not in newly:
+            if ticker not in newly and ticker not in artifacts:
                 self.log(
                     f"wolvwealth: {ticker}'s full history was re-downloaded on the new adjustment basis "
                     "and passed the plausibility check; it is back in allocations."
                 )
-        for ticker, failure in (broken or {}).items():
+        # Artifacts after the download's own failures, so a ticker that both
+        # failed its repair and shows a misapplied split keeps the artifact
+        # diagnosis -- the more specific one. Both are basis failures, so the
+        # same machinery re-downloads either on the next refresh.
+        self._write_entries(record, previous, {**(broken or {}), **artifacts}, newly)
+        self.store.save_quarantine(record)
+        return record
+
+    def _write_entries(self, record: dict, previous: dict, failures: dict, newly: dict) -> None:
+        """Fold this refresh's basis failures and implausibility findings into the record, logging each."""
+        detected = pd.Timestamp.now().strftime("%Y-%m-%d")
+        for ticker, failure in failures.items():
             record[ticker] = price_checks.basis_entry(failure, previous.get(ticker), detected)
         for ticker, finding in newly.items():
             record[ticker] = price_checks.merge_exclusion(record.get(ticker), finding, detected)
             self._log_exclusion(ticker, record[ticker])
-        self.store.save_quarantine(record)
-        return record
 
     def _log_exclusion(self, ticker: str, entry: dict) -> None:
         """Say what stopped being used for a ticker, and how to overrule it if the move was real."""
@@ -519,7 +552,7 @@ class MarketDataService:  # pylint: disable=too-many-instance-attributes
         if ticker not in self._archive.columns:
             raise ValidationError(f"No price history for {ticker}, so it has no move to accept.")
         accepted = self.store.load_accepted_moves()
-        accepted[ticker] = sorted(set(accepted.get(ticker, ())) | {day})
+        accepted.setdefault(ticker, {})[day] = "accepted via `wolvwealth accept-price`"
         self.store.save_accepted_moves(accepted)
         record = self.store.load_quarantine()
         entry = record.get(ticker)

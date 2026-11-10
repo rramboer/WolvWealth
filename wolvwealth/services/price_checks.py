@@ -27,6 +27,24 @@ import pandas as pd
 
 from wolvwealth.domain.market import last_believable_close
 
+#: How far two sources' day-over-day ratios across the same two dates may
+#: disagree (as a factor) and still describe the same move. Generous on
+#: purpose: two daily closes of the same US listing land within a percent or
+#: two of each other, while a corrupt print is off by the move itself --
+#: 20x against 1x -- so nothing real lives near the boundary.
+AGREEMENT_FACTOR = 2.0
+
+#: How close a flagged move's ratio must be to a known split ratio (or its
+#: inverse) to be read as that split applied inconsistently. Tighter than
+#: AGREEMENT_FACTOR because split ratios are exact numbers, not quotes.
+SPLIT_MATCH_FACTOR = 1.25
+
+#: Calendar days between a flagged move and a split event within which the
+#: two are taken to be the same thing. Settlement and timezone wobble put
+#: the artifact a day or two from the recorded date; a wider window risks
+#: blessing a real move that merely happened near a split.
+SPLIT_MATCH_DAYS = 5
+
 #: Opening words of the exclusion reason recorded when a split/dividend
 #: re-download failed or came back truncated. Such a ticker is excluded while
 #: its cached history sits on a superseded adjustment basis, so a later
@@ -154,6 +172,81 @@ def merge_exclusion(existing, finding: dict, detected: str) -> dict:
         if masked:
             entry["masked_days"] = masked
     return entry
+
+
+def finding_events(finding: dict) -> list:
+    """The dates whose moves a finding rests on, as sorted ``YYYY-MM-DD`` strings.
+
+    These are what a second opinion is asked about: the masked prints, the
+    truncation day, and -- for a whole-ticker verdict -- the move that
+    caused it (``flagged_on``).
+    """
+    events = set(finding.get("masked_days", ()))
+    for key in ("untrusted_before", "flagged_on"):
+        if finding.get(key):
+            events.add(finding[key])
+    return sorted(events)
+
+
+def observed_move(closes: pd.Series, day: str):
+    """Return ``(previous day, ratio)`` of the move into ``day``, or None if the series cannot show one.
+
+    The previous day is the last one with a close, however far back, so the
+    second source is asked about the very same pair of dates -- and a ratio
+    across two dates is basis-free: however each source adjusts for splits
+    and dividends, a constant rescale cancels out of it.
+    """
+    series = closes.dropna()
+    stamp = pd.Timestamp(day)
+    if stamp not in series.index:
+        return None
+    position = series.index.get_loc(stamp)
+    if position == 0:
+        return None
+    previous = series.index[position - 1]
+    ratio = float(series.loc[stamp] / series.loc[previous])
+    return (str(previous.date()), ratio) if ratio > 0 else None
+
+
+def second_opinion(second: pd.Series, previous_day: str, day: str, ratio: float):
+    """Say whether a second source shows the same move: ``"real"``, ``"corrupt"``, or None for no answer.
+
+    No answer -- the source lacks either date, or the numbers there are
+    unusable -- must stay distinct from disagreement: a source that does not
+    carry the ticker has not contradicted anything.
+    """
+    closes = second.dropna() if second is not None else None
+    if closes is None or closes.empty:
+        return None
+    try:
+        before, after = float(closes.loc[pd.Timestamp(previous_day)]), float(closes.loc[pd.Timestamp(day)])
+    except KeyError:
+        return None
+    if before <= 0 or after <= 0:
+        return None
+    theirs = after / before
+    return "real" if max(ratio / theirs, theirs / ratio) <= AGREEMENT_FACTOR else "corrupt"
+
+
+def matching_split(splits: pd.Series, day: str, ratio: float):
+    """Return the split ratio that explains a flagged move, or None if no split does.
+
+    A split applied to one side of a jump but not the other shows up as a
+    move of the split ratio or its inverse, within SPLIT_MATCH_DAYS of the
+    recorded date. Such a move is an adjustment artifact: the cure is
+    re-downloading the history whole, not disbelieving the company.
+    """
+    if splits is None or len(splits) == 0:
+        return None
+    stamp = pd.Timestamp(day)
+    for event_day, size in splits.items():
+        size = float(size)
+        if size <= 0 or abs((pd.Timestamp(event_day) - stamp).days) > SPLIT_MATCH_DAYS:
+            continue
+        for candidate in (size, 1 / size):
+            if max(ratio / candidate, candidate / ratio) <= SPLIT_MATCH_FACTOR:
+                return size
+    return None
 
 
 def is_basis_failure(entry) -> bool:
