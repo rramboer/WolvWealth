@@ -187,12 +187,15 @@ class Optimization:
         # Construct output
         output = {}
         output["optimized_portfolio"] = {}
+        target_shares = {}
         for asset, weight in cleaned_weights.items():
+            target_shares[asset] = round(weight * total_investment / self.state.fetch_ticker_price(asset), 4)
             output["optimized_portfolio"][asset] = {
-                "shares": round(weight * total_investment / self.state.fetch_ticker_price(asset), 4),
+                "shares": target_shares[asset],
                 "value": round(weight * total_investment, 2),
                 "percent_weight": round(weight * 100, 2),
             }
+        output["trades"] = compute_trades(self.initial_holdings, target_shares, self.state.fetch_ticker_price)
         if self.exclude_metrics == False:
             metrics = ef.portfolio_performance()
             output["metrics"] = {
@@ -203,6 +206,37 @@ class Optimization:
                 "num_assets": len(cleaned_weights),
             }
         self.output = flask.jsonify(output)
+
+
+def compute_trades(initial_holdings: dict, target_shares: dict, fetch_price) -> list:
+    """Return the trades that turn initial_holdings into target_shares.
+
+    Sells come first so their proceeds are available for the buys. Within
+    each side, trades are ordered by dollar value, largest first. A holding
+    with no target is sold in full, using the exact share count held.
+    """
+    sells = []
+    buys = []
+    for ticker in dict.fromkeys([*initial_holdings, *target_shares]):
+        held = initial_holdings.get(ticker, 0)
+        if ticker in target_shares:
+            delta = round(target_shares[ticker] - held, 4)
+        else:
+            delta = -held  # Close the position completely.
+        if delta == 0:
+            continue
+        price = fetch_price(ticker)
+        trade = {
+            "action": "sell" if delta < 0 else "buy",
+            "ticker": ticker,
+            "shares": abs(delta),
+            "price": round(float(price), 2),
+            "value": round(float(abs(delta) * price), 2),
+        }
+        (sells if delta < 0 else buys).append(trade)
+    sells.sort(key=lambda t: t["value"], reverse=True)
+    buys.sort(key=lambda t: t["value"], reverse=True)
+    return sells + buys
 
 
 @wolvwealth.app.route("/api/optimize/", methods=["POST"])

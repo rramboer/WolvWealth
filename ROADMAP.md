@@ -2,14 +2,13 @@
 
 ## Next: tax-aware trades
 
-Right now the optimizer returns target share counts and nothing about what getting there costs in taxes. The plan, roughly in order:
+The optimizer returns the target share counts and the trades that get there from current holdings, but nothing about what those trades cost in taxes. The plan, roughly in order:
 
-1. **Trade list.** Return the buys and sells that take current holdings to the target, not just the target.
-2. **Tax lots.** Accept a holding as lots (shares, cost per share, date bought) as well as a plain share count. For each sell, pick which lots to sell (lowest tax by default, FIFO as an option) and report the realized gain or loss, split into short term and long term.
-3. **Wash sales.** Flag a sale at a loss when the plan buys the same ticker back, or when it was bought in the 30 days before.
-4. **A cap on realized gains** as an optimizer constraint, so a rebalance can stay under a tax budget.
-5. **Saved holdings.** Store holdings and lots with an account so they don't have to be re-entered (needs a schema change).
-6. **Tax-loss harvesting.** Suggest losing positions to sell and similar, but not identical, replacements to buy.
+1. **Tax lots.** Accept a holding as lots (shares, cost per share, date bought) as well as a plain share count. For each sell, pick which lots to sell (lowest tax by default, FIFO as an option) and report the realized gain or loss, split into short term and long term.
+2. **Wash sales.** Flag a sale at a loss when the plan buys the same ticker back, or when it was bought in the 30 days before.
+3. **A cap on realized gains** as an optimizer constraint, so a rebalance can stay under a tax budget.
+4. **Saved holdings.** Store holdings and lots with an account so they don't have to be re-entered (needs a schema change).
+5. **Tax-loss harvesting.** Suggest losing positions to sell and similar, but not identical, replacements to buy.
 
 ## Bugs
 

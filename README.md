@@ -59,7 +59,9 @@ curl -X POST http://localhost:8000/api/optimize/ \
 | `constraints` | `max_weight` (0 to 1), `min_universal_weight` (0 to 1), `max_positions` | none |
 | `exclude_metrics` | Leave `metrics` out of the response | `false` |
 
-The response has `optimized_portfolio` (ticker to `shares`, `value` and `percent_weight`) and `metrics` (`portfolio_value`, `expected_annual_return`, `annual_volatility`, `sharpe_ratio`, `num_assets`). Each call uses one optimization from the key.
+The response has `optimized_portfolio` (ticker to `shares`, `value` and `percent_weight`), `trades` and `metrics` (`portfolio_value`, `expected_annual_return`, `annual_volatility`, `sharpe_ratio`, `num_assets`). Each call uses one optimization from the key.
+
+`trades` is the list of orders that turns `initial_holdings` into `optimized_portfolio`, in the order to place them: every sell first, so its proceeds can fund the buys, then every buy, each side largest dollar value first. Each trade has `action` (`sell` or `buy`), `ticker`, `shares`, `price` (the last price in the file) and `value`. A holding the optimized portfolio doesn't include is sold in full.
 
 ## Backtesting
 
