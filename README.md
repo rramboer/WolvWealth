@@ -54,14 +54,56 @@ curl -X POST http://localhost:8000/api/optimize/ \
 | Field | Meaning | Default |
 |---|---|---|
 | `initial_cash` | Cash to invest, in dollars | `0` |
-| `initial_holdings` | Ticker to share count, valued at the last price in the file | `{}` |
+| `initial_holdings` | Ticker to share count, or to a list of tax lots (see below) | `{}` |
 | `universe` | Tickers to choose from; `top20` through `top500` expand to the largest N | the top 500 |
 | `constraints` | `max_weight` (0 to 1), `min_universal_weight` (0 to 1), `max_positions` | none |
 | `exclude_metrics` | Leave `metrics` out of the response | `false` |
+| `prices` | Ticker to current price, used instead of the last price in the file | none |
+| `lot_method` | How sells pick lots: `min_tax`, `fifo`, `hifo` or `lifo` | `min_tax` |
+| `tax_rates` | `short_term` and `long_term` rates (0 to 1) that `min_tax` ranks lots by | `0.24` and `0.15` |
+| `trade_date` | The sale date (`YYYY-MM-DD`) for holding periods and wash sales | today |
+
+A ticker that has no price on the last day of the file (it stopped trading before the file ends) is rejected in `initial_holdings` and `universe`, and left out of the `top20`-style aliases.
 
 The response has `optimized_portfolio` (ticker to `shares`, `value` and `percent_weight`), `trades` and `metrics` (`portfolio_value`, `expected_annual_return`, `annual_volatility`, `sharpe_ratio`, `num_assets`). Each call uses one optimization from the key.
 
-`trades` is the list of orders that turns `initial_holdings` into `optimized_portfolio`, in the order to place them: every sell first, so its proceeds can fund the buys, then every buy, each side largest dollar value first. Each trade has `action` (`sell` or `buy`), `ticker`, `shares`, `price` (the last price in the file) and `value`. A holding the optimized portfolio doesn't include is sold in full.
+`trades` is the list of orders that turns `initial_holdings` into `optimized_portfolio`, in the order to place them: every sell first, so its proceeds can fund the buys, then every buy, each side largest dollar value first. Each trade has `action` (`sell` or `buy`), `ticker`, `shares`, `price` and `value`. A holding the optimized portfolio doesn't include is sold in full.
+
+### Current prices
+
+Holdings, share counts and trades use the last price in the file, which is from January 30, 2024, unless the request sends `prices`. Expected returns and risk always come from the full price history. When `prices` is sent, the response adds `price_sources`: `price_data_date` (the file's last date), and which tickers used a price from the request (`from_request`) or from the file (`from_price_data`).
+
+### Tax lots
+
+A holding can be a list of the lots it was bought in instead of a share count:
+
+```json
+"initial_holdings": {
+  "AAPL": [{"shares": 3, "cost_per_share": 120.50, "acquired": "2021-03-01"},
+           {"shares": 2, "cost_per_share": 190.00, "acquired": "2026-10-20"}],
+  "MSFT": 10
+}
+```
+
+Lots don't change the optimization; a holding counts as the sum of its lots. They add which lots each sell should come from. When any holding is given as lots, each sell of such a holding gets `lots` (`acquired`, `shares`, `cost_per_share`, `term` of `short` or `long`, and `gain`) and `realized_gain`, and the response gets `tax_summary`:
+
+| Field | Meaning |
+|---|---|
+| `short_term_gain`, `long_term_gain`, `total_gain` | Realized gains across all sells with lots; negative is a loss |
+| `trade_date`, `lot_method`, `tax_rates` | What the lots were chosen with |
+| `unknown_basis` | Sells of holdings given as a share count, which have no gain figure |
+| `priced_from_price_data`, `price_data_date` | Sells whose gain uses the file's old price because `prices` didn't include them |
+| `wash_sale_warnings` | Sells at a loss when another lot of the ticker was bought in the 30 days before `trade_date` |
+
+`min_tax` sells the lots with the least tax per share first, at the assumed `tax_rates`, so losses go first. A lot is long term when sold after its one-year anniversary. The lots only apply if you choose them as specific lots when you place the order; otherwise most brokers sell the oldest lots first. These are estimates: they don't know about your other accounts, purchases after the sale, loss carryovers or state taxes.
+
+## Tests
+
+```bash
+python3 -m pytest
+```
+
+Run from the repo root. The tests use a throwaway database, not `var/`.
 
 ## Backtesting
 

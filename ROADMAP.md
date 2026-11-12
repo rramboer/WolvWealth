@@ -2,13 +2,11 @@
 
 ## Next: tax-aware trades
 
-The optimizer returns the target share counts and the trades that get there from current holdings, but nothing about what those trades cost in taxes. The plan, roughly in order:
+The optimizer returns the trades from current holdings to the target and, for holdings given as tax lots, which lots each sell comes from, the realized gains and wash-sale warnings. It doesn't yet let taxes change the target itself. The plan, roughly in order:
 
-1. **Tax lots.** Accept a holding as lots (shares, cost per share, date bought) as well as a plain share count. For each sell, pick which lots to sell (lowest tax by default, FIFO as an option) and report the realized gain or loss, split into short term and long term.
-2. **Wash sales.** Flag a sale at a loss when the plan buys the same ticker back, or when it was bought in the 30 days before.
-3. **A cap on realized gains** as an optimizer constraint, so a rebalance can stay under a tax budget.
-4. **Saved holdings.** Store holdings and lots with an account so they don't have to be re-entered (needs a schema change).
-5. **Tax-loss harvesting.** Suggest losing positions to sell and similar, but not identical, replacements to buy.
+1. **A cap on realized gains** as an optimizer constraint, so a rebalance can stay under a tax budget.
+2. **Saved holdings.** Store holdings and lots with an account so they don't have to be re-entered (needs a schema change).
+3. **Tax-loss harvesting.** Suggest losing positions to sell and similar, but not identical, replacements to buy.
 
 ## Bugs
 
@@ -16,15 +14,16 @@ The optimizer returns the target share counts and the trades that get there from
 - A `top20`-style alias in `universe` is removed from the list while the list is being looped over, so the entry right after it is never checked. `["top20", "NOTATICKER"]` returns a 500 instead of "Invalid symbol".
 - `/api/admin/add/` and `/api/admin/remove/` declare a `username` argument their routes never pass, so every call fails with a 500.
 - Every solver failure is reported as "Infeasible", including ones caused by bad input.
+- The trade list can spend a few cents more cash than there is: target share counts are rounded to 4 decimals and the buys match them exactly (up to $0.03 seen). Rounding buys down would fix it but the trades would then miss the target slightly.
 - `./bin/run prod` runs the Flask debug server as root on port 80. It should use gunicorn (`gunicorn_config.py` is already there).
 
 ## Data
 
-- A command to refresh prices. The file ends January 30, 2024. A refresh has to handle splits and dividends re-adjusting old prices, and tickers Yahoo doesn't return on a given day.
-- Holdings are valued at the last close in the file; every response should say what date that is.
+- A command to refresh prices. The file ends January 30, 2024; until then, requests can send `prices`. A refresh has to re-download the whole history, not append to it: splits and dividends re-adjust old prices (NVDA's January 30, 2024 close is $627.74 in the file and $62.59 from Yahoo now, after its 10-for-1 split). It also has to handle tickers Yahoo doesn't return on a given day. `update_historical_prices` in `state.py` appends, and asks for an `Adj Close` column that newer yfinance versions (1.7.0, for one) no longer return.
+- Responses only say what date the prices are from when the request sends `prices` or tax lots; every response should.
 
 ## Quality
 
-- A test suite (there isn't one yet) and CI running pytest, pycodestyle, pydocstyle and pylint, which `pyproject.toml` already lists.
+- Extend the test suite (it covers trades, prices and tax lots so far) and add CI running pytest, pycodestyle, pydocstyle and pylint, which `pyproject.toml` already lists.
 - Make the risk-free rate an input instead of PyPortfolioOpt's fixed 2%.
 - Use `backtest.py` to compare other expected-return estimators against the plain historical mean.
