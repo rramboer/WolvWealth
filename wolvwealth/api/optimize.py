@@ -1,4 +1,5 @@
 """API Portfolio Optimization."""
+import math
 import flask
 import wolvwealth
 
@@ -35,6 +36,7 @@ class Optimization:
         except Exception:
             raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
         self.parse_initial_cash()
+        self.parse_prices()
         self.parse_universe()
         self.parse_initial_holdings()
         self.parse_exclude_metrics()
@@ -95,6 +97,26 @@ class Optimization:
         if self.input_json["initial_cash"] < 0.00:
             raise InvalidUsage("Invalid initial_cash. initial_cash must be greater than 0.")
         self.initial_cash = round(self.input_json["initial_cash"], 2)
+
+    def parse_prices(self) -> None:
+        """Parse optional current prices that replace the last price in the data."""
+        self.price_overrides = {}
+        if "prices" not in self.input_json:
+            return
+        if not isinstance(self.input_json["prices"], dict):
+            raise InvalidUsage("Invalid prices. prices must be a dictionary of tickers to prices.")
+        for ticker, price in self.input_json["prices"].items():
+            if ticker.upper() not in self.state.TICKER_UNIVERSE:
+                raise InvalidUsage(f"Invalid symbol in prices: {ticker}.")
+            if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+                raise InvalidUsage(f"Invalid price for {ticker}. Prices must be numbers greater than 0.")
+            self.price_overrides[ticker.upper()] = float(price)
+
+    def price(self, ticker: str) -> float:
+        """Return the price used for ticker: the one from the request if given, else the last in the data."""
+        if ticker in self.price_overrides:
+            return self.price_overrides[ticker]
+        return self.state.fetch_ticker_price(ticker)
 
     def parse_universe(self) -> None:
         if "universe" not in self.input_json:
@@ -174,7 +196,7 @@ class Optimization:
         """Run optimization."""
         total_investment = self.initial_cash
         for asset, shares in self.initial_holdings.items():
-            total_investment += shares * self.state.fetch_ticker_price(asset)
+            total_investment += shares * self.price(asset)
         if total_investment == 0:
             raise InvalidUsage("Invalid input. Total investment value cannot be 0.")
         filtered_data = self.state.HISTORICAL_PRICES[self.universe]
@@ -206,13 +228,20 @@ class Optimization:
         output["optimized_portfolio"] = {}
         target_shares = {}
         for asset, weight in cleaned_weights.items():
-            target_shares[asset] = round(weight * total_investment / self.state.fetch_ticker_price(asset), 4)
+            target_shares[asset] = round(weight * total_investment / self.price(asset), 4)
             output["optimized_portfolio"][asset] = {
                 "shares": target_shares[asset],
                 "value": round(weight * total_investment, 2),
                 "percent_weight": round(weight * 100, 2),
             }
-        output["trades"] = compute_trades(self.initial_holdings, target_shares, self.state.fetch_ticker_price)
+        output["trades"] = compute_trades(self.initial_holdings, target_shares, self.price)
+        if "prices" in self.input_json:
+            used = dict.fromkeys([*self.initial_holdings, *target_shares])
+            output["price_sources"] = {
+                "price_data_date": self.state.price_date(),
+                "from_request": sorted(t for t in used if t in self.price_overrides),
+                "from_price_data": sorted(t for t in used if t not in self.price_overrides),
+            }
         if self.exclude_metrics == False:
             metrics = ef.portfolio_performance()
             output["metrics"] = {
