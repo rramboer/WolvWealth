@@ -20,7 +20,8 @@ class Optimization:
 
     def set_defaults(self) -> None:
         self.initial_cash = 0  # $0.00
-        self.universe = self.state.TICKER_UNIVERSE[:500]  # Top 500 stocks by market cap.
+        # Top 500 stocks by market cap, leaving out any with no current price.
+        self.universe = [t for t in self.state.TICKER_UNIVERSE[:500] if self.state.has_current_price(t)]
         self.exclude_metrics = False  # Include metrics in output.
         self.max_positions = -1  # Maximum number of stocks in portfolio. May overpwoer max_weight.
         self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set.
@@ -103,6 +104,8 @@ class Optimization:
         unclean_universe = self.input_json["universe"]
         if len(unclean_universe) == 0:  # If empty universe, use default
             return
+        # Tickers named directly, as opposed to ones added by a topN alias.
+        named = {t.upper() for t in unclean_universe if isinstance(t, str) and t.upper() in self.state.TICKER_UNIVERSE}
         for ticker in unclean_universe:
             if not isinstance(ticker, str):
                 raise InvalidUsage("Invalid universe. universe must be list of strings.")
@@ -132,6 +135,18 @@ class Optimization:
                     raise InvalidUsage(f"Invalid symbol in universe: {ticker}.")
         self.universe = [s.upper() for s in unclean_universe]
         self.universe = list(dict.fromkeys(self.universe))
+        # A named ticker with no current price is an error; one added by an alias is dropped.
+        for ticker in self.universe:
+            if ticker in named and not self.state.has_current_price(ticker):
+                raise InvalidUsage(self.no_price_message(ticker, "universe"))
+        self.universe = [t for t in self.universe if self.state.has_current_price(t)]
+
+    def no_price_message(self, ticker: str, field: str) -> str:
+        """Error message for a ticker in field that has no price on the last day of the data."""
+        return (
+            f"No current price for {ticker} in {field}. It last traded on {self.state.last_traded_date(ticker)}, "
+            f"before the price data ends on {self.state.price_date()}."
+        )
 
     def parse_initial_holdings(self) -> None:
         self.initial_holdings = {}
@@ -151,6 +166,8 @@ class Optimization:
                 )
             if shares < 0.00:
                 raise InvalidUsage("Invalid initial_holdings. Shares must be positive.")
+            if not self.state.has_current_price(ticker.upper()):
+                raise InvalidUsage(self.no_price_message(ticker.upper(), "initial_holdings"))
         self.initial_holdings = {s.upper(): unclean_initial_holdings[s] for s in unclean_initial_holdings}
 
     def execute_optimization(self) -> None:

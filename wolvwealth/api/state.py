@@ -88,6 +88,19 @@ class ApplicationState:
         """Return current stock price of ticker."""
         return self.HISTORICAL_PRICES[ticker].iloc[-1]
 
+    def has_current_price(self, ticker: str) -> bool:
+        """Return True if ticker has a price on the last day of the price data."""
+        return not pd.isna(self.HISTORICAL_PRICES[ticker].iloc[-1])
+
+    def last_traded_date(self, ticker: str) -> str:
+        """Return the last date ticker has a price, as YYYY-MM-DD, or "never"."""
+        last = self.HISTORICAL_PRICES[ticker].last_valid_index()
+        return "never" if last is None else last.strftime("%Y-%m-%d")
+
+    def price_date(self) -> str:
+        """Return the last date in the price data, as YYYY-MM-DD."""
+        return self.HISTORICAL_PRICES.index[-1].strftime("%Y-%m-%d")
+
     def update_historical_prices(self) -> None:
         """Update historical stock prices of tickers in universe."""
         start_date = (
