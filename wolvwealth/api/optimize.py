@@ -1,4 +1,5 @@
 """API Portfolio Optimization."""
+import datetime
 import math
 import flask
 import wolvwealth
@@ -8,6 +9,7 @@ from pypfopt.efficient_frontier import EfficientFrontier
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import check_api_key
+from wolvwealth.api.tax_lots import Lot
 
 
 class Optimization:
@@ -108,7 +110,7 @@ class Optimization:
         for ticker, price in self.input_json["prices"].items():
             if ticker.upper() not in self.state.TICKER_UNIVERSE:
                 raise InvalidUsage(f"Invalid symbol in prices: {ticker}.")
-            if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            if not is_finite_number(price) or price <= 0:
                 raise InvalidUsage(f"Invalid price for {ticker}. Prices must be numbers greater than 0.")
             self.price_overrides[ticker.upper()] = float(price)
 
@@ -171,7 +173,9 @@ class Optimization:
         )
 
     def parse_initial_holdings(self) -> None:
+        """Parse holdings. Each value is a share count or a list of tax lots."""
         self.initial_holdings = {}
+        self.lots = {}  # Ticker to list of Lot, only for holdings given as lots.
         if "initial_holdings" not in self.input_json:
             return
         if not isinstance(self.input_json["initial_holdings"], dict):
@@ -182,15 +186,44 @@ class Optimization:
                 raise InvalidUsage("Invalid initial_holdings. initial_holdings must be list of strings.")
             if ticker.upper() not in self.state.TICKER_UNIVERSE:
                 raise InvalidUsage(f"Invalid symbol in initial_holdings: {ticker}.")
-            if not isinstance(shares, (int, float)):
-                raise InvalidUsage(
-                    "Invalid initial_holdings. initial_holdings must be a dictionary of strings to numbers."
-                )
-            if shares < 0.00:
-                raise InvalidUsage("Invalid initial_holdings. Shares must be positive.")
+            if isinstance(shares, list):
+                lots = self.parse_lots(ticker.upper(), shares)
+                self.lots[ticker.upper()] = lots
+                shares = round(sum(lot.shares for lot in lots), 8)
+            else:
+                if not isinstance(shares, (int, float)):
+                    raise InvalidUsage(
+                        "Invalid initial_holdings. initial_holdings must be a dictionary of strings to numbers."
+                    )
+                if shares < 0.00:
+                    raise InvalidUsage("Invalid initial_holdings. Shares must be positive.")
+                self.lots.pop(ticker.upper(), None)  # A later share count replaces earlier lots.
             if not self.state.has_current_price(ticker.upper()):
                 raise InvalidUsage(self.no_price_message(ticker.upper(), "initial_holdings"))
-        self.initial_holdings = {s.upper(): unclean_initial_holdings[s] for s in unclean_initial_holdings}
+            self.initial_holdings[ticker.upper()] = shares
+
+    @staticmethod
+    def parse_lots(ticker: str, unclean_lots: list) -> list:
+        """Parse a list of lots: {"shares": n, "cost_per_share": n, "acquired": "YYYY-MM-DD"}."""
+        if len(unclean_lots) == 0:
+            raise InvalidUsage(f"Invalid initial_holdings for {ticker}. A list of lots must have at least one lot.")
+        lots = []
+        for i, lot in enumerate(unclean_lots):
+            where = f"Invalid lot {i + 1} for {ticker}."
+            if not isinstance(lot, dict):
+                raise InvalidUsage(f"{where} Each lot must be an object with shares, cost_per_share and acquired.")
+            for field in ("shares", "cost_per_share", "acquired"):
+                if field not in lot:
+                    raise InvalidUsage(f"{where} Missing {field}.")
+            if not is_finite_number(lot["shares"]) or lot["shares"] <= 0:
+                raise InvalidUsage(f"{where} shares must be a number greater than 0.")
+            if not is_finite_number(lot["cost_per_share"]) or lot["cost_per_share"] < 0:
+                raise InvalidUsage(f"{where} cost_per_share must be a number, 0 or more.")
+            acquired = parse_date(lot["acquired"])
+            if acquired is None:
+                raise InvalidUsage(f"{where} acquired must be a date in YYYY-MM-DD format.")
+            lots.append(Lot(float(lot["shares"]), float(lot["cost_per_share"]), acquired, i))
+        return lots
 
     def execute_optimization(self) -> None:
         """Run optimization."""
@@ -252,6 +285,21 @@ class Optimization:
                 "num_assets": len(cleaned_weights),
             }
         self.output = flask.jsonify(output)
+
+
+def is_finite_number(value) -> bool:
+    """Return True if value is an int or float (not a bool) and not NaN or infinite."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def parse_date(value):
+    """Parse a YYYY-MM-DD string into a date, or return None if it isn't one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 def compute_trades(initial_holdings: dict, target_shares: dict, fetch_price) -> list:
