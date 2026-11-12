@@ -9,7 +9,7 @@ from pypfopt.efficient_frontier import EfficientFrontier
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import check_api_key
-from wolvwealth.api.tax_lots import Lot
+from wolvwealth.api.tax_lots import DEFAULT_METHOD, DEFAULT_TAX_RATES, METHODS, Lot, select_lots, wash_sale_risk
 
 
 class Optimization:
@@ -41,6 +41,7 @@ class Optimization:
         self.parse_prices()
         self.parse_universe()
         self.parse_initial_holdings()
+        self.parse_tax_options()
         self.parse_exclude_metrics()
         self.parse_constraints()
 
@@ -202,6 +203,36 @@ class Optimization:
                 raise InvalidUsage(self.no_price_message(ticker.upper(), "initial_holdings"))
             self.initial_holdings[ticker.upper()] = shares
 
+    def parse_tax_options(self) -> None:
+        """Parse lot_method, tax_rates and trade_date. They only matter for holdings given as lots."""
+        self.lot_method = DEFAULT_METHOD
+        self.tax_rates = dict(DEFAULT_TAX_RATES)
+        self.trade_date = datetime.date.today()
+        if "lot_method" in self.input_json:
+            if not isinstance(self.input_json["lot_method"], str) or self.input_json["lot_method"] not in METHODS:
+                raise InvalidUsage(f"Invalid lot_method. lot_method must be one of: {', '.join(METHODS)}.")
+            self.lot_method = self.input_json["lot_method"]
+        if "tax_rates" in self.input_json:
+            if not isinstance(self.input_json["tax_rates"], dict):
+                raise InvalidUsage("Invalid tax_rates. tax_rates must be a dictionary.")
+            for key, rate in self.input_json["tax_rates"].items():
+                if key not in DEFAULT_TAX_RATES:
+                    raise InvalidUsage("Invalid tax_rates. The keys are short_term and long_term.")
+                if not is_finite_number(rate) or rate < 0 or rate > 1:
+                    raise InvalidUsage(f"Invalid tax_rates. {key} must be a number from 0 to 1.")
+                self.tax_rates[key] = float(rate)
+        if "trade_date" in self.input_json:
+            self.trade_date = parse_date(self.input_json["trade_date"])
+            if self.trade_date is None:
+                raise InvalidUsage("Invalid trade_date. trade_date must be a date in YYYY-MM-DD format.")
+        for ticker, lots in self.lots.items():
+            for lot in lots:
+                if lot.acquired > self.trade_date:
+                    raise InvalidUsage(
+                        f"Invalid lot {lot.order + 1} for {ticker}. acquired {lot.acquired.isoformat()} "
+                        f"is after the trade date {self.trade_date.isoformat()}."
+                    )
+
     @staticmethod
     def parse_lots(ticker: str, unclean_lots: list) -> list:
         """Parse a list of lots: {"shares": n, "cost_per_share": n, "acquired": "YYYY-MM-DD"}."""
@@ -268,6 +299,8 @@ class Optimization:
                 "percent_weight": round(weight * 100, 2),
             }
         output["trades"] = compute_trades(self.initial_holdings, target_shares, self.price)
+        if self.lots:
+            output["tax_summary"] = self.add_lots_to_trades(output["trades"])
         if "prices" in self.input_json:
             used = dict.fromkeys([*self.initial_holdings, *target_shares])
             output["price_sources"] = {
@@ -285,6 +318,70 @@ class Optimization:
                 "num_assets": len(cleaned_weights),
             }
         self.output = flask.jsonify(output)
+
+    def add_lots_to_trades(self, trades: list) -> dict:
+        """Add the lots sold to each sell of a ticker given as lots, and return the tax summary."""
+        gains = {"short": 0.0, "long": 0.0}
+        unknown_basis = []
+        priced_from_data = []
+        wash_sale_warnings = []
+        for trade in trades:
+            ticker = trade["ticker"]
+            if trade["action"] != "sell":
+                continue
+            if ticker not in self.lots:
+                unknown_basis.append(ticker)
+                continue
+            if ticker not in self.price_overrides:
+                priced_from_data.append(ticker)
+            sales = select_lots(
+                self.lots[ticker], trade["shares"], self.price(ticker), self.trade_date, self.lot_method, self.tax_rates
+            )
+            trade["lots"] = [
+                {
+                    "acquired": sale.lot.acquired.isoformat(),
+                    "shares": round(sale.shares, 8),
+                    "cost_per_share": sale.lot.cost_per_share,
+                    "term": sale.term,
+                    "gain": round(sale.gain, 2),
+                }
+                for sale in sales
+            ]
+            trade["realized_gain"] = round(sum(sale.gain for sale in sales), 2)
+            for sale in sales:
+                gains[sale.term] += sale.gain
+            loss, recent = wash_sale_risk(self.lots[ticker], sales, self.trade_date)
+            if recent:
+                wash_sale_warnings.append(
+                    {
+                        "ticker": ticker,
+                        "loss": round(loss, 2),
+                        "recent_purchases": [day.isoformat() for day in recent],
+                        "message": (
+                            f"This sells {ticker} at a loss within 30 days of buying more {ticker}, which may be "
+                            f"a wash sale that disallows the loss. Buying {ticker} in the 30 days after the sale, "
+                            "in any account, would also count."
+                        ),
+                    }
+                )
+        return {
+            "trade_date": self.trade_date.isoformat(),
+            "lot_method": self.lot_method,
+            "tax_rates": self.tax_rates,
+            "short_term_gain": round(gains["short"], 2),
+            "long_term_gain": round(gains["long"], 2),
+            "total_gain": round(gains["short"] + gains["long"], 2),
+            "unknown_basis": unknown_basis,
+            "priced_from_price_data": priced_from_data,
+            "price_data_date": self.state.price_date(),
+            "wash_sale_warnings": wash_sale_warnings,
+            "note": (
+                "Estimates, not tax advice. To get these results, choose these specific lots when you place each "
+                "sell order; otherwise most brokers sell the oldest lots first. Gains for tickers in "
+                "priced_from_price_data use the price on price_data_date; send prices to use current ones. "
+                "unknown_basis lists sells of holdings given as share counts, which have no gain figure."
+            ),
+        }
 
 
 def is_finite_number(value) -> bool:

@@ -13,6 +13,9 @@ DEFAULT_METHOD = "min_tax"
 # term gains and the common 15% rate for long term gains.
 DEFAULT_TAX_RATES = {"short_term": 0.24, "long_term": 0.15}
 
+# A loss sale within this many days of a purchase of the same stock may be a wash sale.
+WASH_SALE_DAYS = 30
+
 # Share amounts closer than this are treated as equal (float rounding).
 EPSILON = 1e-6
 
@@ -105,3 +108,29 @@ def select_lots(
     if remaining > EPSILON:
         raise ValueError(f"Lots hold {shares_to_sell - remaining} shares, fewer than the {shares_to_sell} to sell.")
     return sales
+
+
+def wash_sale_risk(lots: list, sales: list, sale_date: datetime.date):
+    """Return (loss, replacement_dates) for sales that may be wash sales.
+
+    A sale at a loss may be a wash sale if the same stock was bought within
+    30 days before it; here, another of the ticker's lots acquired in that
+    window. loss is the total of those losses (negative); replacement_dates
+    lists the dates of the recent lots. Purchases after the sale, or in other
+    accounts, can't be seen here.
+    """
+    window_start = sale_date - datetime.timedelta(days=WASH_SALE_DAYS)
+    loss = 0.0
+    replacement_dates = set()
+    for sale in sales:
+        if sale.gain >= 0:
+            continue
+        recent = [
+            lot.acquired
+            for lot in lots
+            if lot.order != sale.lot.order and window_start <= lot.acquired <= sale_date
+        ]
+        if recent:
+            loss += sale.gain
+            replacement_dates.update(recent)
+    return loss, sorted(replacement_dates)
