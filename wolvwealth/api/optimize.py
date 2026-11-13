@@ -1,5 +1,6 @@
 """API Portfolio Optimization."""
 import datetime
+import json
 import math
 import flask
 import wolvwealth
@@ -34,7 +35,9 @@ class Optimization:
     def parse_input(self) -> None:
         """Parse request as JSON."""
         try:
-            self.input_json = flask.request.json
+            flask.request.json  # Rejects bodies that aren't JSON, as before.
+            # Parse again keeping every key/value pair: a plain dict keeps only the last of a repeated key.
+            self.input_json = json.loads(flask.request.get_data(), object_pairs_hook=JSONObject)
         except Exception:
             raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
         self.parse_initial_cash()
@@ -182,11 +185,20 @@ class Optimization:
         if not isinstance(self.input_json["initial_holdings"], dict):
             raise InvalidUsage("Invalid initial_holdings. initial_holdings must be a dictionary.")
         unclean_initial_holdings = self.input_json["initial_holdings"]
-        for ticker, shares in unclean_initial_holdings.items():
+        uses_lots = {}  # Ticker to whether any entry for it so far was a list of lots.
+        for ticker, shares in json_pairs(unclean_initial_holdings):
             if not isinstance(ticker, str):
                 raise InvalidUsage("Invalid initial_holdings. initial_holdings must be list of strings.")
             if ticker.upper() not in self.state.TICKER_UNIVERSE:
                 raise InvalidUsage(f"Invalid symbol in initial_holdings: {ticker}.")
+            # A ticker listed twice with plain share counts keeps the last one, as before. If either
+            # entry is lots there's no safe guess (merging could double count), so it's an error.
+            if ticker.upper() in uses_lots and (uses_lots[ticker.upper()] or isinstance(shares, list)):
+                raise InvalidUsage(
+                    f"Invalid initial_holdings. {ticker.upper()} is listed more than once and at least one "
+                    "entry is a list of lots. List each ticker once, with all of its lots in one list."
+                )
+            uses_lots[ticker.upper()] = isinstance(shares, list)
             if isinstance(shares, list):
                 lots = self.parse_lots(ticker.upper(), shares)
                 self.lots[ticker.upper()] = lots
@@ -198,7 +210,6 @@ class Optimization:
                     )
                 if shares < 0.00:
                     raise InvalidUsage("Invalid initial_holdings. Shares must be positive.")
-                self.lots.pop(ticker.upper(), None)  # A later share count replaces earlier lots.
             if not self.state.has_current_price(ticker.upper()):
                 raise InvalidUsage(self.no_price_message(ticker.upper(), "initial_holdings"))
             self.initial_holdings[ticker.upper()] = shares
@@ -382,6 +393,20 @@ class Optimization:
                 "unknown_basis lists sells of holdings given as share counts, which have no gain figure."
             ),
         }
+
+
+class JSONObject(dict):
+    """A dict parsed from a JSON object that also keeps every key/value pair, repeated keys included."""
+
+    def __init__(self, pairs: list) -> None:
+        """Build the dict (the last of a repeated key wins) and keep the pairs."""
+        super().__init__(pairs)
+        self.pairs = pairs
+
+
+def json_pairs(obj: dict) -> list:
+    """Return every key/value pair of a parsed JSON object, in order, including repeated keys."""
+    return obj.pairs if isinstance(obj, JSONObject) else list(obj.items())
 
 
 def is_finite_number(value) -> bool:

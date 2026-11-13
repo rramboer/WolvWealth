@@ -1,6 +1,8 @@
 """End-to-end tests for POST /api/optimize/."""
 import pytest
 
+from conftest import API_KEY
+
 UNIVERSE = ["AAPL", "MSFT", "JNJ", "NVDA"]  # Small, so each optimization is quick.
 
 NVDA_LOTS = [
@@ -171,3 +173,38 @@ def test_invalid_input_is_a_400(optimize, body, message):
     status, response = optimize(body)
     assert status == 400
     assert message in response["error"]["message"]
+
+
+# A ticker listed more than once. These send raw JSON, since a Python dict
+# can't hold a repeated key.
+
+ONE_LOT = '[{"shares": 3, "cost_per_share": 120, "acquired": "2021-03-01"}]'
+SMALL = '"universe": ["AAPL", "MSFT", "JNJ"], "initial_cash": 100'
+
+
+def post_raw(client, raw):
+    response = client.post(
+        "/api/optimize/", data=raw, content_type="application/json", headers={"Authorization": API_KEY}
+    )
+    return response.status_code, response.get_json()
+
+
+@pytest.mark.parametrize(
+    "holdings",
+    [
+        f'"AAPL": {ONE_LOT}, "AAPL": 5',  # The JSON parser alone would keep only the 5.
+        f'"AAPL": 5, "AAPL": {ONE_LOT}',
+        f'"AAPL": {ONE_LOT}, "aapl": 5',
+        f'"AAPL": {ONE_LOT}, "aapl": {ONE_LOT}',
+    ],
+)
+def test_repeated_ticker_with_lots_is_a_400(client, holdings):
+    status, body = post_raw(client, '{"initial_holdings": {%s}, %s}' % (holdings, SMALL))
+    assert status == 400
+    assert "AAPL is listed more than once" in body["error"]["message"]
+
+
+def test_repeated_share_counts_still_keep_the_last(client):
+    assert post_raw(client, '{"initial_holdings": {"AAPL": 2, "aapl": 5}, %s}' % SMALL) == post_raw(
+        client, '{"initial_holdings": {"AAPL": 5}, %s}' % SMALL
+    )
