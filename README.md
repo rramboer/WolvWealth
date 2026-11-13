@@ -73,6 +73,15 @@ The response has `optimized_portfolio` (ticker to `shares`, `value` and `percent
 
 Holdings, share counts and trades use the last price in the file, from the day before the last refresh, unless the request sends `prices` (for example, to price a trade with today's quotes). Expected returns and risk always come from the full price history. When `prices` is sent, the response adds `price_sources`: `price_data_date` (the file's last date), and which tickers used a price from the request (`from_request`) or from the file (`from_price_data`).
 
+### Data warnings
+
+When a ticker in `initial_holdings` or `optimized_portfolio` has price history that looks wrong, the response adds `data_warnings`, one entry per ticker, with `ticker`, `message` and, where they apply, `non_positive_prices` (`days`, `from`, `to`) and `large_moves` (`date`, `change_percent`). Two things are flagged:
+
+- Prices at or below $0. These are always a data error; Yahoo's dividend adjustment produces them when a dividend is recorded as larger than the price (NFE, after its 2026 reverse split).
+- One-day moves of more than 90% up or down. These can be real (GME in January 2021) or a bad split or dividend adjustment (CHRD's +25,733% when its post-bankruptcy shares were joined to the old ones).
+
+The data is left as is. If it's wrong, that ticker's expected return and risk are too, so check its history elsewhere before trading on it.
+
 ### Tax lots
 
 A holding can be a list of the lots it was bought in instead of a share count:
@@ -109,6 +118,7 @@ Then restart the server; prices are loaded at startup.
 - It always downloads the full history from 2006 again instead of adding new days. Splits and dividends re-adjust every earlier price, so new days wouldn't line up with old ones.
 - It stops at the last finished trading day: run before 4:30 pm New York time, today is left out. A trailing day Yahoo has only partly filled in is dropped.
 - It reports tickers Yahoo returned nothing for and tickers with no price in the last 10 days of the data. Without `--prune` they stay in the universe with no current price, and the API rejects them. With `--prune` they're removed. Check the list: a symbol Yahoo has given to a different company won't be caught.
+- It lists tickers whose history looks like bad data (see [Data warnings](#data-warnings)) without changing them.
 - If more than a quarter of the tickers come back empty, which usually means Yahoo is rate limiting, it leaves the files alone. `--force` writes them anyway.
 
 ## Tests

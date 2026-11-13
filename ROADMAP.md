@@ -22,6 +22,8 @@ The optimizer returns the trades from current holdings to the target and, for ho
 - Re-rank `ticker_universe.csv` by current market cap. The order, and so what `top20` through `top500` include, is from early 2024. `ApplicationState.sort_ticker_universe` does it but makes one Yahoo request per ticker.
 - `historical_prices.csv` is 55 MB and tracked in git, so each refresh adds about that much to the repo history, and GitHub warns about files over 50 MB. Options: build it locally with `bin/refresh-prices` instead of committing it, or shrink the universe.
 - Refresh on a schedule, and catch a ticker symbol that Yahoo has reassigned to a different company.
+- Bad adjusted prices from Yahoo are flagged (`data_warnings`) but not fixed. 60 tickers are flagged in the current file, four of them in the top 500 (MRNA, HIG, SYM, VFS). The root cause is Yahoo's split and dividend records (NFE's dividends are 50 times too big after its reverse split). Fixing it means adjusting prices ourselves from raw closes, splits and dividends, checked against a second data source.
+- The optimizer page (`wolvwealth/js/pages/optimizer.jsx`) is empty. When it's built, it should show `data_warnings` next to the tickers they're about, along with `tax_summary` and its wash-sale warnings.
 - Responses only say what date the prices are from when the request sends `prices` or tax lots; every response should.
 
 ## Quality
