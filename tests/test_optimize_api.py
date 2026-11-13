@@ -1,4 +1,6 @@
 """End-to-end tests for POST /api/optimize/."""
+import datetime
+
 import pytest
 
 from conftest import API_KEY
@@ -260,3 +262,54 @@ def test_repeated_ticker_in_prices_is_a_400(client, prices):
     status, body = post_raw(client, '{"prices": {%s}, %s}' % (prices, SMALL))
     assert status == 400
     assert "AAPL is listed more than once" in body["error"]["message"]
+
+
+# Price history that looks like bad data.
+
+NEGATIVE_FLAG = {
+    "non_positive_days": 988,
+    "non_positive_from": datetime.date(2019, 1, 31),
+    "non_positive_to": datetime.date(2022, 12, 30),
+    "large_moves": [(datetime.date(2026, 1, 2), 47.68)],
+}
+MOVE_FLAG = {"non_positive_days": 0, "non_positive_from": None, "non_positive_to": None,
+             "large_moves": [(datetime.date(2008, 12, 5), 1.0234)]}
+
+
+@pytest.fixture
+def flagged(monkeypatch):
+    """Return a function that replaces the price flags with {ticker: flag}, for one test."""
+
+    def flag(flags):
+        monkeypatch.setattr(ApplicationState(), "PRICE_FLAGS", flags)
+
+    return flag
+
+
+def test_flagged_holding_gets_a_data_warning(optimize, flagged):
+    flagged({"KO": NEGATIVE_FLAG, "XOM": MOVE_FLAG})
+    status, body = optimize({"initial_holdings": {"KO": 10, "XOM": 4}, "universe": UNIVERSE})
+    assert status == 200
+    ko, xom = body["data_warnings"]
+    assert ko["ticker"] == "KO"
+    assert ko["non_positive_prices"] == {"days": 988, "from": "2019-01-31", "to": "2022-12-30"}
+    assert ko["large_moves"] == [{"date": "2026-01-02", "change_percent": 4768.0}]
+    assert ko["message"].startswith("KO's price history has 988 days at or below $0, 1 one-day move over 90%.")
+    assert "always a data error" in ko["message"]
+    assert xom["ticker"] == "XOM" and "non_positive_prices" not in xom
+    assert xom["large_moves"] == [{"date": "2008-12-05", "change_percent": 102.3}]
+    assert "can be real" in xom["message"]
+
+
+def test_flagged_pick_gets_a_data_warning(optimize, flagged):
+    _, plain = optimize({"initial_cash": 1000, "universe": UNIVERSE})
+    picked = sorted(plain["optimized_portfolio"])[0]
+    flagged({picked: MOVE_FLAG})
+    _, body = optimize({"initial_cash": 1000, "universe": UNIVERSE})
+    assert [w["ticker"] for w in body["data_warnings"]] == [picked]
+
+
+def test_flagged_ticker_that_does_not_come_up_adds_nothing(optimize, flagged):
+    flagged({"SYM": MOVE_FLAG})  # Not held, not in the universe.
+    _, body = optimize({"initial_cash": 1000, "initial_holdings": {"AAPL": 5}, "universe": UNIVERSE})
+    assert "data_warnings" not in body

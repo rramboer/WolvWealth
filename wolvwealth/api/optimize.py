@@ -7,6 +7,7 @@ import wolvwealth
 
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
+from wolvwealth.api.prices import describe_flag
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import check_api_key
@@ -318,6 +319,9 @@ class Optimization:
                 "from_request": sorted(t for t in used if t in self.price_overrides),
                 "from_price_data": sorted(t for t in used if t not in self.price_overrides),
             }
+        data_warnings = self.data_warnings([*self.initial_holdings, *target_shares])
+        if data_warnings:
+            output["data_warnings"] = data_warnings
         if self.exclude_metrics == False:
             metrics = ef.portfolio_performance()
             output["metrics"] = {
@@ -328,6 +332,36 @@ class Optimization:
                 "num_assets": len(cleaned_weights),
             }
         self.output = flask.jsonify(output)
+
+    def data_warnings(self, tickers: list) -> list:
+        """Return a warning for each of tickers whose price history looks like bad data."""
+        warnings = []
+        for ticker in sorted(set(tickers)):
+            flag = self.state.PRICE_FLAGS.get(ticker)
+            if flag is None:
+                continue
+            warning = {"ticker": ticker}
+            if flag["non_positive_days"]:
+                warning["non_positive_prices"] = {
+                    "days": flag["non_positive_days"],
+                    "from": flag["non_positive_from"].isoformat(),
+                    "to": flag["non_positive_to"].isoformat(),
+                }
+                cause = "Prices at or below $0 are always a data error."
+            else:
+                cause = "Moves that big can be real, but are often a data error such as a bad split adjustment."
+            if flag["large_moves"]:
+                warning["large_moves"] = [
+                    {"date": day.isoformat(), "change_percent": round(change * 100, 1)}
+                    for day, change in flag["large_moves"]
+                ]
+            warning["message"] = (
+                f"{ticker}'s price history has {describe_flag(flag)}. {cause} If the history is wrong, so are "
+                f"{ticker}'s expected return and risk, and so whether and how much the optimizer holds it. Check "
+                "it against another source before trading on it."
+            )
+            warnings.append(warning)
+        return warnings
 
     def add_lots_to_trades(self, trades: list) -> dict:
         """Add the lots sold to each sell of a ticker given as lots, and return the tax summary."""

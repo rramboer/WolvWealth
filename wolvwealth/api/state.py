@@ -21,6 +21,7 @@ class ApplicationState:
         if not hasattr(self, "initialized"):
             self.initialized: bool = True
             self.HISTORICAL_PRICES: pd.DataFrame = pd.DataFrame()
+            self.PRICE_FLAGS: dict = {}  # Ticker to prices.suspicious_prices() entry.
             self.TICKER_UNIVERSE: list = []
             self.load_ticker_universe()
             self.load_historical_prices()
@@ -42,6 +43,7 @@ class ApplicationState:
     def load_historical_prices(self) -> None:
         """Load historical prices of tickers in universe into DataFrame."""
         self.HISTORICAL_PRICES = pd.read_csv("historical_prices.csv", parse_dates=True, index_col="Date")
+        self.PRICE_FLAGS = prices.suspicious_prices(self.HISTORICAL_PRICES)
 
     def save_historical_prices(self) -> None:
         """Re-download the full price history for the universe and write it to historical_prices.csv."""
