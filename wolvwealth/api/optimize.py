@@ -111,9 +111,11 @@ class Optimization:
             return
         if not isinstance(self.input_json["prices"], dict):
             raise InvalidUsage("Invalid prices. prices must be a dictionary of tickers to prices.")
-        for ticker, price in self.input_json["prices"].items():
+        for ticker, price in json_pairs(self.input_json["prices"]):
             if ticker.upper() not in self.state.TICKER_UNIVERSE:
                 raise InvalidUsage(f"Invalid symbol in prices: {ticker}.")
+            if ticker.upper() in self.price_overrides:
+                raise InvalidUsage(f"Invalid prices. {ticker.upper()} is listed more than once.")
             if not is_finite_number(price) or price <= 0:
                 raise InvalidUsage(f"Invalid price for {ticker}. Prices must be numbers greater than 0.")
             self.price_overrides[ticker.upper()] = float(price)

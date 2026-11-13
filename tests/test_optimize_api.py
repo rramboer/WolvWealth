@@ -208,3 +208,10 @@ def test_repeated_share_counts_still_keep_the_last(client):
     assert post_raw(client, '{"initial_holdings": {"AAPL": 2, "aapl": 5}, %s}' % SMALL) == post_raw(
         client, '{"initial_holdings": {"AAPL": 5}, %s}' % SMALL
     )
+
+
+@pytest.mark.parametrize("prices", ['"AAPL": 355.63, "AAPL": 188', '"AAPL": 355.63, "aapl": 355.63'])
+def test_repeated_ticker_in_prices_is_a_400(client, prices):
+    status, body = post_raw(client, '{"prices": {%s}, %s}' % (prices, SMALL))
+    assert status == 400
+    assert "AAPL is listed more than once" in body["error"]["message"]
