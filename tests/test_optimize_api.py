@@ -2,6 +2,7 @@
 import pytest
 
 from conftest import API_KEY
+from wolvwealth.api.state import ApplicationState
 
 UNIVERSE = ["AAPL", "MSFT", "JNJ", "NVDA"]  # Small, so each optimization is quick.
 
@@ -136,14 +137,49 @@ def test_fifo_sells_the_oldest_lot_first(optimize):
     assert [lot["acquired"] for lot in nvda["lots"]][:2] == ["2021-05-03", "2024-06-10"]
 
 
+# Tickers with no price on the last day of the data (they stopped trading).
+
+
+@pytest.fixture
+def no_last_price(monkeypatch):
+    """Return a function that blanks the last day's price of some tickers, for one test."""
+    state = ApplicationState()
+
+    def blank(*tickers):
+        history = state.HISTORICAL_PRICES.copy()
+        history.loc[history.index[-1], list(tickers)] = float("nan")
+        monkeypatch.setattr(state, "HISTORICAL_PRICES", history)
+
+    return blank
+
+
+def test_holding_with_no_current_price_is_a_400(optimize, no_last_price):
+    no_last_price("KO")
+    status, body = optimize({"initial_holdings": {"KO": 10}, "universe": UNIVERSE})
+    assert status == 400
+    assert body["error"]["message"].startswith("No current price for KO in initial_holdings. It last traded on ")
+
+
+def test_named_universe_ticker_with_no_current_price_is_a_400(optimize, no_last_price):
+    no_last_price("KO")
+    status, body = optimize({"initial_cash": 1000, "universe": ["AAPL", "MSFT", "ko"]})
+    assert status == 400
+    assert "No current price for KO in universe" in body["error"]["message"]
+
+
+def test_alias_leaves_out_tickers_with_no_current_price(optimize, no_last_price):
+    no_last_price("AAPL", "MSFT")
+    status, body = optimize({"initial_cash": 1000, "universe": ["top20"]})
+    assert status == 200
+    assert "AAPL" not in body["optimized_portfolio"] and "MSFT" not in body["optimized_portfolio"]
+
+
 # Errors
 
 
 @pytest.mark.parametrize(
     "body, message",
     [
-        ({"initial_holdings": {"SRC": 10}}, "No current price for SRC in initial_holdings"),
-        ({"initial_cash": 1, "universe": ["AAPL", "src"]}, "No current price for SRC in universe"),
         ({"initial_cash": 1, "prices": [1]}, "Invalid prices"),
         ({"initial_cash": 1, "prices": {"NOPE": 1}}, "Invalid symbol in prices"),
         ({"initial_cash": 1, "prices": {"AAPL": 0}}, "Invalid price for AAPL"),

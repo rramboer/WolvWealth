@@ -66,3 +66,41 @@ def test_write_prices_round_trips_through_the_app_loader(tmp_path):
     back = pd.read_csv(path, parse_dates=True, index_col="Date")
     pd.testing.assert_frame_equal(back, closes, check_freq=False, check_index_type=False)
     assert not (tmp_path / "prices.csv.tmp").exists()
+
+
+@pytest.mark.parametrize("prune", [False, True])
+def test_refresh_reports_and_optionally_prunes(tmp_path, monkeypatch, prune):
+    days = pd.date_range("2026-10-01", "2026-11-11", freq="B")
+    downloaded = pd.DataFrame({"LIVE": 1.0, "GONE": 1.0, "ALSO": 2.0}, index=days)
+    downloaded.loc[downloaded.index > "2026-10-20", "GONE"] = np.nan  # Stopped trading.
+    downloaded.index.name = "Date"
+    monkeypatch.setattr(prices, "download_closes", lambda tickers, start, end: downloaded)
+    monkeypatch.setattr(prices, "PRICES_FILE", str(tmp_path / "prices.csv"))
+    monkeypatch.setattr(prices, "UNIVERSE_FILE", str(tmp_path / "universe.csv"))
+    universe = ["LIVE", "NODATA", "GONE", "ALSO"]  # Largest first; NODATA isn't in the download.
+    prices.write_universe(universe, prices.UNIVERSE_FILE)
+
+    report = prices.refresh(universe, force=True, prune=prune)
+
+    assert report["missing"] == ["NODATA"]
+    assert report["stopped_trading"] == {"GONE": datetime.date(2026, 10, 20)}
+    assert report["last_date"] == datetime.date(2026, 11, 11)
+    written = pd.read_csv(prices.PRICES_FILE, index_col="Date")
+    if prune:
+        assert report["removed"] == ["NODATA", "GONE"]
+        assert prices.read_universe(prices.UNIVERSE_FILE) == ["LIVE", "ALSO"]
+        assert list(written.columns) == ["ALSO", "LIVE"]
+    else:
+        assert report["removed"] == []
+        assert prices.read_universe(prices.UNIVERSE_FILE) == universe
+        assert list(written.columns) == ["ALSO", "GONE", "LIVE", "NODATA"]
+        assert written["NODATA"].isna().all()
+
+
+def test_refresh_leaves_files_alone_when_too_much_is_missing(tmp_path, monkeypatch):
+    downloaded = pd.DataFrame({"A": [1.0]}, index=pd.to_datetime(["2026-11-11"]))
+    monkeypatch.setattr(prices, "download_closes", lambda tickers, start, end: downloaded)
+    monkeypatch.setattr(prices, "PRICES_FILE", str(tmp_path / "prices.csv"))
+    with pytest.raises(RuntimeError, match="rate limiting"):
+        prices.refresh(["A", "B", "C", "D"])  # 3 of 4 missing.
+    assert not (tmp_path / "prices.csv").exists()

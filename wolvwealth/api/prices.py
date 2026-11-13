@@ -117,14 +117,25 @@ def read_universe(path: str = UNIVERSE_FILE) -> list:
         return [line.strip() for line in f if line.strip()]
 
 
-def refresh(universe: list, start: str = START_DATE, force: bool = False) -> dict:
+def write_universe(universe: list, path: str = UNIVERSE_FILE) -> None:
+    """Write the universe file, one ticker per line, replacing it only once complete."""
+    tmp = path + ".tmp"
+    # \r\n line endings, as ApplicationState.save_ticker_universe (csv.writer) writes them.
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.writelines(ticker + "\r\n" for ticker in universe)
+    os.replace(tmp, path)
+
+
+def refresh(universe: list, start: str = START_DATE, force: bool = False, prune: bool = False) -> dict:
     """Download the full history for universe and write it to PRICES_FILE.
 
     Every ticker in universe gets a column; one Yahoo returned nothing for is
-    left empty, so the API reports it as having no current price. Returns a
-    report: the date range, and the tickers that are missing or stopped
-    trading. Raises RuntimeError, leaving the old file alone, if too many
-    tickers are missing (unless force).
+    left empty, so the API reports it as having no current price. With prune,
+    tickers that are missing or stopped trading are instead removed from the
+    price file and from UNIVERSE_FILE, keeping the universe's order. Returns
+    a report: the date range, the tickers that are missing or stopped
+    trading, and the ones removed. Raises RuntimeError, leaving the old files
+    alone, if too many tickers are missing (unless force).
     """
     end = download_end_date()
     closes = download_closes(universe, start, end)
@@ -139,8 +150,14 @@ def refresh(universe: list, start: str = START_DATE, force: bool = False) -> dic
         "last_date": closes.index[-1].date(),
         "missing": missing,
         "stopped_trading": stopped_trading(closes),
+        "removed": [],
     }
+    if prune:
+        report["removed"] = [t for t in universe if t in missing or t in report["stopped_trading"]]
+        universe = [t for t in universe if t not in report["removed"]]
     write_prices(closes.reindex(columns=universe), PRICES_FILE)
+    if prune:
+        write_universe(universe, UNIVERSE_FILE)
     return report
 
 
@@ -149,12 +166,15 @@ def main(argv: list) -> int:
     parser = argparse.ArgumentParser(prog="bin/refresh-prices", description=__doc__.split("\n")[0])
     parser.add_argument("--start", default=START_DATE, help=f"first date to download (default {START_DATE})")
     parser.add_argument("--force", action="store_true", help="write the file even if many tickers are missing")
+    parser.add_argument(
+        "--prune", action="store_true", help=f"remove tickers that are missing or stopped trading from {UNIVERSE_FILE}"
+    )
     args = parser.parse_args(argv)
 
     universe = read_universe()
     print(f"Downloading {len(universe)} tickers from {args.start}...", file=sys.stderr)
     try:
-        report = refresh(universe, args.start, args.force)
+        report = refresh(universe, args.start, args.force, args.prune)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1
@@ -164,4 +184,7 @@ def main(argv: list) -> int:
     if report["stopped_trading"]:
         stale = " ".join(f"{t} ({day})" for t, day in sorted(report["stopped_trading"].items()))
         print(f"Stopped trading ({len(report['stopped_trading'])}): {stale}")
+    if report["removed"]:
+        left = len(universe) - len(report["removed"])
+        print(f"Removed {len(report['removed'])} tickers from {UNIVERSE_FILE}; {left} left.")
     return 0
