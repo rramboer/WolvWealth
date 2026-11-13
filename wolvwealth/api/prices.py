@@ -24,6 +24,8 @@ RETRY_PAUSE_SECONDS = 5
 # A ticker whose last price is more than this many days before the end of the
 # data has stopped trading (delisted, acquired or renamed).
 STALE_DAYS = 10
+# A one-day change bigger than this, up or down, is flagged for review.
+SUSPICIOUS_MOVE = 0.9
 # Refuse to write the file if more of the universe than this is missing; that
 # usually means Yahoo rate limited the download, not that the stocks are gone.
 MAX_MISSING_FRACTION = 0.25
@@ -101,6 +103,54 @@ def stopped_trading(closes: pd.DataFrame) -> dict:
     return {ticker: day.date() for ticker, day in last.items() if day < cutoff}
 
 
+def suspicious_prices(closes: pd.DataFrame) -> dict:
+    """Return ticker to the parts of its price history that look like bad data.
+
+    Two things are flagged, without changing the data:
+    - Prices at or below zero, which are always wrong. Yahoo's dividend
+      adjustment produces them when a dividend is recorded as bigger than the
+      price (NFE's are 50 times too big after its reverse split).
+    - One-day moves of more than 90% up or down. Some are real (a trial
+      result, a bankruptcy); some are a bad split or dividend adjustment.
+      A move is measured from the last day with a positive price, so a gap
+      in the data doesn't hide it.
+
+    Each value has "non_positive_days", "non_positive_from" and
+    "non_positive_to" (dates, or None), and "large_moves", a list of
+    (date, change) with change as a fraction (2.5 is +250%).
+    """
+    positive = closes.where(closes > 0)
+    change = positive.ffill().pct_change(fill_method=None).where(positive.notna())
+    large = change.where(change.abs() > SUSPICIOUS_MOVE).stack().dropna()  # pandas 3's stack keeps NaN.
+    non_positive = closes <= 0
+    flags = {}
+    for ticker in closes.columns[non_positive.any()]:
+        days = closes.index[non_positive[ticker]]
+        flags[ticker] = {
+            "non_positive_days": len(days),
+            "non_positive_from": days[0].date(),
+            "non_positive_to": days[-1].date(),
+            "large_moves": [],
+        }
+    for (day, ticker), value in large.items():
+        flag = flags.setdefault(
+            ticker, {"non_positive_days": 0, "non_positive_from": None, "non_positive_to": None, "large_moves": []}
+        )
+        flag["large_moves"].append((day.date(), float(value)))
+    return flags
+
+
+def describe_flag(flag: dict) -> str:
+    """Summarize one suspicious_prices() entry, e.g. "988 days at or below $0, 2 one-day moves over 90%"."""
+    parts = []
+    if flag["non_positive_days"]:
+        parts.append(f"{flag['non_positive_days']} days at or below $0")
+    moves = len(flag["large_moves"])
+    if moves:
+        parts.append(f"{moves} one-day move{'s' if moves > 1 else ''} over {SUSPICIOUS_MOVE:.0%}")
+    return ", ".join(parts)
+
+
 def write_prices(closes: pd.DataFrame, path: str = PRICES_FILE) -> None:
     """Write closes to path, replacing it only once the new file is complete."""
     closes = closes.reindex(sorted(closes.columns), axis=1)
@@ -134,7 +184,7 @@ def refresh(universe: list, start: str = START_DATE, force: bool = False, prune:
     tickers that are missing or stopped trading are instead removed from the
     price file and from UNIVERSE_FILE, keeping the universe's order. Returns
     a report: the date range, the tickers that are missing or stopped
-    trading, and the ones removed. Raises RuntimeError, leaving the old files
+    trading, the ones removed, and suspicious_prices() for what was written. Raises RuntimeError, leaving the old files
     alone, if too many tickers are missing (unless force).
     """
     end = download_end_date()
@@ -155,7 +205,9 @@ def refresh(universe: list, start: str = START_DATE, force: bool = False, prune:
     if prune:
         report["removed"] = [t for t in universe if t in missing or t in report["stopped_trading"]]
         universe = [t for t in universe if t not in report["removed"]]
-    write_prices(closes.reindex(columns=universe), PRICES_FILE)
+    closes = closes.reindex(columns=universe)
+    report["suspicious"] = suspicious_prices(closes)
+    write_prices(closes, PRICES_FILE)
     if prune:
         write_universe(universe, UNIVERSE_FILE)
     return report
@@ -184,6 +236,9 @@ def main(argv: list) -> int:
     if report["stopped_trading"]:
         stale = " ".join(f"{t} ({day})" for t, day in sorted(report["stopped_trading"].items()))
         print(f"Stopped trading ({len(report['stopped_trading'])}): {stale}")
+    if report["suspicious"]:
+        flagged = " ".join(f"{t} ({describe_flag(f)})" for t, f in sorted(report["suspicious"].items()))
+        print(f"Check for bad data ({len(report['suspicious'])}), left as is: {flagged}")
     if report["removed"]:
         left = len(universe) - len(report["removed"])
         print(f"Removed {len(report['removed'])} tickers from {UNIVERSE_FILE}; {left} left.")

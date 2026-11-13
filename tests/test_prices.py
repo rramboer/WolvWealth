@@ -85,6 +85,7 @@ def test_refresh_reports_and_optionally_prunes(tmp_path, monkeypatch, prune):
     assert report["missing"] == ["NODATA"]
     assert report["stopped_trading"] == {"GONE": datetime.date(2026, 10, 20)}
     assert report["last_date"] == datetime.date(2026, 11, 11)
+    assert report["suspicious"] == {}
     written = pd.read_csv(prices.PRICES_FILE, index_col="Date")
     if prune:
         assert report["removed"] == ["NODATA", "GONE"]
@@ -104,3 +105,36 @@ def test_refresh_leaves_files_alone_when_too_much_is_missing(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="rate limiting"):
         prices.refresh(["A", "B", "C", "D"])  # 3 of 4 missing.
     assert not (tmp_path / "prices.csv").exists()
+
+
+def test_suspicious_prices_flags_non_positive_prices_and_big_moves():
+    days = pd.date_range("2026-11-02", periods=6, freq="B")
+    closes = pd.DataFrame(
+        {
+            "FINE": [10.0, 11.0, 10.5, 10.8, 11.2, 11.0],
+            "NEG": [-2.0, -1.5, 5.0, 5.1, 5.2, 5.3],  # Negative, then a normal price.
+            "JUMP": [10.0, 10.5, 25.0, 25.5, 2.0, 2.1],  # +138%, then -92%.
+            "GAP": [10.0, np.nan, np.nan, 30.0, 30.5, 31.0],  # +200% across missing days.
+            "EDGE": [10.0, 19.0, 19.1, 1.91, 1.95, 2.0],  # +90% and -90% exactly aren't over the line.
+        },
+        index=days,
+    )
+    flags = prices.suspicious_prices(closes)
+    assert set(flags) == {"NEG", "JUMP", "GAP"}
+    assert flags["NEG"]["non_positive_days"] == 2
+    assert flags["NEG"]["non_positive_from"] == datetime.date(2026, 11, 2)
+    assert flags["NEG"]["non_positive_to"] == datetime.date(2026, 11, 3)
+    assert flags["NEG"]["large_moves"] == []  # No move is measured from a negative price.
+    assert [(day, round(change, 2)) for day, change in flags["JUMP"]["large_moves"]] == [
+        (datetime.date(2026, 11, 4), 1.38),
+        (datetime.date(2026, 11, 6), -0.92),
+    ]
+    assert flags["JUMP"]["non_positive_days"] == 0 and flags["JUMP"]["non_positive_from"] is None
+    gap_moves = [(day, round(change, 2)) for day, change in flags["GAP"]["large_moves"]]
+    assert gap_moves == [(datetime.date(2026, 11, 5), 2.0)]
+
+
+def test_describe_flag():
+    flag = {"non_positive_days": 988, "large_moves": [(None, 1.0), (None, 47.7)]}
+    assert prices.describe_flag(flag) == "988 days at or below $0, 2 one-day moves over 90%"
+    assert prices.describe_flag({"non_positive_days": 0, "large_moves": [(None, 1.0)]}) == "1 one-day move over 90%"
