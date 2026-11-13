@@ -81,15 +81,17 @@ def test_trades_take_holdings_to_the_target(lots_response):
 
 
 def test_prices_override_values_holdings(lots_response):
-    # 1000 cash + 30 NVDA at 173.73 + 25 KO and 4 XOM at the last prices in the data (59.90, 104.85).
-    assert lots_response["metrics"]["portfolio_value"] == round(1000 + 30 * 173.73 + 25 * 59.90 + 4 * 104.85, 2)
+    # 1000 cash + 30 NVDA at the requested 173.73 + 25 KO and 4 XOM at the last prices in the data.
+    state = ApplicationState()
+    expected = 1000 + 30 * 173.73 + 25 * state.fetch_ticker_price("KO") + 4 * state.fetch_ticker_price("XOM")
+    assert lots_response["metrics"]["portfolio_value"] == round(expected, 2)
     nvda = next(t for t in lots_response["trades"] if t["ticker"] == "NVDA")
     assert nvda["price"] == 173.73
 
 
 def test_price_sources_lists_where_each_price_came_from(lots_response):
     sources = lots_response["price_sources"]
-    assert sources["price_data_date"] == "2024-01-30"
+    assert sources["price_data_date"] == ApplicationState().price_date()
     assert "NVDA" in sources["from_request"] and "AAPL" in sources["from_request"]
     assert "KO" in sources["from_price_data"] and "XOM" in sources["from_price_data"]
 
