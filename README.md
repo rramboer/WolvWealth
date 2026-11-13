@@ -8,7 +8,7 @@ It's for individual investors who want a mean-variance allocation of their own m
 
 ## How it works
 
-- **Prices:** `historical_prices.csv` holds daily adjusted closes for the 1,982 US tickers in `ticker_universe.csv` (sorted by market cap), from January 2006 to January 30, 2024. It's a snapshot; refreshing it is on the roadmap.
+- **Prices:** `historical_prices.csv` holds daily closes, adjusted for splits and dividends, for the 1,753 US tickers in `ticker_universe.csv` (sorted by market cap as of early 2024), from January 2006 to the last refresh, currently November 11, 2026. `bin/refresh-prices` re-downloads it; see [Refreshing prices](#refreshing-prices).
 - **Optimization:** [PyPortfolioOpt](https://github.com/robertmartin8/PyPortfolioOpt) estimates expected returns as the mean historical return and risk as an exponentially weighted covariance, then solves for the maximum Sharpe ratio (risk-free rate 2%, the library default). The default universe is the 500 largest tickers.
 - **Constraints:** a cap on any one position (`max_weight`), a floor on every position (`min_universal_weight`) and a position count (`max_positions`).
 - **Accounts:** registering creates a free API key (15 optimizations, valid 7 days). Accounts and keys live in a local SQLite database under `var/`.
@@ -71,7 +71,7 @@ The response has `optimized_portfolio` (ticker to `shares`, `value` and `percent
 
 ### Current prices
 
-Holdings, share counts and trades use the last price in the file, which is from January 30, 2024, unless the request sends `prices`. Expected returns and risk always come from the full price history. When `prices` is sent, the response adds `price_sources`: `price_data_date` (the file's last date), and which tickers used a price from the request (`from_request`) or from the file (`from_price_data`).
+Holdings, share counts and trades use the last price in the file, from the day before the last refresh, unless the request sends `prices` (for example, to price a trade with today's quotes). Expected returns and risk always come from the full price history. When `prices` is sent, the response adds `price_sources`: `price_data_date` (the file's last date), and which tickers used a price from the request (`from_request`) or from the file (`from_price_data`).
 
 ### Tax lots
 
@@ -97,13 +97,27 @@ List each ticker once, with all of its lots in one list; a ticker that appears m
 
 `min_tax` sells the lots with the least tax per share first, at the assumed `tax_rates`, so losses go first. A lot is long term when sold after its one-year anniversary. The lots only apply if you choose them as specific lots when you place the order; otherwise most brokers sell the oldest lots first. These are estimates: they don't know about your other accounts, purchases after the sale, loss carryovers or state taxes.
 
+## Refreshing prices
+
+```bash
+bin/refresh-prices           # re-download the whole history, about 3 minutes
+bin/refresh-prices --prune   # also drop tickers Yahoo no longer has from ticker_universe.csv
+```
+
+Then restart the server; prices are loaded at startup.
+
+- It always downloads the full history from 2006 again instead of adding new days. Splits and dividends re-adjust every earlier price, so new days wouldn't line up with old ones.
+- It stops at the last finished trading day: run before 4:30 pm New York time, today is left out. A trailing day Yahoo has only partly filled in is dropped.
+- It reports tickers Yahoo returned nothing for and tickers with no price in the last 10 days of the data. Without `--prune` they stay in the universe with no current price, and the API rejects them. With `--prune` they're removed. Check the list: a symbol Yahoo has given to a different company won't be caught.
+- If more than a quarter of the tickers come back empty, which usually means Yahoo is rate limiting, it leaves the files alone. `--force` writes them anyway.
+
 ## Tests
 
 ```bash
 python3 -m pytest
 ```
 
-Run from the repo root. The tests use a throwaway database, not `var/`.
+Run from the repo root. The tests use a throwaway database, not `var/`, and don't download anything. They take about a minute, almost all of it one request over the full default universe.
 
 ## Backtesting
 

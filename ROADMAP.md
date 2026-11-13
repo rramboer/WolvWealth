@@ -19,11 +19,14 @@ The optimizer returns the trades from current holdings to the target and, for ho
 
 ## Data
 
-- A command to refresh prices. The file ends January 30, 2024; until then, requests can send `prices`. A refresh has to re-download the whole history, not append to it: splits and dividends re-adjust old prices (NVDA's January 30, 2024 close is $627.74 in the file and $62.59 from Yahoo now, after its 10-for-1 split). It also has to handle tickers Yahoo doesn't return on a given day. `update_historical_prices` in `state.py` appends, and asks for an `Adj Close` column that newer yfinance versions (1.7.0, for one) no longer return.
+- Re-rank `ticker_universe.csv` by current market cap. The order, and so what `top20` through `top500` include, is from early 2024. `ApplicationState.sort_ticker_universe` does it but makes one Yahoo request per ticker.
+- `historical_prices.csv` is 55 MB and tracked in git, so each refresh adds about that much to the repo history, and GitHub warns about files over 50 MB. Options: build it locally with `bin/refresh-prices` instead of committing it, or shrink the universe.
+- Refresh on a schedule, and catch a ticker symbol that Yahoo has reassigned to a different company.
 - Responses only say what date the prices are from when the request sends `prices` or tax lots; every response should.
 
 ## Quality
 
 - Extend the test suite (it covers trades, prices and tax lots so far) and add CI running pytest, pycodestyle, pydocstyle and pylint, which `pyproject.toml` already lists.
+- A request over the default top 500 takes about 50 seconds, nearly all in PyPortfolioOpt's `exp_cov`, which works through every pair of tickers. The covariance only changes when prices are refreshed, so it could be cached per universe.
 - Make the risk-free rate an input instead of PyPortfolioOpt's fixed 2%.
 - Use `backtest.py` to compare other expected-return estimators against the plain historical mean.
