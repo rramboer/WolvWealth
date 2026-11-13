@@ -40,6 +40,13 @@ def test_plain_request_has_only_the_original_fields(optimize):
     assert all(set(t) == {"action", "ticker", "shares", "price", "value"} for t in body["trades"])
 
 
+def test_default_universe_solves(optimize):
+    # The full default universe (top 500), which cvxpy's default solver couldn't finish.
+    status, body = optimize({"initial_cash": 5000})
+    assert status == 200, body
+    assert sum(p["percent_weight"] for p in body["optimized_portfolio"].values()) == pytest.approx(100, abs=0.5)
+
+
 def test_tax_options_alone_do_not_change_the_response(optimize):
     plain = {"initial_cash": 1000, "initial_holdings": {"AAPL": 5}, "universe": UNIVERSE}
     with_options = {**plain, "lot_method": "fifo", "tax_rates": {"short_term": 0.37}, "trade_date": "2026-01-01"}

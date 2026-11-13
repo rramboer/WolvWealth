@@ -280,10 +280,7 @@ class Optimization:
         try:
             mu = expected_returns.mean_historical_return(filtered_data)
             cov_matrix = risk_models.exp_cov(filtered_data)
-            ef = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(self.min_universal_weight, 1))
-            if self.max_weight != 1:
-                ef.add_constraint(lambda weights: weights <= self.max_weight)
-            ef.max_sharpe()
+            ef = max_sharpe_frontier(mu, cov_matrix, (self.min_universal_weight, 1), self.max_weight)
             cleaned_weights = ef.clean_weights(cutoff=self.weight_threshold)
             if self.max_positions != -1:
                 sorted_weights = sorted(cleaned_weights.items(), key=lambda x: x[1], reverse=True)
@@ -395,6 +392,26 @@ class Optimization:
                 "unknown_basis lists sells of holdings given as share counts, which have no gain figure."
             ),
         }
+
+
+# Clarabel first: with a few hundred stocks, cvxpy's default for this problem
+# (OSQP) can run out of iterations. None falls back to that default.
+SOLVERS = ["CLARABEL", None]
+
+
+def max_sharpe_frontier(mu, cov_matrix, weight_bounds: tuple, max_weight: float) -> EfficientFrontier:
+    """Return an EfficientFrontier solved for the maximum Sharpe ratio, trying each of SOLVERS in turn."""
+    error = None
+    for solver in SOLVERS:
+        ef = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=weight_bounds, solver=solver)
+        if max_weight != 1:
+            ef.add_constraint(lambda weights: weights <= max_weight)
+        try:
+            ef.max_sharpe()
+            return ef
+        except Exception as e:  # OptimizationError from PyPortfolioOpt, SolverError from cvxpy.
+            error = e
+    raise error
 
 
 class JSONObject(dict):

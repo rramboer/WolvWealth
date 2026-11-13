@@ -1,6 +1,6 @@
 import datetime
 from pypfopt import expected_returns, risk_models
-from pypfopt.efficient_frontier import EfficientFrontier
+from wolvwealth.api.optimize import max_sharpe_frontier
 from wolvwealth.api.state import ApplicationState
 import os
 
@@ -43,10 +43,7 @@ class Optimization:
         try:
             mu = expected_returns.mean_historical_return(filtered_data)
             cov_matrix = risk_models.exp_cov(filtered_data)
-            ef = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(self.min_universal_weight, 1))
-            if self.max_weight != 1:
-                ef.add_constraint(lambda weights: weights <= self.max_weight)
-            ef.max_sharpe()
+            ef = max_sharpe_frontier(mu, cov_matrix, (self.min_universal_weight, 1), self.max_weight)
             cleaned_weights = ef.clean_weights(cutoff=self.weight_threshold)
             if self.max_positions != -1:
                 sorted_weights = sorted(cleaned_weights.items(), key=lambda x: x[1], reverse=True)
