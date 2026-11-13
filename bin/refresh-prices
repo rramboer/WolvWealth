@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Re-download historical_prices.csv from Yahoo Finance. Run from anywhere; see --help."""
+import os
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+os.chdir(ROOT)  # The app and this command read the data files from the repo root.
+sys.path.insert(0, str(ROOT))
+
+from wolvwealth.api import prices  # noqa: E402
+
+sys.exit(prices.main(sys.argv[1:]))

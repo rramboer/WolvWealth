@@ -1,8 +1,8 @@
 """Global state of application."""
 import csv
-from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
+from wolvwealth.api import prices
 
 
 class ApplicationState:
@@ -44,11 +44,8 @@ class ApplicationState:
         self.HISTORICAL_PRICES = pd.read_csv("historical_prices.csv", parse_dates=True, index_col="Date")
 
     def save_historical_prices(self) -> None:
-        """Saves historical stock prices of tickers in universe to CSV."""
-        start_date = "2006-01-01"
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        historical_data = yf.download(self.TICKER_UNIVERSE, start=start_date, end=end_date)["Adj Close"].round(2)
-        historical_data.to_csv("historical_prices.csv", index=True)
+        """Re-download the full price history for the universe and write it to historical_prices.csv."""
+        prices.refresh(self.TICKER_UNIVERSE)
 
     def add_tickers_to_universe(self, tickers: list):
         """Add tickers to universe and update historical prices."""
@@ -102,16 +99,14 @@ class ApplicationState:
         return self.HISTORICAL_PRICES.index[-1].strftime("%Y-%m-%d")
 
     def update_historical_prices(self) -> None:
-        """Update historical stock prices of tickers in universe."""
-        start_date = (
-            datetime.strptime(str(self.HISTORICAL_PRICES.index[-1]), "%Y-%m-%d %H:%M:%S") + timedelta(days=1)
-        ).strftime("%Y-%m-%d")
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        if start_date >= end_date:
-            return
-        historical_data = yf.download(self.TICKER_UNIVERSE, start=start_date, end=end_date)["Adj Close"].round(2)
-        self.HISTORICAL_PRICES = pd.concat([self.HISTORICAL_PRICES, historical_data])
-        self.HISTORICAL_PRICES.to_csv("historical_prices.csv", index=True)
+        """Refresh the price history and reload it.
+
+        This re-downloads everything instead of adding new days to the end:
+        splits and dividends re-adjust earlier prices, so new days don't line
+        up with old ones.
+        """
+        self.save_historical_prices()
+        self.load_historical_prices()
 
     def get_market_cap(self, ticker: str) -> float:
         """Return market cap of ticker."""
