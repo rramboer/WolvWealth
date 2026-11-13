@@ -313,3 +313,19 @@ def test_flagged_ticker_that_does_not_come_up_adds_nothing(optimize, flagged):
     flagged({"SYM": MOVE_FLAG})  # Not held, not in the universe.
     _, body = optimize({"initial_cash": 1000, "initial_holdings": {"AAPL": 5}, "universe": UNIVERSE})
     assert "data_warnings" not in body
+
+
+# The optimizer page.
+
+
+def test_optimizer_page_gives_the_logged_in_user_their_api_key(client):
+    with client.session_transaction() as session:
+        session["username"] = "tester"
+    response = client.get("/optimizer/")
+    assert response.status_code == 200
+    page = response.get_data(as_text=True)
+    assert f'data-api-key="{API_KEY}"' in page
+    assert 'data-price-date="' + ApplicationState().price_date() + '"' in page
+    with client.session_transaction() as session:
+        session.pop("username")
+    assert client.get("/optimizer/").status_code == 302  # Logged out: sent to the login page.

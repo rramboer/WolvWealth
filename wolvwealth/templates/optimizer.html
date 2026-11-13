@@ -78,7 +78,8 @@
         </script>
     </header>
 
-    <div id="reactEntry" class="w-full h-full">
+    <div id="reactEntry" class="w-full h-full" data-api-key="{{ api_key }}" data-uses="{{ uses }}"
+        data-price-date="{{ price_date }}">
         <!-- This div is used by React to render the app -->
     </div>
     <script type="text/javascript" src="{{ url_for('static', filename='js/bundle.js') }}"></script>

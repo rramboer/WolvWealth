@@ -42,6 +42,10 @@ sqlite3 var/wolvwealth.sqlite3 "INSERT INTO admins(username) VALUES ('your-usern
 
 Database commands: `./bin/db create`, `./bin/db reset` (erases everything), `./bin/db destroy`, `./bin/db dump`.
 
+## Using the web page
+
+**Optimize** (http://localhost:8000/optimizer/, after logging in) is a form over the API below. Enter cash and holdings, tick "Enter tax lots" on a holding to type its lots, choose the universe and constraints, and optionally paste current prices. The result shows the target portfolio, the trades in order with the lots each sell comes from, realized gains with wash-sale warnings, and a yellow "Check the price data" banner (with a CHECK DATA badge on the ticker) when a holding or pick has suspicious price history. Each run uses one optimization from your key.
+
 ## Using the API
 
 ```bash
