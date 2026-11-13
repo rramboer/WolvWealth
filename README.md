@@ -85,7 +85,7 @@ A holding can be a list of the lots it was bought in instead of a share count:
 }
 ```
 
-Lots don't change the optimization; a holding counts as the sum of its lots. They add which lots each sell should come from. When any holding is given as lots, each sell of such a holding gets `lots` (`acquired`, `shares`, `cost_per_share`, `term` of `short` or `long`, and `gain`) and `realized_gain`, and the response gets `tax_summary`:
+List each ticker once, with all of its lots in one list; a ticker that appears more than once (in any capitalization) is an error if any of its entries is lots, and so is a ticker listed twice in `prices`. Lots don't change the optimization; a holding counts as the sum of its lots. They add which lots each sell should come from. When any holding is given as lots, each sell of such a holding gets `lots` (`acquired`, `shares`, `cost_per_share`, `term` of `short` or `long`, and `gain`) and `realized_gain`, and the response gets `tax_summary`:
 
 | Field | Meaning |
 |---|---|
