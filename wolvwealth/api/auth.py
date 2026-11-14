@@ -93,32 +93,46 @@ def check_api_key() -> bool:
     if api_key is None:
         raise InvalidUsage("No API key provided.", status_code=401)
     connection = wolvwealth.model.get_db()
-
-    # Check if API key exists
     cur = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,))
     result = cur.fetchone()
     if result is None:
         raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
+    consume_token_use(result)
+    return True
+
+
+def consume_session_use(username: str) -> None:
+    """Charge one use to the API token owned by the logged-in user. Errors like check_api_key()."""
+    connection = wolvwealth.model.get_db()
+    cur = connection.execute("SELECT * FROM tokens WHERE owner = ?", (username,))
+    result = cur.fetchone()
+    if result is None:
+        raise InvalidUsage("Authorization Error. No API key found for this account.", status_code=403)
+    consume_token_use(result)
+
+
+def consume_token_use(token_row: dict) -> None:
+    """Verify a tokens row is live and atomically decrement its remaining uses."""
+    connection = wolvwealth.model.get_db()
 
     # Check if API key has expired
-    expiration_time = result["expires"]
+    expiration_time = token_row["expires"]
     cur = connection.execute("SELECT datetime('now') AS now")
     current_time = cur.fetchone()["now"]
     if current_time > expiration_time:
         raise InvalidUsage("Authorization Error. API key has expired.", status_code=403)
 
     # Check if API key has been used too many times
-    if result["uses"] == 0:
+    if token_row["uses"] == 0:
         raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
 
     # Consume one use atomically so concurrent requests cannot double-spend the last use.
     cur = connection.execute(
         "UPDATE tokens SET uses = uses - 1 WHERE token = ? AND uses > 0 AND expires > datetime('now')",
-        (api_key,),
+        (token_row["token"],),
     )
     if cur.rowcount == 0:
         raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
-    return True
 
 
 def hash_password(_password: str) -> str:

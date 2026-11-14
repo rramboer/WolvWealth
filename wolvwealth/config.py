@@ -29,5 +29,10 @@ SESSION_COOKIE_SAMESITE = "Lax"
 # Reject request bodies larger than 16 MiB with 413 before parsing them.
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024
 
+# Backtest API limits: one request may ask for at most this much work.
+BACKTEST_MAX_REBALANCES = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_REBALANCES", 120))
+BACKTEST_MAX_UNIVERSE_SIZE = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE", 100))
+BACKTEST_CACHE_SIZE = int(os.environ.get("WOLVWEALTH_BACKTEST_CACHE_SIZE", 64))
+
 # SQLite database location. Build it with `./bin/db create`.
 DATABASE_FILENAME = pathlib.Path(os.environ.get("WOLVWEALTH_DATABASE", WOLVWEALTH_ROOT / "var" / "wolvwealth.sqlite3"))

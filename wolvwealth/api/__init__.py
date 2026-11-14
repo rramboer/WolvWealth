@@ -6,6 +6,7 @@ import wolvwealth
 import wolvwealth.api.admin
 import wolvwealth.api.api_exceptions
 import wolvwealth.api.auth
+import wolvwealth.api.backtest
 import wolvwealth.api.optimize
 from wolvwealth.api.state import ApplicationState  # noqa: F401  (re-exported for wolvwealth.__init__)
 
@@ -19,6 +20,7 @@ def api_default():
             {
                 "/api/": "API Usage Info",
                 "/api/optimize/": "Optimize Portfolio",
+                "/api/backtest/": "Backtest the Optimizer",
                 "/api/account/": "View Account Details",
                 "/api/db/status/": "Test Database Connection",
                 "/api/db/dump/": "Dump Database",
@@ -33,6 +35,7 @@ def api_default():
         {
             "/api/": "API Usage Info",
             "/api/optimize/": "Optimize Portfolio",
+            "/api/backtest/": "Backtest the Optimizer",
             "/api/account/": "View Account Details",
         }
     )

@@ -78,6 +78,9 @@ All configuration is environment-driven (see [.env.example](.env.example)):
 | `GUNICORN_THREADS`             | `4`                         | Gunicorn threads per worker                          |
 | `GUNICORN_BIND`                | `0.0.0.0:8000`              | Gunicorn bind address                                |
 | `GUNICORN_FORWARDED_ALLOW_IPS` | `127.0.0.1`                 | Trusted reverse-proxy IPs for `X-Forwarded-*`        |
+| `WOLVWEALTH_BACKTEST_MAX_REBALANCES` | `120`                 | Most rebalances one `/api/backtest/` request may run |
+| `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE` | `100`              | Largest universe one `/api/backtest/` request may use |
+| `WOLVWEALTH_BACKTEST_CACHE_SIZE` | `64`                      | Backtest reports kept in the in-memory cache         |
 
 Generate a production secret key with:
 
@@ -121,6 +124,7 @@ All endpoints accept JSON over POST and authenticate with an API token in the `A
 | ---------------- | ------------------------------------------------------ |
 | `/api/`          | Usage info (GET or POST, no auth)                      |
 | `/api/optimize/` | Optimize a portfolio (consumes one use per call)       |
+| `/api/backtest/` | Backtest the optimizer (consumes one use per call)     |
 | `/api/account/`  | Account details for the token's owner                  |
 | `/api/admin/*`, `/api/db/*` | Administration (admin token required)       |
 
@@ -168,6 +172,66 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
 
 Errors return `{"error": {"message": "...", "status_code": ...}}` with 400 (invalid input), 401 (missing token), or 403 (invalid/expired/exhausted token).
 
+### `POST /api/backtest/`
+
+Runs the simulation described under [Backtesting](#backtesting) and returns the optimizer's result next to its benchmarks. Authenticate with an API key as above, or from the browser with the logged-in session cookie plus an `X-CSRF-Token` header (the token the templates expose). Either way one use is charged per request; malformed requests are free. Identical requests are served from an in-memory cache (`"cached": true`).
+
+Request fields (`start` required, everything else optional):
+
+- `start`, `end` (YYYY-MM-DD) — `end` defaults to the last price date
+- `initial_cash` (number, default 100000)
+- `frequency` — `daily`, `weekly`, `biweekly`, `monthly` (default), `quarterly`, `semiannually`, `yearly`
+- `universe` (list) — tickers and/or `"topN"` aliases, default `["top50"]`
+- `lookback_days` (int, default 1095), `execution_lag` (trading days, default 1), `transaction_cost_bps` (default 0)
+- `constraints` — same object as `/api/optimize/`
+- `benchmarks` (list of tickers, default `["SPY"]`) — buy-and-hold comparisons; an equal-weight portfolio of the universe is always included
+- `include_equity` (bool, default true) — set false to omit the daily equity curves
+
+Requests that would need more than `WOLVWEALTH_BACKTEST_MAX_REBALANCES` rebalances or more than `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE` tickers are rejected with 400 (a 50-stock monthly run takes roughly a second per rebalance).
+
+```bash
+curl -s -X POST http://localhost:8000/api/backtest/ \
+  -H "Authorization: insecure-dev-user-token" \
+  -H "Content-Type: application/json" \
+  -d '{"start": "2021-01-01", "frequency": "monthly", "universe": ["top50"], "transaction_cost_bps": 5}'
+```
+
+Response shape (equity curves abbreviated):
+
+```json
+{
+  "config": { "start": "2021-01-01", "end": "2024-01-30", "frequency": "monthly", "...": "..." },
+  "result": {
+    "strategy": "max_sharpe",
+    "start_value": 100000.0,
+    "end_value": 124366.52,
+    "equity": { "2021-01-04": 100000.0, "...": "..." },
+    "rebalances": [
+      {
+        "decision_date": "2021-01-04",
+        "execution_date": "2021-01-05",
+        "portfolio_value": 100000.0,
+        "weights": { "TSLA": 0.31, "...": "..." },
+        "shares": { "TSLA": 115.2, "...": "..." },
+        "cash": 0.0,
+        "turnover": 0.9995,
+        "transaction_cost": 49.98,
+        "eligible_assets": 49,
+        "expected_performance": { "expected_annual_return": 0.42, "annual_volatility": 0.25, "sharpe_ratio": 1.6 }
+      }
+    ],
+    "warnings": []
+  },
+  "metrics": { "total_return": 0.2437, "cagr": 0.0735, "annual_volatility": 0.19, "sharpe_ratio": 0.33, "max_drawdown": -0.27, "...": "..." },
+  "benchmarks": {
+    "equal_weight": { "result": { "...": "..." }, "metrics": { "...": "..." } },
+    "SPY": { "result": { "...": "..." }, "metrics": { "...": "..." } }
+  },
+  "warnings": ["Survivorship bias: ..."],
+  "cached": false
+}
+```
+
 ## Backtesting
 
 The `wolvwealth.backtest` package replays the optimizer over historical data and compares it against two benchmarks: an equal-weight portfolio of the same universe (the fair comparison) and buy-and-hold SPY. It is installed as the `wolvwealth-backtest` command; `python backtest.py` is an equivalent wrapper.
@@ -193,12 +257,12 @@ The ticker universe is a snapshot of today's listings ranked by today's market c
 
 ```
 ├── wolvwealth/            Flask application package
-│   ├── api/               JSON API (optimize, auth, admin) + in-memory market data
+│   ├── api/               JSON API (optimize, backtest, auth, admin) + in-memory market data
 │   ├── views/             Server-rendered pages (login, account, optimizer, ...)
 │   ├── templates/         Jinja templates (base.html + pages)
 │   ├── js/                React dashboard source (built by Vite)
 │   ├── static/            CSS/images + generated js/bundle.js, css/output.css
-│   ├── backtest/          Backtesting package (config, schedule, strategies, engine, metrics, service, cli)
+│   ├── backtest/          Backtesting package (config, schedule, strategies, engine, metrics, service, request, cache, cli)
 │   ├── optimizer_core.py  Shared max-Sharpe optimization core
 │   ├── optimizer_params.py Shared universe/constraint validation (API + backtester)
 │   ├── market_data.py     Loads the two market-data CSVs

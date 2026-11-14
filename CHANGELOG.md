@@ -20,7 +20,8 @@
 - Realized performance metrics (total return, CAGR, volatility, Sharpe, max drawdown, Calmar, turnover, costs).
 - Equal-weight and buy-and-hold (SPY) benchmarks run through the same engine, plus a survivorship-bias warning on every report.
 - `--json` report output for downstream consumers (the upcoming web UI).
-- Tests for the backtest engine, schedule, metrics, CLI and the optimizer-core fixes.
+- `POST /api/backtest/`: runs a backtest with benchmarks over the JSON API. Accepts an API key or a logged-in session with an `X-CSRF-Token` header, charges one use per request (malformed requests are free), caps work per request (`WOLVWEALTH_BACKTEST_MAX_REBALANCES`, `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE`) and serves repeated requests from an in-memory cache.
+- Tests for the backtest engine, schedule, metrics, CLI, request parsing, cache, endpoint auth/billing and the optimizer-core fixes.
 
 ## Unreleased (modernize)
 
