@@ -18,8 +18,8 @@ module.exports = {
   module: {
     rules: [
       {
-        // Test for js or jsx files
-        test: /\.jsx?$/,
+        // Test for js, jsx or mjs files
+        test: /\.(jsx?|mjs)$/,
         // Exclude external modules from loader tests
         exclude: /node_modules/,
         loader: "babel-loader",

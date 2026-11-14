@@ -4,7 +4,7 @@
   "description": "Frontend (dashboard) for WolvWealth",
   "main": "wolvwealth/js/main.jsx",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test \"tests/js/*.test.mjs\""
   },
   "author": "WolvWealth Team",
   "license": "MIT",

@@ -1,26 +1,20 @@
 import React, { useState } from "react";
+import { llmInstructions } from "./llmInstructions.mjs";
+import {
+    LOT_METHODS, TOP_N, defaultForm, formHasLots, formToRequest, newHolding, newLot, parsePastedRequest,
+    requestToForm, today,
+} from "./requestForm.mjs";
 
 // The optimizer page: a form that builds a request for POST /api/optimize/,
-// and a results view for everything the response can contain. The API key
-// and price date come from data attributes on #reactEntry (see
-// templates/optimizer.html and views/optimizer.py).
+// and a results view for everything the response can contain. The form can
+// also be filled from pasted JSON, e.g. written by an AI assistant from a
+// brokerage account. The API key and price date come from data attributes
+// on #reactEntry (see templates/optimizer.html and views/optimizer.py).
 
-const TOP_N = ["", "top20", "top50", "top100", "top200", "top300", "top400", "top500"];
-const LOT_METHODS = [
-    ["min_tax", "Lowest tax first"],
-    ["fifo", "Oldest first (FIFO)"],
-    ["hifo", "Highest cost first"],
-    ["lifo", "Newest first (LIFO)"],
-];
-
-const today = () => new Date().toISOString().slice(0, 10);
 const money = (n) => n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 const signedMoney = (n) => (n < 0 ? "-" : "+") + money(Math.abs(n));
 const pct = (n, digits = 1) => `${n.toFixed(digits)}%`;
 const shares = (n) => Number(n.toFixed(4)).toLocaleString("en-US", { maximumFractionDigits: 4 });
-
-const newLot = () => ({ shares: "", cost_per_share: "", acquired: "" });
-const newHolding = () => ({ ticker: "", shares: "", useLots: false, lots: [newLot()] });
 
 // Shared styling.
 const input = "w-full rounded-lg bg-gray-dark border border-white/20 text-white text-sm px-3 py-2 " +
@@ -28,6 +22,25 @@ const input = "w-full rounded-lg bg-gray-dark border border-white/20 text-white 
 const label = "block text-xs font-medium text-white/70 mb-1";
 const card = "rounded-2xl bg-gray-dark/60 border border-white/10 p-5";
 const smallButton = "text-xs text-cyan hover:text-white";
+const outlineButton = "rounded-lg border border-cyan text-cyan hover:bg-cyan hover:text-black text-sm font-medium px-3 py-2 transition";
+
+// Copy text, falling back to a hidden textarea where the Clipboard API isn't
+// available (it needs HTTPS or localhost).
+async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(area);
+    if (!ok) throw new Error("copy failed");
+}
 
 function Optimization() {
     const entry = document.getElementById("reactEntry");
@@ -35,70 +48,15 @@ function Optimization() {
     const priceDate = entry?.dataset.priceDate || "";
     const [usesLeft, setUsesLeft] = useState(Number(entry?.dataset.uses || 0));
 
-    const [cash, setCash] = useState("10000");
-    const [holdings, setHoldings] = useState([newHolding()]);
-    const [topN, setTopN] = useState("top100");
-    const [extraTickers, setExtraTickers] = useState("");
-    const [maxWeight, setMaxWeight] = useState("");
-    const [maxPositions, setMaxPositions] = useState("");
-    const [lotMethod, setLotMethod] = useState("min_tax");
-    const [tradeDate, setTradeDate] = useState(today());
-    const [shortRate, setShortRate] = useState("24");
-    const [longRate, setLongRate] = useState("15");
-    const [prices, setPrices] = useState("");
+    const [form, setForm] = useState(defaultForm);
+    const set = (field) => (value) => setForm((f) => ({ ...f, [field]: value }));
+    const onChange = (field) => (e) => set(field)(e.target.value);
 
     const [status, setStatus] = useState("idle"); // idle | loading | done | error
     const [error, setError] = useState("");
     const [result, setResult] = useState(null);
 
-    const anyLots = holdings.some((h) => h.useLots && h.ticker.trim());
-
-    function buildRequest() {
-        const body = {};
-        if (cash !== "") body.initial_cash = Number(cash);
-
-        const initialHoldings = {};
-        for (const h of holdings) {
-            const ticker = h.ticker.trim().toUpperCase();
-            if (!ticker) continue;
-            if (h.useLots) {
-                initialHoldings[ticker] = h.lots
-                    .filter((lot) => lot.shares !== "" || lot.cost_per_share !== "" || lot.acquired !== "")
-                    .map((lot) => ({
-                        shares: Number(lot.shares),
-                        cost_per_share: Number(lot.cost_per_share),
-                        acquired: lot.acquired,
-                    }));
-            } else {
-                initialHoldings[ticker] = Number(h.shares);
-            }
-        }
-        if (Object.keys(initialHoldings).length) body.initial_holdings = initialHoldings;
-
-        const universe = [];
-        if (topN) universe.push(topN);
-        for (const t of extraTickers.split(/[\s,]+/)) if (t) universe.push(t.toUpperCase());
-        if (universe.length) body.universe = universe;
-
-        const constraints = {};
-        if (maxWeight !== "") constraints.max_weight = Number(maxWeight) / 100;
-        if (maxPositions !== "") constraints.max_positions = Number(maxPositions);
-        if (Object.keys(constraints).length) body.constraints = constraints;
-
-        if (anyLots) {
-            body.lot_method = lotMethod;
-            if (tradeDate) body.trade_date = tradeDate;
-            body.tax_rates = { short_term: Number(shortRate) / 100, long_term: Number(longRate) / 100 };
-        }
-
-        const priceOverrides = {};
-        for (const line of prices.split(/[\n,;]+/)) {
-            const [ticker, price] = line.trim().split(/[\s:=]+/);
-            if (ticker && price) priceOverrides[ticker.toUpperCase()] = Number(price);
-        }
-        if (Object.keys(priceOverrides).length) body.prices = priceOverrides;
-        return body;
-    }
+    const anyLots = formHasLots(form);
 
     async function submit(event) {
         event.preventDefault();
@@ -108,7 +66,7 @@ function Optimization() {
             const response = await fetch("/api/optimize/", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", Authorization: apiKey },
-                body: JSON.stringify(buildRequest()),
+                body: JSON.stringify(formToRequest(form)),
             });
             const text = await response.text();
             let data;
@@ -135,19 +93,21 @@ function Optimization() {
             </p>
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
                 <form onSubmit={submit} className="lg:col-span-2 space-y-6">
+                    <PasteJson onFill={setForm} />
+
                     <div className={card}>
                         <label className={label} htmlFor="cash">Cash to invest ($)</label>
                         <input id="cash" className={input} type="number" min="0" step="any"
-                            value={cash} onChange={(e) => setCash(e.target.value)} />
+                            value={form.cash} onChange={onChange("cash")} />
                     </div>
 
-                    <HoldingsEditor holdings={holdings} setHoldings={setHoldings} />
+                    <HoldingsEditor holdings={form.holdings} setHoldings={set("holdings")} />
 
                     <div className={card + " space-y-4"}>
                         <h2 className="font-semibold">Universe and constraints</h2>
                         <div>
                             <label className={label} htmlFor="topn">Choose from</label>
-                            <select id="topn" className={input} value={topN} onChange={(e) => setTopN(e.target.value)}>
+                            <select id="topn" className={input} value={form.topN} onChange={onChange("topN")}>
                                 {TOP_N.map((n) => (
                                     <option key={n} value={n}>
                                         {n ? `Largest ${n.slice(3)} stocks` : "Only the tickers below"}
@@ -157,19 +117,24 @@ function Optimization() {
                         </div>
                         <div>
                             <label className={label} htmlFor="extra">Also include these tickers</label>
-                            <input id="extra" className={input} placeholder="AAPL MSFT BND" value={extraTickers}
-                                onChange={(e) => setExtraTickers(e.target.value)} />
+                            <input id="extra" className={input} placeholder="AAPL MSFT BND" value={form.extraTickers}
+                                onChange={onChange("extraTickers")} />
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-3 gap-4">
                             <div>
-                                <label className={label} htmlFor="maxw">Max weight per stock (%)</label>
+                                <label className={label} htmlFor="maxw">Max weight (%)</label>
                                 <input id="maxw" className={input} type="number" min="0" max="100" step="any"
-                                    placeholder="none" value={maxWeight} onChange={(e) => setMaxWeight(e.target.value)} />
+                                    placeholder="none" value={form.maxWeight} onChange={onChange("maxWeight")} />
+                            </div>
+                            <div>
+                                <label className={label} htmlFor="minw">Min weight (%)</label>
+                                <input id="minw" className={input} type="number" min="0" max="100" step="any"
+                                    placeholder="none" value={form.minWeight} onChange={onChange("minWeight")} />
                             </div>
                             <div>
                                 <label className={label} htmlFor="maxp">Max positions</label>
                                 <input id="maxp" className={input} type="number" min="1" step="1" placeholder="none"
-                                    value={maxPositions} onChange={(e) => setMaxPositions(e.target.value)} />
+                                    value={form.maxPositions} onChange={onChange("maxPositions")} />
                             </div>
                         </div>
                     </div>
@@ -179,26 +144,25 @@ function Optimization() {
                             <h2 className="font-semibold">Tax lots</h2>
                             <div>
                                 <label className={label} htmlFor="method">Sell lots</label>
-                                <select id="method" className={input} value={lotMethod}
-                                    onChange={(e) => setLotMethod(e.target.value)}>
+                                <select id="method" className={input} value={form.lotMethod} onChange={onChange("lotMethod")}>
                                     {LOT_METHODS.map(([value, name]) => <option key={value} value={value}>{name}</option>)}
                                 </select>
                             </div>
                             <div className="grid grid-cols-3 gap-4">
                                 <div>
                                     <label className={label} htmlFor="tdate">Trade date</label>
-                                    <input id="tdate" className={input} type="date" value={tradeDate}
-                                        onChange={(e) => setTradeDate(e.target.value)} />
+                                    <input id="tdate" className={input} type="date" value={form.tradeDate}
+                                        onChange={onChange("tradeDate")} />
                                 </div>
                                 <div>
                                     <label className={label} htmlFor="st">Short-term rate (%)</label>
                                     <input id="st" className={input} type="number" min="0" max="100" step="any"
-                                        value={shortRate} onChange={(e) => setShortRate(e.target.value)} />
+                                        value={form.shortRate} onChange={onChange("shortRate")} />
                                 </div>
                                 <div>
                                     <label className={label} htmlFor="lt">Long-term rate (%)</label>
                                     <input id="lt" className={input} type="number" min="0" max="100" step="any"
-                                        value={longRate} onChange={(e) => setLongRate(e.target.value)} />
+                                        value={form.longRate} onChange={onChange("longRate")} />
                                 </div>
                             </div>
                             <p className="text-xs text-white/50">
@@ -210,7 +174,7 @@ function Optimization() {
                     <div className={card}>
                         <label className={label} htmlFor="prices">Current prices (optional)</label>
                         <textarea id="prices" className={input + " h-20"} placeholder={"AAPL 355.63\nNVDA 173.73"}
-                            value={prices} onChange={(e) => setPrices(e.target.value)} />
+                            value={form.prices} onChange={onChange("prices")} />
                         <p className="text-xs text-white/50 mt-2">
                             One ticker and price per line. Replaces the {priceDate} price for valuing holdings, trades and gains.
                         </p>
@@ -244,6 +208,96 @@ function Optimization() {
                 </div>
             </div>
         </section>
+    );
+}
+
+// Fill the form from JSON, e.g. an AI assistant's reply, and copy the
+// instructions that tell the assistant how to write it.
+function PasteJson({ onFill }) {
+    const [open, setOpen] = useState(false);
+    const [text, setText] = useState("");
+    const [copied, setCopied] = useState("");
+    const [message, setMessage] = useState(null); // {kind: "error" | "ok", lines: [...]}
+    const instructions = llmInstructions({ today: today() });
+
+    async function copyInstructions() {
+        try {
+            await copyText(instructions);
+            setCopied("Copied. Paste them into your AI assistant.");
+        } catch (e) {
+            setCopied("Couldn't copy. Open “Show the instructions” below and copy them by hand.");
+        }
+    }
+
+    function fill() {
+        let request;
+        try {
+            request = parsePastedRequest(text);
+        } catch (e) {
+            setMessage({ kind: "error", lines: [e.message] });
+            return;
+        }
+        const { form, notes, errors } = requestToForm(request);
+        if (errors.length) {
+            setMessage({ kind: "error", lines: ["The form wasn't changed. Fix these and paste again:", ...errors] });
+            return;
+        }
+        onFill(form);
+        const held = form.holdings.filter((h) => h.ticker).length;
+        const withLots = form.holdings.filter((h) => h.useLots).length;
+        setMessage({
+            kind: "ok",
+            lines: [
+                `Filled the form: ${held} holding${held === 1 ? "" : "s"}` +
+                    (withLots ? `, ${withLots} with tax lots` : "") +
+                    ". Check it below, then optimize.",
+                ...notes,
+            ],
+        });
+    }
+
+    return (
+        <div className={card + " space-y-3 border-cyan/40"}>
+            <div className="flex items-start justify-between gap-3">
+                <div>
+                    <h2 className="font-semibold">Fill from your AI assistant</h2>
+                    <p className="text-xs text-white/60 mt-1">
+                        Copy the instructions into an assistant that can see your brokerage account, then paste its
+                        JSON reply here.
+                    </p>
+                </div>
+                <button type="button" className={smallButton + " whitespace-nowrap"} onClick={() => setOpen(!open)}>
+                    {open ? "Hide" : "Paste JSON"}
+                </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+                <button type="button" className={outlineButton} onClick={copyInstructions}>
+                    Copy instructions for your AI
+                </button>
+                {copied && <span className="text-xs text-white/70">{copied}</span>}
+            </div>
+            {open && (
+                <div className="space-y-3">
+                    <textarea className={input + " h-48 font-mono text-xs"} value={text}
+                        placeholder={'Paste the reply, or just the JSON:\n{\n  "initial_cash": 2500,\n  "initial_holdings": {"MSFT": 12.5}\n}'}
+                        onChange={(e) => setText(e.target.value)} />
+                    <button type="button" className={outlineButton} onClick={fill} disabled={!text.trim()}>
+                        Fill the form
+                    </button>
+                    <p className="text-xs text-white/50">This replaces everything in the form below.</p>
+                </div>
+            )}
+            {message && (
+                <div className={"rounded-xl p-3 text-sm space-y-1 " +
+                    (message.kind === "error" ? "border border-red bg-red/10" : "border border-green bg-green/10")}>
+                    {message.lines.map((line, i) => <p key={i} className={i === 0 ? "font-medium" : "text-xs"}>{line}</p>)}
+                </div>
+            )}
+            <details className="text-xs text-white/60">
+                <summary className="cursor-pointer hover:text-white">Show the instructions</summary>
+                <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-black/40 p-3 text-white/80 max-h-80 overflow-auto">{instructions}</pre>
+            </details>
+        </div>
     );
 }
 
