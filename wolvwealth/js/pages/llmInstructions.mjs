@@ -72,8 +72,9 @@ export function llmInstructions({ today } = {}) {
         "",
         "## Afterwards",
         "",
-        "If I paste WolvWealth's results back to you, help me check them against my account. Don't place, change " +
-            "or cancel any order unless I explicitly confirm that specific order.",
+        "If I paste WolvWealth's results back to you (they start with \"# WolvWealth results to review\"), help me " +
+            "check them against my account and follow the ground rules in them. Don't place, change or cancel any " +
+            "order unless I explicitly confirm that specific order.",
         "",
     ].join("\n");
 }

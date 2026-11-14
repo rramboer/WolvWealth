@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { llmInstructions } from "./llmInstructions.mjs";
+import { resultsMarkdown } from "./resultsMarkdown.mjs";
 import {
     LOT_METHODS, TOP_N, defaultForm, formHasLots, formToRequest, newHolding, newLot, parsePastedRequest,
     requestToForm, today,
@@ -378,6 +379,8 @@ function Results({ result, priceDate }) {
 
     return (
         <>
+            <CopyResults result={result} priceDate={priceDate} />
+
             {result.data_warnings && <DataWarnings warnings={result.data_warnings} />}
 
             {result.metrics && <Metrics metrics={result.metrics} />}
@@ -425,6 +428,38 @@ function Results({ result, priceDate }) {
                 <p className="text-xs text-white/50 px-1">All prices are from {priceDate}.</p>
             )}
         </>
+    );
+}
+
+// Copy the result as markdown for an AI assistant to check against the account.
+function CopyResults({ result, priceDate }) {
+    const [copied, setCopied] = useState("");
+    const markdown = resultsMarkdown(result, { priceDate });
+
+    async function copy() {
+        try {
+            await copyText(markdown);
+            setCopied("Copied. Paste it into your AI assistant to check the trades against your account.");
+        } catch (e) {
+            setCopied("Couldn't copy. Open “Show what gets copied” and copy it by hand.");
+        }
+    }
+
+    return (
+        <div className={card + " space-y-3 border-cyan/40"}>
+            <div className="flex flex-wrap items-center gap-3">
+                <button type="button" className={outlineButton} onClick={copy}>
+                    Copy results for your AI
+                </button>
+                <span className="text-xs text-white/70">
+                    {copied || "Trades, lots and warnings as markdown, with instructions to confirm each order with you."}
+                </span>
+            </div>
+            <details className="text-xs text-white/60">
+                <summary className="cursor-pointer hover:text-white">Show what gets copied</summary>
+                <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-black/40 p-3 text-white/80 max-h-80 overflow-auto">{markdown}</pre>
+            </details>
+        </div>
     );
 }
 
