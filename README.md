@@ -46,6 +46,8 @@ Database commands: `./bin/db create`, `./bin/db reset` (erases everything), `./b
 
 **Optimize** (http://localhost:8000/optimizer/, after logging in) is a form over the API below. Enter cash and holdings, tick "Enter tax lots" on a holding to type its lots, choose the universe and constraints, and optionally paste current prices. The result shows the target portfolio, the trades in order with the lots each sell comes from, realized gains with wash-sale warnings, and a yellow "Check the price data" banner (with a CHECK DATA badge on the ticker) when a holding or pick has suspicious price history. Each run uses one optimization from your key.
 
+To fill the form from your brokerage account, click **Copy instructions for your AI** and paste them into an AI assistant that can see the account (for example, through an MCP connection). It replies with the request as JSON; click **Paste JSON**, paste the reply, and **Fill the form**. Check the form before optimizing: the assistant can only report what the account shows, and lots are only included when it can see each lot's date and cost. A ticker listed twice, or a value that isn't a number or date, is reported and the form is left as it was.
+
 ## Using the API
 
 ```bash
@@ -130,6 +132,8 @@ Then restart the server; prices are loaded at startup.
 ```bash
 python3 -m pytest
 ```
+
+`npm test` runs the page's JavaScript tests (no browser needed).
 
 Run from the repo root. The tests use a throwaway database, not `var/`, and don't download anything. They take about a minute, almost all of it one request over the full default universe.
 
