@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased (backtesting)
+
+### Fixed
+- Backtests no longer crash for start dates before a universe member's IPO: assets without history in the lookback window are skipped for that rebalance.
+- The period after the final rebalance is now included; the equity curve is marked to market on every trading day through the end date.
+- Rebalance dates use calendar steps instead of fixed day counts, so "monthly" no longer drifts.
+- The optimizer trades one day after its decision by default instead of at the close it just observed.
+- Share counts and cash are carried exactly between rebalances; unallocated weight stays as cash instead of disappearing.
+- `max_positions` re-optimizes over the kept assets, so `max_weight` still holds and the reported expected return / volatility / Sharpe describe the returned weights (affects the API as well).
+- Optimizer weights always sum to 1 after small weights are dropped.
+
+### Changed
+- Backtesting moved into the `wolvwealth.backtest` package (config, schedule, strategies, engine, metrics, service, cli); `backtest.py` is now a thin wrapper and the CLI is also installed as `wolvwealth-backtest`.
+- Universe / constraint validation shared between the API and the backtester (`wolvwealth/optimizer_params.py`); CSV loading shared via `wolvwealth/market_data.py`.
+
+### Added
+- Rolling lookback window, execution lag and transaction costs as backtest parameters.
+- Realized performance metrics (total return, CAGR, volatility, Sharpe, max drawdown, Calmar, turnover, costs).
+- Equal-weight and buy-and-hold (SPY) benchmarks run through the same engine, plus a survivorship-bias warning on every report.
+- `--json` report output for downstream consumers (the upcoming web UI).
+- Tests for the backtest engine, schedule, metrics, CLI and the optimizer-core fixes.
+
 ## Unreleased (modernize)
 
 ### Security

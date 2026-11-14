@@ -1,7 +1,5 @@
 """API Portfolio Optimization."""
 
-import re
-
 import cvxpy
 import flask
 from pypfopt import exceptions as pypfopt_exceptions
@@ -11,8 +9,7 @@ from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import check_api_key
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.optimizer_core import build_portfolio_output, compute_max_sharpe_portfolio
-
-TOP_N_PATTERN = re.compile(r"top(\d+)", re.IGNORECASE)
+from wolvwealth.optimizer_params import InvalidOptimizationInput, parse_constraints, resolve_universe
 
 
 class Optimization:
@@ -54,40 +51,13 @@ class Optimization:
         """Validate and apply the optional constraints object."""
         if "constraints" not in self.input_json:
             return
-        constraints = self.input_json["constraints"]
-        if not isinstance(constraints, dict):
-            raise InvalidUsage("Invalid constraints. constraints must be a dictionary.")
-        if "max_weight" in constraints:
-            if not isinstance(constraints["max_weight"], (int, float)):
-                raise InvalidUsage("Invalid max_weight. max_weight must be a number.")
-            if constraints["max_weight"] < 0.00 or constraints["max_weight"] > 1.00:
-                raise InvalidUsage("Invalid max_weight. max_weight must be greater than 0 and less than 1.")
-            self.max_weight = round(constraints["max_weight"], 2)
-        if "max_positions" in constraints:
-            if not isinstance(constraints["max_positions"], int):
-                raise InvalidUsage("Invalid max_positions. max_positions must be an integer.")
-            if constraints["max_positions"] < 0.00:
-                raise InvalidUsage("Invalid max_positions. max_positions must be greater than 0.")
-            self.max_positions = min(constraints["max_positions"], len(self.universe))
-            if self.max_positions * self.max_weight < 1:
-                raise InvalidUsage(
-                    "Infeasible. max_positions * max_weight must be greater than or equal to 1 for full allocation."
-                )
-        if "min_universal_weight" in constraints:
-            if not isinstance(constraints["min_universal_weight"], (int, float)):
-                raise InvalidUsage("Invalid min_universal_weight. min_universal_weight must be a number.")
-            if constraints["min_universal_weight"] < 0.00 or constraints["min_universal_weight"] > 1.00:
-                raise InvalidUsage(
-                    "Invalid min_universal_weight. min_universal_weight must be greater than 0 and less than 1."
-                )
-            self.min_universal_weight = round(constraints["min_universal_weight"], 2)
-        if self.min_universal_weight > self.max_weight:
-            raise InvalidUsage("Invalid constraints. min_weight must be less than max_weight.")
-        if self.min_universal_weight * len(self.universe) > 1:
-            raise InvalidUsage(
-                "Infeasible. min_universal_weight * universe size cannot exceed 1. "
-                "Lower min_universal_weight or shrink the universe."
-            )
+        try:
+            constraints = parse_constraints(self.input_json["constraints"], len(self.universe))
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
+        self.max_weight = constraints.max_weight
+        self.max_positions = constraints.max_positions
+        self.min_universal_weight = constraints.min_universal_weight
 
     def parse_exclude_metrics(self) -> None:
         """Validate the optional exclude_metrics flag."""
@@ -111,25 +81,13 @@ class Optimization:
         """Validate the optional universe list, expanding topN aliases."""
         if "universe" not in self.input_json:
             return
-        if not isinstance(self.input_json["universe"], list):
-            raise InvalidUsage("Invalid universe. universe must be a list.")
         requested = self.input_json["universe"]
-        if len(requested) == 0:  # If empty universe, use default
+        if isinstance(requested, list) and len(requested) == 0:  # If empty universe, use default
             return
-        universe = []
-        for entry in requested:
-            if not isinstance(entry, str):
-                raise InvalidUsage("Invalid universe. universe must be list of strings.")
-            ticker = entry.upper()
-            if ticker in self.state.TICKER_UNIVERSE:
-                universe.append(ticker)
-                continue
-            top_n = TOP_N_PATTERN.fullmatch(entry)
-            if top_n:  # e.g. "top50" expands to the 50 largest stocks by market cap
-                universe.extend(self.state.TICKER_UNIVERSE[: int(top_n.group(1))])
-                continue
-            raise InvalidUsage(f"Invalid symbol in universe: {entry}.")
-        self.universe = list(dict.fromkeys(universe))
+        try:
+            self.universe = resolve_universe(requested, self.state.TICKER_UNIVERSE)
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
 
     def parse_initial_holdings(self) -> None:
         """Validate the optional initial_holdings mapping."""

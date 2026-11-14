@@ -21,7 +21,7 @@ WolvWealth is a web application that democratizes high quality investment portfo
 - **Web dashboard** — register, log in, and manage your account and API key
 - **JSON API** — token-authenticated portfolio optimization with tiered usage limits
 - **Constraint options** — maximum positions, maximum weight per asset, minimum universal weight, custom ticker universes (`"top50"`, `"AAPL"`, ...)
-- **Backtesting utility** — replay the optimizer over historical data at any rebalance frequency
+- **Backtester** — replay the optimizer over historical data with lookback windows, execution lag, transaction costs, realized metrics and benchmarks
 
 ## Inspiration
 
@@ -170,11 +170,24 @@ Errors return `{"error": {"message": "...", "status_code": ...}}` with 400 (inva
 
 ## Backtesting
 
-`backtest.py` replays the optimizer over historical data, re-optimizing at a fixed frequency and reporting portfolio value at each rebalance:
+The `wolvwealth.backtest` package replays the optimizer over historical data and compares it against two benchmarks: an equal-weight portfolio of the same universe (the fair comparison) and buy-and-hold SPY. It is installed as the `wolvwealth-backtest` command; `python backtest.py` is an equivalent wrapper.
 
 ```bash
-uv run python backtest.py --start 2019-01-01 --cash 100000 --frequency monthly
+wolvwealth-backtest --start 2019-01-01 --frequency monthly --universe top50 --cost-bps 5
+wolvwealth-backtest --start 2015-01-01 --universe AAPL MSFT GOOGL --max-positions -1 --json > report.json
+wolvwealth-backtest --help
 ```
+
+How the simulation works:
+
+- **Rebalance schedule** uses calendar steps (`monthly` = same day next month), snapped forward to the next trading day.
+- **Lookback window** (`--lookback-days`, default 3 years) limits the history the optimizer sees. Only assets that already traded at the start of the window are eligible, so stocks that were not yet public are skipped instead of crashing the run.
+- **Execution lag** (`--execution-lag`, default 1 trading day): the optimizer decides on day *t*'s close and trades at day *t+1*'s close.
+- **Transaction costs** (`--cost-bps`) are charged on traded value and paid out of the portfolio.
+- **Accounting** carries exact share counts and cash; the equity curve is marked to market every trading day through the end date.
+- **Metrics** (total return, CAGR, volatility, Sharpe, max drawdown, Calmar, turnover, costs) are computed from the realized equity curve, not from the optimizer's forecasts.
+
+The ticker universe is a snapshot of today's listings ranked by today's market cap, so every backtest carries survivorship bias. The report says so; read the optimizer's results relative to the equal-weight benchmark rather than in absolute terms.
 
 ## Project Structure
 
@@ -185,7 +198,10 @@ uv run python backtest.py --start 2019-01-01 --cash 100000 --frequency monthly
 │   ├── templates/         Jinja templates (base.html + pages)
 │   ├── js/                React dashboard source (built by Vite)
 │   ├── static/            CSS/images + generated js/bundle.js, css/output.css
+│   ├── backtest/          Backtesting package (config, schedule, strategies, engine, metrics, service, cli)
 │   ├── optimizer_core.py  Shared max-Sharpe optimization core
+│   ├── optimizer_params.py Shared universe/constraint validation (API + backtester)
+│   ├── market_data.py     Loads the two market-data CSVs
 │   └── config.py          Environment-driven configuration
 ├── bin/                   setup / run / db / update_prices scripts
 ├── sql/                   schema.sql + development seed data
@@ -193,7 +209,7 @@ uv run python backtest.py --start 2019-01-01 --cash 100000 --frequency monthly
 ├── var/                   generated SQLite database (gitignored)
 ├── ticker_universe.csv    ticker universe, sorted by market cap
 ├── historical_prices.csv  bundled price history snapshot
-└── backtest.py            backtesting CLI
+└── backtest.py            thin wrapper around wolvwealth.backtest.cli
 ```
 
 Build pipeline: Tailwind → `wolvwealth/static/css/output.css`; Vite → `wolvwealth/static/js/bundle.js`. Both are generated (gitignored) — run `npm run build` (or `./bin/run dev`, which watches) before serving.

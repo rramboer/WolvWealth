@@ -24,6 +24,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/rramboer/WolvWealth"
 
+[project.scripts]
+wolvwealth-backtest = "wolvwealth.backtest.cli:main"
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.0",

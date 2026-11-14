@@ -1,17 +1,10 @@
 """Global state of application."""
 
-import csv
-import os
-import pathlib
-
 import pandas as pd
 
-DEFAULT_DATA_DIR = pathlib.Path(__file__).resolve().parents[2]
+from wolvwealth.market_data import data_dir, load_historical_prices, load_ticker_universe
 
-
-def data_dir() -> pathlib.Path:
-    """Directory containing ticker_universe.csv and historical_prices.csv."""
-    return pathlib.Path(os.environ.get("WOLVWEALTH_DATA_DIR", DEFAULT_DATA_DIR))
+__all__ = ["ApplicationState", "data_dir"]
 
 
 class ApplicationState:
@@ -29,21 +22,8 @@ class ApplicationState:
         """Initialize ONLY ON FIRST INSTANTIATION."""
         if not hasattr(self, "initialized"):
             self.initialized: bool = True
-            self.HISTORICAL_PRICES: pd.DataFrame = pd.DataFrame()
-            self.TICKER_UNIVERSE: list = []
-            self.load_ticker_universe()
-            self.load_historical_prices()
-
-    def load_ticker_universe(self) -> None:
-        """Load Ticker Universe from CSV."""
-        with open(data_dir() / "ticker_universe.csv", newline="") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                self.TICKER_UNIVERSE.append(row[0])
-
-    def load_historical_prices(self) -> None:
-        """Load historical prices of tickers in universe into DataFrame."""
-        self.HISTORICAL_PRICES = pd.read_csv(data_dir() / "historical_prices.csv", parse_dates=True, index_col="Date")
+            self.TICKER_UNIVERSE: list[str] = load_ticker_universe()
+            self.HISTORICAL_PRICES: pd.DataFrame = load_historical_prices()
 
     def fetch_ticker_price(self, ticker: str) -> float:
         """Return most recent known stock price of ticker."""
