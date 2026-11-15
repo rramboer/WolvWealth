@@ -20,7 +20,7 @@ def api_default():
             {
                 "/api/": "API Usage Info",
                 "/api/optimize/": "Optimize Portfolio",
-                "/api/backtest/": "Backtest the Optimizer",
+                "/api/backtest/": "Start a Backtest Job",
                 "/api/account/": "View Account Details",
                 "/api/db/status/": "Test Database Connection",
                 "/api/db/dump/": "Dump Database",
@@ -35,7 +35,7 @@ def api_default():
         {
             "/api/": "API Usage Info",
             "/api/optimize/": "Optimize Portfolio",
-            "/api/backtest/": "Backtest the Optimizer",
+            "/api/backtest/": "Start a Backtest Job",
             "/api/account/": "View Account Details",
         }
     )

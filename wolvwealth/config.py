@@ -34,5 +34,12 @@ BACKTEST_MAX_REBALANCES = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_REBALANCES
 BACKTEST_MAX_UNIVERSE_SIZE = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE", 100))
 BACKTEST_CACHE_SIZE = int(os.environ.get("WOLVWEALTH_BACKTEST_CACHE_SIZE", 64))
 
+# Backtest jobs run on a background thread pool and are polled for progress.
+# Jobs live in process memory: keep GUNICORN_PROCESSES=1 (or add sticky routing).
+BACKTEST_MAX_WORKERS = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_WORKERS", 2))
+BACKTEST_MAX_PENDING_JOBS = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_PENDING_JOBS", 20))
+BACKTEST_MAX_JOBS_PER_USER = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_JOBS_PER_USER", 2))
+BACKTEST_JOB_TTL_SECONDS = int(os.environ.get("WOLVWEALTH_BACKTEST_JOB_TTL_SECONDS", 900))
+
 # SQLite database location. Build it with `./bin/db create`.
 DATABASE_FILENAME = pathlib.Path(os.environ.get("WOLVWEALTH_DATABASE", WOLVWEALTH_ROOT / "var" / "wolvwealth.sqlite3"))

@@ -18,6 +18,8 @@ Accounting rules
   `end`, including the days after the final rebalance.
 """
 
+from collections.abc import Callable
+
 import pandas as pd
 
 from wolvwealth.backtest.config import BacktestConfig
@@ -29,8 +31,20 @@ MIN_WINDOW_ROWS = 20  # Fewer observations than this and the window is "insuffic
 MAX_MISSING_FRACTION = 0.1  # Assets missing more than this share of the window's prices are skipped.
 
 
-def run_backtest(prices: pd.DataFrame, config: BacktestConfig, strategy: Strategy) -> BacktestResult:
-    """Simulate `strategy` on `prices` according to `config`."""
+StepCallback = Callable[[int, int], None]  # (decisions completed, total decisions)
+
+
+def run_backtest(
+    prices: pd.DataFrame,
+    config: BacktestConfig,
+    strategy: Strategy,
+    on_step: StepCallback | None = None,
+) -> BacktestResult:
+    """Simulate `strategy` on `prices` according to `config`.
+
+    `on_step(completed, total)` is called before each rebalance decision and
+    once more when the simulation finishes, so callers can report progress.
+    """
     missing = [ticker for ticker in config.universe if ticker not in prices.columns]
     if missing:
         raise ValueError(f"No price data available for: {', '.join(sorted(missing))}.")
@@ -52,7 +66,10 @@ def run_backtest(prices: pd.DataFrame, config: BacktestConfig, strategy: Strateg
     warnings: list[str] = []
     cursor = 0  # First trading-day position whose equity has not been written yet.
 
-    for decision in rebalance_dates(trading_days, config.frequency):
+    decisions = rebalance_dates(trading_days, config.frequency)
+    for completed, decision in enumerate(decisions):
+        if on_step is not None:
+            on_step(completed, len(decisions))
         execution_position = trading_days.get_loc(decision) + config.execution_lag
         if execution_position >= len(trading_days):
             break
@@ -90,6 +107,8 @@ def run_backtest(prices: pd.DataFrame, config: BacktestConfig, strategy: Strateg
         )
 
     _write_equity(equity, valuation, ledger, cursor, len(trading_days))
+    if on_step is not None:
+        on_step(len(decisions), len(decisions))
     if not events:
         warnings.append("No rebalance was executed; the portfolio stayed in cash.")
     return BacktestResult(strategy=strategy.name, equity=equity, rebalances=events, warnings=warnings)

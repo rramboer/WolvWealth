@@ -337,6 +337,20 @@ class TestServiceAndCli:
         assert data["config"]["universe"] == ["AAPL", "MSFT"]
         assert "equity" in data["result"]
 
+    def test_terminal_progress_bar(self):
+        import io
+
+        from wolvwealth.backtest.cli import TerminalProgressBar
+        from wolvwealth.backtest.progress import Progress
+
+        stream = io.StringIO()
+        bar = TerminalProgressBar(stream)
+        bar(Progress("optimizer", 3, 6, "Optimizing rebalance 4 of 5"))
+        assert "#" * 15 + "-" * 15 in stream.getvalue()
+        assert "50%" in stream.getvalue()
+        bar.close()
+        assert stream.getvalue().endswith("\r")
+
     def test_cli_rejects_bad_ticker(self, capsys):
         code = main(["--universe", "NOPE"])
         assert code == 2

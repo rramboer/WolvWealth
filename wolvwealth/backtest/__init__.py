@@ -7,8 +7,9 @@ Layers (inner to outer):
   engine depends only on the ``Strategy`` protocol; the optimizer is one
   strategy, the benchmarks are others.
 * ``service`` - runs the optimizer with its benchmarks and produces a report.
-* ``request`` / ``cache`` - validate untrusted payloads against work limits;
-  memoize reports. Used by the JSON API (``wolvwealth.api.backtest``).
+* ``request`` / ``cache`` / ``jobs`` - validate untrusted payloads against
+  work limits, memoize reports, and run them on a background pool with
+  pollable ``progress``. Used by the JSON API (``wolvwealth.api.backtest``).
 * ``cli`` - command-line transport (``wolvwealth-backtest``).
 
 Nothing in this package imports Flask or the application singleton.

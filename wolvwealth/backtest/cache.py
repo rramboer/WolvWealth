@@ -24,6 +24,17 @@ class ReportCache:
         self._entries: collections.OrderedDict[tuple, BacktestReport] = collections.OrderedDict()
         self._lock = threading.Lock()
 
+    def peek(
+        self, prices: pd.DataFrame, config: BacktestConfig, benchmark_tickers: tuple[str, ...]
+    ) -> BacktestReport | None:
+        """Return the cached report, or None, without computing anything."""
+        key = (config, benchmark_tickers, _fingerprint(prices))
+        with self._lock:
+            if key in self._entries:
+                self._entries.move_to_end(key)
+                return self._entries[key]
+            return None
+
     def get_or_compute(
         self,
         prices: pd.DataFrame,

@@ -81,6 +81,10 @@ All configuration is environment-driven (see [.env.example](.env.example)):
 | `WOLVWEALTH_BACKTEST_MAX_REBALANCES` | `120`                 | Most rebalances one `/api/backtest/` request may run |
 | `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE` | `100`              | Largest universe one `/api/backtest/` request may use |
 | `WOLVWEALTH_BACKTEST_CACHE_SIZE` | `64`                      | Backtest reports kept in the in-memory cache         |
+| `WOLVWEALTH_BACKTEST_MAX_WORKERS` | `2`                      | Backtest jobs that run at the same time              |
+| `WOLVWEALTH_BACKTEST_MAX_PENDING_JOBS` | `20`                | Queued + running jobs before new ones get 503        |
+| `WOLVWEALTH_BACKTEST_MAX_JOBS_PER_USER` | `2`                | Jobs one account may have in flight before 429       |
+| `WOLVWEALTH_BACKTEST_JOB_TTL_SECONDS` | `900`                | How long a finished job stays pollable               |
 
 Generate a production secret key with:
 
@@ -124,7 +128,7 @@ All endpoints accept JSON over POST and authenticate with an API token in the `A
 | ---------------- | ------------------------------------------------------ |
 | `/api/`          | Usage info (GET or POST, no auth)                      |
 | `/api/optimize/` | Optimize a portfolio (consumes one use per call)       |
-| `/api/backtest/` | Backtest the optimizer (consumes one use per call)     |
+| `/api/backtest/` | Start a backtest job (one use); poll `/api/backtest/<id>/` |
 | `/api/account/`  | Account details for the token's owner                  |
 | `/api/admin/*`, `/api/db/*` | Administration (admin token required)       |
 
@@ -172,9 +176,14 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
 
 Errors return `{"error": {"message": "...", "status_code": ...}}` with 400 (invalid input), 401 (missing token), or 403 (invalid/expired/exhausted token).
 
-### `POST /api/backtest/`
+### `POST /api/backtest/` and `GET /api/backtest/<job_id>/`
 
-Runs the simulation described under [Backtesting](#backtesting) and returns the optimizer's result next to its benchmarks. Authenticate with an API key as above, or from the browser with the logged-in session cookie plus an `X-CSRF-Token` header (the token the templates expose). Either way one use is charged per request; malformed requests are free. Identical requests are served from an in-memory cache (`"cached": true`).
+Runs the simulation described under [Backtesting](#backtesting) as a background job and returns the optimizer's result next to its benchmarks. A 50-stock monthly backtest takes roughly 0.6–1 s per rebalance, so the POST returns immediately with a job id and the client polls for progress.
+
+1. `POST /api/backtest/` validates the request, charges one use, and returns `202 Accepted` with a job snapshot and a `Location` / `status_url` to poll. If an identical request is already cached, it returns `200` with the finished job (`"cached": true`) right away.
+2. `GET /api/backtest/<job_id>/` (about once a second) returns the job's `status` (`queued`, `running`, `succeeded`, `failed`), `progress` (`completed`, `total`, `fraction`, `message`), `elapsed_seconds` and `estimated_seconds_remaining`. When `status` is `succeeded` the snapshot includes the full `report`; when `failed`, an `error` message. Polling is free.
+
+Authenticate with an API key as above, or from the browser with the logged-in session cookie; starting a job from a session also requires an `X-CSRF-Token` header (the token the templates expose). Jobs are visible only to the account that started them and expire 15 minutes after finishing. Malformed requests cost nothing, and neither do jobs refused for capacity: `429` when you already have `WOLVWEALTH_BACKTEST_MAX_JOBS_PER_USER` jobs running, `503` when the server queue is full.
 
 Request fields (`start` required, everything else optional):
 
@@ -187,19 +196,36 @@ Request fields (`start` required, everything else optional):
 - `benchmarks` (list of tickers, default `["SPY"]`) — buy-and-hold comparisons; an equal-weight portfolio of the universe is always included
 - `include_equity` (bool, default true) — set false to omit the daily equity curves
 
-Requests that would need more than `WOLVWEALTH_BACKTEST_MAX_REBALANCES` rebalances or more than `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE` tickers are rejected with 400 (a 50-stock monthly run takes roughly a second per rebalance).
+Requests that would need more than `WOLVWEALTH_BACKTEST_MAX_REBALANCES` rebalances or more than `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE` tickers are rejected with 400.
 
 ```bash
 curl -s -X POST http://localhost:8000/api/backtest/ \
   -H "Authorization: insecure-dev-user-token" \
   -H "Content-Type: application/json" \
   -d '{"start": "2021-01-01", "frequency": "monthly", "universe": ["top50"], "transaction_cost_bps": 5}'
+# -> 202 {"job_id": "5gh1DgAaDsY7LgR7", "status": "queued", "status_url": "/api/backtest/5gh1DgAaDsY7LgR7/", ...}
+
+curl -s http://localhost:8000/api/backtest/5gh1DgAaDsY7LgR7/ -H "Authorization: insecure-dev-user-token"
 ```
 
-Response shape (equity curves abbreviated):
+While running:
 
 ```json
 {
+  "job_id": "5gh1DgAaDsY7LgR7",
+  "status": "running",
+  "progress": { "phase": "optimizer", "completed": 16, "total": 39, "fraction": 0.4103, "message": "Optimizing rebalance 17 of 37" },
+  "elapsed_seconds": 8.1,
+  "estimated_seconds_remaining": 11.6,
+  "cached": false,
+  "status_url": "/api/backtest/5gh1DgAaDsY7LgR7/"
+}
+```
+
+When finished, `status` is `succeeded` and `report` holds the result (equity curves abbreviated):
+
+```json
+"report": {
   "config": { "start": "2021-01-01", "end": "2024-01-30", "frequency": "monthly", "...": "..." },
   "result": {
     "strategy": "max_sharpe",
@@ -227,10 +253,11 @@ Response shape (equity curves abbreviated):
     "equal_weight": { "result": { "...": "..." }, "metrics": { "...": "..." } },
     "SPY": { "result": { "...": "..." }, "metrics": { "...": "..." } }
   },
-  "warnings": ["Survivorship bias: ..."],
-  "cached": false
+  "warnings": ["Survivorship bias: ..."]
 }
 ```
+
+Jobs are held in the memory of the process that accepted them, so polls must reach that process: keep `GUNICORN_PROCESSES=1` (the default) or put sticky routing in front of multiple workers.
 
 ## Backtesting
 
@@ -262,7 +289,7 @@ The ticker universe is a snapshot of today's listings ranked by today's market c
 │   ├── templates/         Jinja templates (base.html + pages)
 │   ├── js/                React dashboard source (built by Vite)
 │   ├── static/            CSS/images + generated js/bundle.js, css/output.css
-│   ├── backtest/          Backtesting package (config, schedule, strategies, engine, metrics, service, request, cache, cli)
+│   ├── backtest/          Backtesting package (config, schedule, strategies, engine, metrics, service, request, cache, jobs, cli)
 │   ├── optimizer_core.py  Shared max-Sharpe optimization core
 │   ├── optimizer_params.py Shared universe/constraint validation (API + backtester)
 │   ├── market_data.py     Loads the two market-data CSVs

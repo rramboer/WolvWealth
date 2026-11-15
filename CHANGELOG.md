@@ -21,6 +21,8 @@
 - Equal-weight and buy-and-hold (SPY) benchmarks run through the same engine, plus a survivorship-bias warning on every report.
 - `--json` report output for downstream consumers (the upcoming web UI).
 - `POST /api/backtest/`: runs a backtest with benchmarks over the JSON API. Accepts an API key or a logged-in session with an `X-CSRF-Token` header, charges one use per request (malformed requests are free), caps work per request (`WOLVWEALTH_BACKTEST_MAX_REBALANCES`, `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE`) and serves repeated requests from an in-memory cache.
+- Backtests run as background jobs with progress: `POST /api/backtest/` returns a job id immediately (202), and `GET /api/backtest/<job_id>/` reports status, rebalance-level progress, elapsed time and an ETA, then the report. Jobs are private to their owner, expire 15 minutes after finishing, and are capped per user (429) and server-wide (503) before anything is charged.
+- `wolvwealth-backtest` shows a progress bar on stderr when run in a terminal (`--quiet` to disable).
 - Tests for the backtest engine, schedule, metrics, CLI, request parsing, cache, endpoint auth/billing and the optimizer-core fixes.
 
 ## Unreleased (modernize)

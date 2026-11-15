@@ -13,6 +13,7 @@ import pandas as pd
 
 from wolvwealth.backtest.config import BacktestConfig, Frequency
 from wolvwealth.backtest.metrics import PerformanceMetrics
+from wolvwealth.backtest.progress import Progress
 from wolvwealth.backtest.service import BacktestReport, run_report
 from wolvwealth.market_data import load_historical_prices, load_ticker_universe
 from wolvwealth.optimizer_params import Constraints, InvalidOptimizationInput, resolve_universe
@@ -44,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--benchmark", nargs="*", default=["SPY"], help="buy-and-hold benchmark tickers")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     parser.add_argument("--no-equity", action="store_true", help="omit the daily equity curves from --json output")
+    parser.add_argument("--quiet", action="store_true", help="no progress bar on stderr")
     return parser
 
 
@@ -119,13 +121,40 @@ def _metrics_table(columns: dict[str, PerformanceMetrics]) -> str:
     return "\n".join(lines)
 
 
+class TerminalProgressBar:
+    """Redraws a one-line progress bar on stderr."""
+
+    WIDTH = 30
+
+    def __init__(self, stream=sys.stderr) -> None:
+        """Draw to `stream`."""
+        self.stream = stream
+
+    def __call__(self, progress: Progress) -> None:
+        """Redraw for the latest progress."""
+        filled = int(self.WIDTH * progress.fraction)
+        bar = "#" * filled + "-" * (self.WIDTH - filled)
+        self.stream.write(f"\r[{bar}] {progress.fraction:4.0%}  {progress.message:<40}")
+        self.stream.flush()
+
+    def close(self) -> None:
+        """Erase the bar so the report starts on a clean line."""
+        self.stream.write("\r" + " " * (self.WIDTH + 50) + "\r")
+        self.stream.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point."""
     args = build_parser().parse_args(argv)
     prices = load_historical_prices()
     try:
         config = config_from_args(args, prices, load_ticker_universe())
-        report = run_report(prices, config, benchmark_tickers=tuple(args.benchmark))
+        progress_bar = TerminalProgressBar() if sys.stderr.isatty() and not args.quiet else None
+        try:
+            report = run_report(prices, config, benchmark_tickers=tuple(args.benchmark), on_progress=progress_bar)
+        finally:
+            if progress_bar is not None:
+                progress_bar.close()
     except (InvalidOptimizationInput, ValueError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 2
