@@ -3,6 +3,7 @@
 import dataclasses
 import hmac
 import secrets
+from collections.abc import Callable
 
 import bcrypt
 import flask
@@ -85,6 +86,40 @@ def generate_api_key(owner: str, tier: TierSpec) -> str:
         (owner, api_key, tier.expiration, tier.uses),
     )
     return api_key
+
+
+@dataclasses.dataclass(frozen=True)
+class Caller:
+    """An authenticated account and a way to bill it one use."""
+
+    owner: str
+    charge: Callable[[], None]
+
+
+def authenticate(require_csrf: bool = True) -> Caller:
+    """Identify the caller by API key or logged-in session, without charging anything yet.
+
+    An Authorization header is tried first and must be a valid token. Without
+    one, the browser session is used; state-changing requests from a session
+    must also carry the session's CSRF token in an X-CSRF-Token header.
+    """
+    api_key = flask.request.headers.get("Authorization")
+    if api_key is not None:
+        connection = wolvwealth.model.get_db()
+        token_row = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,)).fetchone()
+        if token_row is None:
+            raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
+        return Caller(owner=token_row["owner"], charge=lambda: consume_token_use(token_row))
+
+    username = flask.session.get("username")
+    if username is None or not check_user_exists(username):
+        raise InvalidUsage("No API key provided.", status_code=401)
+    if require_csrf:
+        expected = flask.session.get("csrf_token", "")
+        submitted = flask.request.headers.get("X-CSRF-Token", "")
+        if not expected or not hmac.compare_digest(expected.encode(), submitted.encode()):
+            raise InvalidUsage("Authorization Error. Missing or invalid CSRF token.", status_code=403)
+    return Caller(owner=username, charge=lambda: consume_session_use(username))
 
 
 def check_api_key() -> bool:

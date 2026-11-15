@@ -46,3 +46,13 @@ def test_account_page_shows_user_details(client):
     assert response.status_code == 200
     assert b"devuser" in response.data
     assert b"insecure-dev-user-token" in response.data
+
+
+def test_optimizer_page_exposes_app_data(client):
+    login(client)
+    response = client.get("/optimizer/")
+    html = response.data.decode()
+    assert 'data-csrf-token="' in html
+    assert 'data-last-price-date="2024-' in html or 'data-last-price-date="20' in html
+    assert 'data-uses-remaining="' in html
+    assert 'data-max-rebalances="120"' in html

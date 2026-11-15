@@ -191,3 +191,25 @@ def test_optimize_expired_token_rejected(app, client):
     connection.close()
     response = optimize(client, {"initial_cash": 1000})
     assert response.status_code == 403
+
+
+def test_optimize_accepts_logged_in_session_with_csrf_header(client):
+    from tests.conftest import install_csrf_token, login
+
+    login(client)
+    token = install_csrf_token(client)
+    response = client.post(
+        "/api/optimize/", json={"initial_cash": 1000, "universe": ["top3"]}, headers={"X-CSRF-Token": token}
+    )
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["optimized_portfolio"]
+
+
+def test_optimize_session_without_csrf_header_rejected(client):
+    from tests.conftest import install_csrf_token, login
+
+    login(client)
+    install_csrf_token(client)
+    response = client.post("/api/optimize/", json={"initial_cash": 1000})
+    assert response.status_code == 403
+    assert "CSRF" in response.get_json()["error"]["message"]

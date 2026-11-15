@@ -9,13 +9,20 @@
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&display=swap" rel="stylesheet">
 {% endblock %}
 
-{% block body_class %}bg-gray font-sans{% endblock %}
+{% block body_class %}bg-gray-dark font-sans{% endblock %}
 
 {% block header %}{% include "_header.html" %}{% endblock %}
 
 {% block content %}
-<div id="reactEntry" class="w-full h-full">
-    <!-- This div is used by React to render the app -->
+<div id="reactEntry" class="w-full min-h-screen pt-24 pb-8"
+     data-csrf-token="{{ csrf_token() }}"
+     data-first-price-date="{{ app_data.first_price_date }}"
+     data-last-price-date="{{ app_data.last_price_date }}"
+     data-universe-size="{{ app_data.universe_size }}"
+     data-uses-remaining="{{ app_data.uses_remaining }}"
+     data-max-rebalances="{{ app_data.max_rebalances }}"
+     data-max-universe-size="{{ app_data.max_universe_size }}">
+    <!-- React mounts here (wolvwealth/js/main.jsx) -->
 </div>
 {% endblock %}
 

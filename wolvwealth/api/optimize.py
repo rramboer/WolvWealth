@@ -6,7 +6,7 @@ from pypfopt import exceptions as pypfopt_exceptions
 
 import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
-from wolvwealth.api.auth import check_api_key
+from wolvwealth.api.auth import authenticate
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.optimizer_core import build_portfolio_output, compute_max_sharpe_portfolio
 from wolvwealth.optimizer_params import InvalidOptimizationInput, parse_constraints, resolve_universe
@@ -17,7 +17,7 @@ class Optimization:
 
     def __init__(self) -> None:
         """Initialize optimization."""
-        check_api_key()
+        authenticate(require_csrf=True).charge()
         self.state = ApplicationState()
         self.set_defaults()
         self.parse_input()

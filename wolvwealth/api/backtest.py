@@ -5,20 +5,16 @@
 
 Thin transport layer: authentication and billing live here; validation,
 caching, job execution and the simulation live in wolvwealth.backtest.
-Accepts either an API key (Authorization header, like /api/optimize/) or a
-logged-in browser session. Starting a job from a session also requires an
+Accepts either an API key or a logged-in browser session (see
+wolvwealth.api.auth.authenticate). Starting a job from a session requires an
 X-CSRF-Token header; polling does not, because it changes nothing.
 """
-
-import dataclasses
-import hmac
-from collections.abc import Callable
 
 import flask
 
 import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
-from wolvwealth.api.auth import check_user_exists, consume_session_use, consume_token_use
+from wolvwealth.api.auth import authenticate
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.backtest.cache import ReportCache
 from wolvwealth.backtest.jobs import JobLimitError, JobManager
@@ -36,41 +32,12 @@ job_manager = JobManager(
 )
 
 
-@dataclasses.dataclass(frozen=True)
-class Caller:
-    """Who is asking, and how to bill them one use."""
-
-    owner: str
-    charge: Callable[[], None]
-
-
 def limits_from_config() -> BacktestLimits:
     """Request limits from the Flask configuration."""
     return BacktestLimits(
         max_rebalances=_config["BACKTEST_MAX_REBALANCES"],
         max_universe_size=_config["BACKTEST_MAX_UNIVERSE_SIZE"],
     )
-
-
-def identify_caller(require_csrf: bool) -> Caller:
-    """Authenticate via API key or session without charging anything yet."""
-    api_key = flask.request.headers.get("Authorization")
-    if api_key is not None:
-        connection = wolvwealth.model.get_db()
-        token_row = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,)).fetchone()
-        if token_row is None:
-            raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
-        return Caller(owner=token_row["owner"], charge=lambda: consume_token_use(token_row))
-
-    username = flask.session.get("username")
-    if username is None or not check_user_exists(username):
-        raise InvalidUsage("No API key provided.", status_code=401)
-    if require_csrf:
-        expected = flask.session.get("csrf_token", "")
-        submitted = flask.request.headers.get("X-CSRF-Token", "")
-        if not expected or not hmac.compare_digest(expected.encode(), submitted.encode()):
-            raise InvalidUsage("Authorization Error. Missing or invalid CSRF token.", status_code=403)
-    return Caller(owner=username, charge=lambda: consume_session_use(username))
 
 
 def job_response(snapshot: dict) -> flask.Response:
@@ -100,7 +67,7 @@ def backtest_start():
 
     # Validation happens first so malformed requests cost nothing; the charge
     # runs inside the job manager's capacity check so refused jobs cost nothing.
-    caller = identify_caller(require_csrf=True)
+    caller = authenticate(require_csrf=True)
     config, benchmarks = request.config, request.benchmark_tickers
     try:
         cached_report = report_cache.peek(prices, config, benchmarks)
@@ -127,7 +94,7 @@ def backtest_start():
 @wolvwealth.app.route("/api/backtest/<job_id>/", methods=["GET"])
 def backtest_status(job_id: str):
     """Report a job's progress, and its result once finished. Free; never charges."""
-    caller = identify_caller(require_csrf=False)
+    caller = authenticate(require_csrf=False)
     snapshot = job_manager.get(job_id, caller.owner)
     if snapshot is None:
         raise InvalidUsage("Backtest job not found. It may have expired.", status_code=404)

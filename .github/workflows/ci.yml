@@ -44,5 +44,8 @@ jobs:
       - name: Lint (eslint)
         run: npm run lint
 
+      - name: Tests (vitest)
+        run: npm test
+
       - name: Build (tailwind + vite)
         run: npm run build

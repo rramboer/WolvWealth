@@ -23,6 +23,9 @@
 - `POST /api/backtest/`: runs a backtest with benchmarks over the JSON API. Accepts an API key or a logged-in session with an `X-CSRF-Token` header, charges one use per request (malformed requests are free), caps work per request (`WOLVWEALTH_BACKTEST_MAX_REBALANCES`, `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE`) and serves repeated requests from an in-memory cache.
 - Backtests run as background jobs with progress: `POST /api/backtest/` returns a job id immediately (202), and `GET /api/backtest/<job_id>/` reports status, rebalance-level progress, elapsed time and an ETA, then the report. Jobs are private to their owner, expire 15 minutes after finishing, and are capped per user (429) and server-wide (503) before anything is charged.
 - `wolvwealth-backtest` shows a progress bar on stderr when run in a terminal (`--quiet` to disable).
+- Web dashboard on `/optimizer/` (previously an empty page): an Optimize tab and a Backtest tab with a live progress bar and ETA, growth and drawdown charts (recharts), realized-metrics table versus benchmarks, and a rebalance log. The form estimates rebalances and run time before submitting.
+- `/api/optimize/` accepts a logged-in session with an `X-CSRF-Token` header in addition to an API key (shared `authenticate()` helper), so the dashboard needs no API key in the page.
+- Vitest unit tests for the frontend (`npm test`, also in CI); `react-router-dom` removed (single page, no routing).
 - Tests for the backtest engine, schedule, metrics, CLI, request parsing, cache, endpoint auth/billing and the optimizer-core fixes.
 
 ## Unreleased (modernize)

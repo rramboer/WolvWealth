@@ -5,7 +5,7 @@ import globals from "globals";
 
 export default [
   {
-    ignores: ["node_modules/**", "wolvwealth/static/**", ".venv/**", "var/**"],
+    ignores: ["node_modules/**", "wolvwealth/static/**", ".venv/**", "var/**", "coverage/**"],
   },
   js.configs.recommended,
   {

@@ -1,14 +1,10 @@
-import { BrowserRouter as Router, Route, Routes } from "react-router-dom";
-import Optimization from "./pages/optimizer";
+import PropTypes from "prop-types";
+import OptimizerPage from "./pages/optimizer";
 
-const App = () => {
-  return (
-    <Router>
-      <Routes>
-        <Route path="/optimizer/" element={<Optimization />} />
-      </Routes>
-    </Router>
-  );
+const App = ({ config }) => <OptimizerPage config={config} />;
+
+App.propTypes = {
+  config: PropTypes.object.isRequired,
 };
 
 export default App;

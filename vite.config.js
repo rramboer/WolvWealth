@@ -5,6 +5,9 @@ import react from "@vitejs/plugin-react";
 // which the Flask optimizer template loads with <script type="module">.
 export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  test: {
+    include: ["wolvwealth/js/**/*.test.{js,jsx}"],
+  },
   build: {
     outDir: "wolvwealth/static/js",
     emptyOutDir: false, // static/js also holds the hand-written site.js

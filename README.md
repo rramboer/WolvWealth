@@ -18,7 +18,7 @@ WolvWealth is a web application that democratizes high quality investment portfo
 
 ### Features
 
-- **Web dashboard** — register, log in, and manage your account and API key
+- **Web dashboard** — register, log in, manage your account and API key, and use the optimizer and backtester from the browser with live progress
 - **JSON API** — token-authenticated portfolio optimization with tiered usage limits
 - **Constraint options** — maximum positions, maximum weight per asset, minimum universal weight, custom ticker universes (`"top50"`, `"AAPL"`, ...)
 - **Backtester** — replay the optimizer over historical data with lookback windows, execution lag, transaction costs, realized metrics and benchmarks
@@ -60,6 +60,7 @@ Then open http://localhost:8000. The development database seeds two fake account
 | `./bin/update_prices`    | Refresh `historical_prices.csv` from Yahoo Finance (network)        |
 | `npm run build`          | Production build: Tailwind CSS + Vite JS bundle                     |
 | `npm run lint`           | ESLint over the React sources                                       |
+| `npm test`               | Vitest unit tests for the React sources                             |
 | `uv run pytest`          | Run the Python test suite                                           |
 | `uv run ruff check .`    | Lint Python code                                                    |
 | `uv run ruff format .`   | Format Python code                                                  |
@@ -259,6 +260,15 @@ When finished, `status` is `succeeded` and `report` holds the result (equity cur
 
 Jobs are held in the memory of the process that accepted them, so polls must reach that process: keep `GUNICORN_PROCESSES=1` (the default) or put sticky routing in front of multiple workers.
 
+## Web dashboard
+
+`/optimizer/` (login required) is a React app with two tabs that call the JSON API with the browser session:
+
+- **Optimize** — amount, universe and constraints in; allocation table and the optimizer's expected return / volatility / Sharpe out.
+- **Backtest** — date range, frequency, universe, lookback, execution lag, costs and constraints in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
+
+Each run costs one use, shown in the page header. The source is in `wolvwealth/js/` (`lib/` pure helpers, `hooks/useBacktestJob.js` for the job lifecycle, `components/` presentational pieces, `features/` the two tabs) and is built by Vite into `static/js/bundle.js`.
+
 ## Backtesting
 
 The `wolvwealth.backtest` package replays the optimizer over historical data and compares it against two benchmarks: an equal-weight portfolio of the same universe (the fair comparison) and buy-and-hold SPY. It is installed as the `wolvwealth-backtest` command; `python backtest.py` is an equivalent wrapper.
@@ -287,7 +297,7 @@ The ticker universe is a snapshot of today's listings ranked by today's market c
 │   ├── api/               JSON API (optimize, backtest, auth, admin) + in-memory market data
 │   ├── views/             Server-rendered pages (login, account, optimizer, ...)
 │   ├── templates/         Jinja templates (base.html + pages)
-│   ├── js/                React dashboard source (built by Vite)
+│   ├── js/                React dashboard source: lib/, hooks/, components/, features/, __tests__/ (built by Vite)
 │   ├── static/            CSS/images + generated js/bundle.js, css/output.css
 │   ├── backtest/          Backtesting package (config, schedule, strategies, engine, metrics, service, request, cache, jobs, cli)
 │   ├── optimizer_core.py  Shared max-Sharpe optimization core
