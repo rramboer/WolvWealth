@@ -27,6 +27,9 @@ class BacktestLimits:
     max_benchmarks: int = 3
 
 
+DEFAULT_LIMITS = BacktestLimits()  # Frozen, so one shared instance is safe as a default.
+
+
 @dataclasses.dataclass(frozen=True)
 class BacktestRequest:
     """A validated request: what to run and how to shape the response."""
@@ -41,7 +44,7 @@ def parse_backtest_request(
     *,
     ticker_universe: list[str],
     prices: pd.DataFrame,
-    limits: BacktestLimits = BacktestLimits(),
+    limits: BacktestLimits = DEFAULT_LIMITS,
 ) -> BacktestRequest:
     """Validate `payload` and enforce `limits`.
 
