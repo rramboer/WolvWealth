@@ -130,16 +130,39 @@ def parse_constraints(raw: dict, universe_size: int) -> Constraints:
     return constraints
 
 
-def check_feasibility(constraints: Constraints, universe_size: int) -> None:
-    """Reject constraint combinations that can never produce a fully allocated portfolio."""
-    if constraints.max_positions != -1 and constraints.max_positions * constraints.max_weight < 1:
-        raise InvalidOptimizationInput(
-            "Infeasible. max_positions * max_weight must be greater than or equal to 1 for full allocation."
+FEASIBILITY_TOLERANCE = 1e-9
+
+
+def feasibility_problem(constraints: Constraints, universe_size: int) -> str | None:
+    """Why these constraints can never fully invest `universe_size` assets, or None if they can.
+
+    A portfolio holds at most `positions` assets (the universe, or fewer when
+    max_positions caps it), each at most max_weight, so it can invest at most
+    positions * max_weight of the cash. Below 100% the solver has no solution.
+    """
+    if universe_size < 1:
+        return "Infeasible. The universe has no assets."
+    capped = constraints.max_positions != -1 and constraints.max_positions < universe_size
+    positions = constraints.max_positions if capped else universe_size
+    if positions * constraints.max_weight < 1 - FEASIBILITY_TOLERANCE:
+        reachable = positions * constraints.max_weight
+        source = f"max_positions ({positions})" if capped else f"{positions} stock(s) in the universe"
+        return (
+            f"Infeasible. {source} * max_weight ({constraints.max_weight:g}) can invest at most {reachable:.0%}; "
+            f"full allocation needs 100%. Raise max_weight to at least {1 / positions:.2f} or add more stocks."
         )
     if constraints.min_universal_weight > constraints.max_weight:
-        raise InvalidOptimizationInput("Invalid constraints. min_weight must be less than max_weight.")
-    if constraints.min_universal_weight * universe_size > 1:
-        raise InvalidOptimizationInput(
+        return "Invalid constraints. min_weight must be less than max_weight."
+    if constraints.min_universal_weight * universe_size > 1 + FEASIBILITY_TOLERANCE:
+        return (
             "Infeasible. min_universal_weight * universe size cannot exceed 1. "
             "Lower min_universal_weight or shrink the universe."
         )
+    return None
+
+
+def check_feasibility(constraints: Constraints, universe_size: int) -> None:
+    """Raise InvalidOptimizationInput if the constraints can never fully invest the universe."""
+    problem = feasibility_problem(constraints, universe_size)
+    if problem:
+        raise InvalidOptimizationInput(problem)

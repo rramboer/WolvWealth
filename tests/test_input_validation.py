@@ -265,3 +265,137 @@ class TestCli:
 
     def test_nan_is_not_a_valid_float_for_our_purposes(self):
         assert math.isnan(float("nan"))  # argparse's float() happily accepts it; our config must not.
+
+
+def remaining_uses(client) -> int:
+    account = client.post("/api/account/", json={"username": "devuser"}, headers={"Authorization": DEV_USER_TOKEN})
+    return account.get_json()["optimizations_remaining"]
+
+
+class TestInfeasibleWeightsAreRejectedUpFront:
+    """Regression: top5 with max_weight 0.1 can only ever invest 50%, but was accepted."""
+
+    @pytest.mark.parametrize(
+        ("universe_size", "raw"),
+        [
+            (5, {"max_weight": 0.1}),  # 5 x 10% = 50%
+            (5, {"max_weight": 0.19}),  # 5 x 19% = 95%
+            (10, {"max_positions": 20, "max_weight": 0.05}),  # capped to 10 positions x 5%
+        ],
+    )
+    def test_parse_constraints(self, universe_size, raw):
+        with pytest.raises(InvalidOptimizationInput, match="Infeasible"):
+            parse_constraints(raw, universe_size=universe_size)
+
+    def test_boundary_is_feasible(self):
+        assert parse_constraints({"max_weight": 0.2}, universe_size=5).max_weight == 0.2
+
+    def test_backtest_request(self):
+        payload = {"start": "2023-07-01", "universe": ["top5"], "constraints": {"max_weight": 0.1}}
+        with pytest.raises(InvalidOptimizationInput, match="Infeasible"):
+            parse_backtest_request(payload, ticker_universe=fixture_universe(), prices=fixture_prices())
+
+    def test_backtest_endpoint_rejects_without_charging(self, client):
+        before = remaining_uses(client)
+        response = client.post(
+            "/api/backtest/",
+            json={"start": "2023-07-01", "universe": ["top5"], "constraints": {"max_weight": 0.1}},
+            headers={"Authorization": DEV_USER_TOKEN},
+        )
+        assert response.status_code == 400
+        assert "Infeasible" in response.get_json()["error"]["message"]
+        assert remaining_uses(client) == before
+
+    def test_optimize_endpoint_rejects_without_charging(self, client):
+        before = remaining_uses(client)
+        response = client.post(
+            "/api/optimize/",
+            json={"initial_cash": 1000, "universe": ["top5"], "constraints": {"max_weight": 0.1}},
+            headers={"Authorization": DEV_USER_TOKEN},
+        )
+        assert response.status_code == 400
+        assert "Infeasible" in response.get_json()["error"]["message"]
+        assert remaining_uses(client) == before
+
+
+class TestRejectedOptimizeRequestsAreFree:
+    """Regression: /api/optimize/ charged a use before validating anything."""
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},  # zero investment
+            {"initial_cash": -5},
+            {"initial_cash": 1000, "universe": ["BOGUS"]},
+            {"initial_cash": 1000, "constraints": {"min_universal_weight": 0.5}},
+        ],
+    )
+    def test_invalid_payload_costs_nothing(self, client, payload):
+        before = remaining_uses(client)
+        response = client.post("/api/optimize/", json=payload, headers={"Authorization": DEV_USER_TOKEN})
+        assert response.status_code == 400
+        assert remaining_uses(client) == before
+
+    def test_valid_payload_still_costs_one(self, client):
+        before = remaining_uses(client)
+        response = client.post(
+            "/api/optimize/",
+            json={"initial_cash": 1000, "universe": ["top3"]},
+            headers={"Authorization": DEV_USER_TOKEN},
+        )
+        assert response.status_code == 200
+        assert remaining_uses(client) == before - 1
+
+    def test_auth_is_still_checked_first(self, client):
+        assert client.post("/api/optimize/", json={}).status_code == 401
+        assert client.post("/api/optimize/", json={}, headers={"Authorization": "bogus"}).status_code == 403
+
+
+class TestDatesOutsideThePriceData:
+    """Regression: a range before the first price date passed validation, was charged, then failed in the worker."""
+
+    def parse(self, **fields):
+        payload = {"universe": ["AAPL", "MSFT"], "lookback_days": 30, **fields}
+        return parse_backtest_request(payload, ticker_universe=fixture_universe(), prices=fixture_prices())
+
+    def test_start_before_first_price_date(self):
+        first = fixture_prices().index[0].date()
+        with pytest.raises(InvalidOptimizationInput, match=f"before the first available price date \\({first}\\)"):
+            self.parse(start="2010-01-01", end="2023-06-01")
+
+    def test_range_entirely_before_the_data(self):
+        with pytest.raises(InvalidOptimizationInput, match="before the first available price date"):
+            self.parse(start="1990-01-01", end="2000-01-01")
+
+    def test_end_after_last_price_date(self):
+        last = fixture_prices().index[-1].date()
+        with pytest.raises(InvalidOptimizationInput, match=f"after the last available price date \\({last}\\)"):
+            self.parse(start="2023-03-01", end="2030-01-01")
+
+    def test_start_on_first_date_without_enough_history_is_rejected(self):
+        """Starting on the first price date leaves no lookback history, so no rebalance could ever execute."""
+        first = fixture_prices().index[0].date().isoformat()
+        with pytest.raises(InvalidOptimizationInput, match="No rebalance could execute"):
+            self.parse(start=first, end="2023-01-20")
+
+    def test_valid_range_with_history_still_parses(self):
+        request = self.parse(start="2023-03-01", end="2023-12-01")
+        assert request.config.start.isoformat() == "2023-03-01"
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"start": "1990-01-01", "end": "2000-01-01"},
+            {"start": "2010-01-01"},
+            {"start": "2023-03-01", "end": "2030-01-01"},
+        ],
+    )
+    def test_endpoint_rejects_without_charging(self, client, fields):
+        before = remaining_uses(client)
+        response = client.post(
+            "/api/backtest/",
+            json={"universe": ["top3"], "lookback_days": 30, **fields},
+            headers={"Authorization": DEV_USER_TOKEN},
+        )
+        assert response.status_code == 400, response.get_json()
+        assert remaining_uses(client) == before

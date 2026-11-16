@@ -12,6 +12,9 @@
 - Optimizer weights always sum to 1 after small weights are dropped.
 
 - Input validation hardened on every path into the optimizer. JSON bodies containing `NaN`, `Infinity` or `-Infinity` are refused at parse time (Python's `json` accepts them and NaN passes every range check). Shared `require_number` / `require_integer` validators reject bools, non-finite values and out-of-range values for cash, holdings, costs, lookback, execution lag and constraints, and the `Constraints` / `BacktestConfig` dataclasses validate themselves so the CLI and library callers get the same protection. Nothing is charged for a rejected request. The dashboard validates the same rules before enabling the Run / Optimize buttons and shows the reason under the field.
+- Constraints that can never fully invest the universe are rejected up front (e.g. `top5` with `max_weight` 0.1 reaches only 50%); previously only `max_positions * max_weight` was checked, so the request was charged and then sat in cash.
+- Backtests are checked before charging: `start` before the first or `end` after the last price date is rejected, and a dry run of the schedule (`wolvwealth/backtest/preflight.py`, sharing the engine's decision iterator and skip rules) rejects ranges in which no rebalance could execute, such as a start with no lookback history or a range shorter than the execution lag. The CLI runs the same check.
+- `/api/optimize/` no longer charges for requests it rejects: it authenticates first, validates (including feasibility), and only then consumes a use.
 
 ### Changed
 - Backtesting moved into the `wolvwealth.backtest` package (config, schedule, strategies, engine, metrics, service, cli); `backtest.py` is now a thin wrapper and the CLI is also installed as `wolvwealth-backtest`.

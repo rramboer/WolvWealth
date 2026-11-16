@@ -58,9 +58,38 @@ describe("validateBacktestForm", () => {
     expect(validateBacktestForm({ ...good, maxWeight: 0 }, config).maxWeight).toMatch(/greater than 0/);
     expect(validateBacktestForm({ ...good, maxWeight: 1.5 }, config).maxWeight).toMatch(/at most 1/);
     expect(validateBacktestForm({ ...good, minWeight: 0.5, maxWeight: 0.4 }, config).minWeight).toMatch(/exceed/);
-    expect(validateBacktestForm({ ...good, maxPositions: 2, maxWeight: 0.2 }, config).maxPositions).toMatch(/100%/);
+    expect(validateBacktestForm({ ...good, maxPositions: 2, maxWeight: 0.2 }, config).maxPositions).toMatch(/needs 100%/);
     expect(validateBacktestForm({ ...good, maxPositions: 2.5 }, config).maxPositions).toMatch(/whole number/);
     expect(validateBacktestForm({ ...good, maxPositions: 0 }, config).maxPositions).toBeUndefined();
+  });
+});
+
+describe("feasibility against the universe size", () => {
+  it("rejects top5 with max weight 0.1 (regression)", () => {
+    const errors = validateBacktestForm({ ...good, universe: "top5", maxPositions: 0, maxWeight: 0.1 }, config);
+    expect(errors.maxWeight).toBe("5 stocks × 0.1 only reaches 50%; use at least 0.20.");
+  });
+
+  it("counts explicit tickers and accepts the exact boundary", () => {
+    expect(validateBacktestForm({ ...good, universe: "AAPL MSFT", maxPositions: 0, maxWeight: 0.4 }, config).maxWeight).toMatch(
+      /80%/,
+    );
+    expect(validateBacktestForm({ ...good, universe: "top5", maxPositions: 0, maxWeight: 0.2 }, config)).toEqual({});
+  });
+
+  it("uses the universe when max positions exceeds it", () => {
+    const errors = validateBacktestForm({ ...good, universe: "top5", maxPositions: 10, maxWeight: 0.1 }, config);
+    expect(errors.maxWeight).toMatch(/5 stocks/);
+    expect(errors.maxPositions).toBeUndefined();
+  });
+
+  it("rejects a min weight that over-allocates the universe", () => {
+    expect(validateBacktestForm({ ...good, universe: "top5", minWeight: 0.25 }, config).minWeight).toMatch(/exceeds 100%/);
+  });
+
+  it("applies to the optimize form too", () => {
+    const form = { initialCash: 1000, universe: "top5", maxPositions: 0, maxWeight: 0.1, minWeight: 0 };
+    expect(validateOptimizeForm(form, config).maxWeight).toMatch(/50%/);
   });
 });
 

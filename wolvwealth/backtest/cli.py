@@ -13,6 +13,7 @@ import pandas as pd
 
 from wolvwealth.backtest.config import BacktestConfig, Frequency
 from wolvwealth.backtest.metrics import PerformanceMetrics
+from wolvwealth.backtest.preflight import check_runnable
 from wolvwealth.backtest.progress import Progress
 from wolvwealth.backtest.service import BacktestReport, run_report
 from wolvwealth.market_data import load_historical_prices, load_ticker_universe
@@ -149,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     prices = load_historical_prices()
     try:
         config = config_from_args(args, prices, load_ticker_universe())
+        check_runnable(prices, config)
         progress_bar = TerminalProgressBar() if sys.stderr.isatty() and not args.quiet else None
         try:
             report = run_report(prices, config, benchmark_tickers=tuple(args.benchmark), on_progress=progress_bar)

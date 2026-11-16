@@ -18,7 +18,8 @@ Accounting rules
   `end`, including the days after the final rebalance.
 """
 
-from collections.abc import Callable
+import dataclasses
+from collections.abc import Callable, Iterator
 
 import pandas as pd
 
@@ -34,6 +35,53 @@ MAX_MISSING_FRACTION = 0.1  # Assets missing more than this share of the window'
 StepCallback = Callable[[int, int], None]  # (decisions completed, total decisions)
 
 
+@dataclasses.dataclass(frozen=True)
+class Decision:
+    """One scheduled rebalance decision and the data the strategy would see."""
+
+    date: pd.Timestamp
+    execution_position: int | None  # Trading-day index of the trade; None if it would fall after `end`.
+    window: pd.DataFrame  # Lookback prices for the whole universe, up to and including `date`.
+    eligible: list[str]  # Universe members tradable on this date (see eligible_assets).
+
+    @property
+    def has_history(self) -> bool:
+        """Enough observations and at least one eligible asset to optimize over."""
+        return len(self.window) >= MIN_WINDOW_ROWS and bool(self.eligible)
+
+
+def prepare(prices: pd.DataFrame, config: BacktestConfig) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
+    """Universe prices and the trading days in [start, end]. Raises ValueError if unusable."""
+    missing = [ticker for ticker in config.universe if ticker not in prices.columns]
+    if missing:
+        raise ValueError(f"No price data available for: {', '.join(sorted(missing))}.")
+    prices = prices.sort_index()
+    start, end = pd.Timestamp(config.start), pd.Timestamp(config.end)
+    trading_days = prices.index[(prices.index >= start) & (prices.index <= end)]
+    if len(trading_days) < 2:
+        raise ValueError(f"Fewer than two trading days of price data between {config.start} and {config.end}.")
+    return prices[list(config.universe)], trading_days
+
+
+def iter_decisions(
+    raw: pd.DataFrame, trading_days: pd.DatetimeIndex, dates: list[pd.Timestamp], config: BacktestConfig
+) -> Iterator[Decision]:
+    """Yield each scheduled decision with its lookback window and eligible assets.
+
+    The single source of truth for which decisions can trade: run_backtest
+    and the pre-run check (wolvwealth.backtest.preflight) both consume it.
+    """
+    for date in dates:
+        execution_position = trading_days.get_loc(date) + config.execution_lag
+        window = raw.loc[date - config.lookback : date]
+        yield Decision(
+            date=date,
+            execution_position=execution_position if execution_position < len(trading_days) else None,
+            window=window,
+            eligible=eligible_assets(window),
+        )
+
+
 def run_backtest(
     prices: pd.DataFrame,
     config: BacktestConfig,
@@ -45,17 +93,8 @@ def run_backtest(
     `on_step(completed, total)` is called before each rebalance decision and
     once more when the simulation finishes, so callers can report progress.
     """
-    missing = [ticker for ticker in config.universe if ticker not in prices.columns]
-    if missing:
-        raise ValueError(f"No price data available for: {', '.join(sorted(missing))}.")
+    raw, trading_days = prepare(prices, config)
     universe = list(config.universe)
-    prices = prices.sort_index()
-    start, end = pd.Timestamp(config.start), pd.Timestamp(config.end)
-    trading_days = prices.index[(prices.index >= start) & (prices.index <= end)]
-    if len(trading_days) < 2:
-        raise ValueError(f"Fewer than two trading days of price data between {config.start} and {config.end}.")
-
-    raw = prices[universe]
     filled = raw.ffill()  # Valuation prices: carry the last known price across gaps.
     valuation = filled.loc[trading_days].fillna(0.0)  # Unheld assets without a price contribute nothing.
     fee_rate = config.transaction_cost_bps / 10_000
@@ -66,31 +105,28 @@ def run_backtest(
     warnings: list[str] = []
     cursor = 0  # First trading-day position whose equity has not been written yet.
 
-    decisions = rebalance_dates(trading_days, config.frequency)
-    for completed, decision in enumerate(decisions):
+    dates = rebalance_dates(trading_days, config.frequency)
+    for completed, decision in enumerate(iter_decisions(raw, trading_days, dates, config)):
         if on_step is not None:
-            on_step(completed, len(decisions))
-        execution_position = trading_days.get_loc(decision) + config.execution_lag
-        if execution_position >= len(trading_days):
+            on_step(completed, len(dates))
+        if decision.execution_position is None:
             break
-        window = raw.loc[decision - config.lookback : decision]
-        eligible = eligible_assets(window)
-        if len(window) < MIN_WINDOW_ROWS or not eligible:
-            warnings.append(f"{decision.date()}: insufficient price history; holding previous positions.")
+        if not decision.has_history:
+            warnings.append(f"{decision.date.date()}: insufficient price history; holding previous positions.")
             continue
         try:
-            weights = strategy.target_weights(window[eligible].ffill())
+            weights = strategy.target_weights(decision.window[decision.eligible].ffill())
         except StrategyError as err:
-            warnings.append(f"{decision.date()}: {err}; holding previous positions.")
+            warnings.append(f"{decision.date.date()}: {err}; holding previous positions.")
             continue
         if weights is None:
             continue
 
-        execution_date = trading_days[execution_position]
+        execution_position = decision.execution_position
         prices_now = valuation.iloc[execution_position]
         untradable = [asset for asset in weights if prices_now.get(asset, 0.0) <= 0]
         if untradable:
-            warnings.append(f"{decision.date()}: no execution price for {', '.join(untradable)}; holding.")
+            warnings.append(f"{decision.date.date()}: no execution price for {', '.join(untradable)}; holding.")
             continue
         _write_equity(equity, valuation, ledger, cursor, execution_position)
         cursor = execution_position
@@ -99,16 +135,16 @@ def run_backtest(
                 weights,
                 prices_now=prices_now,
                 fee_rate=fee_rate,
-                decision_date=decision,
-                execution_date=execution_date,
-                eligible_count=len(eligible),
+                decision_date=decision.date,
+                execution_date=trading_days[execution_position],
+                eligible_count=len(decision.eligible),
                 expected_performance=getattr(strategy, "last_performance", None),
             )
         )
 
     _write_equity(equity, valuation, ledger, cursor, len(trading_days))
     if on_step is not None:
-        on_step(len(decisions), len(decisions))
+        on_step(len(dates), len(dates))
     if not events:
         warnings.append("No rebalance was executed; the portfolio stayed in cash.")
     return BacktestResult(strategy=strategy.name, equity=equity, rebalances=events, warnings=warnings)

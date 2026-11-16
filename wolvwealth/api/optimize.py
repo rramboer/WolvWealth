@@ -12,7 +12,9 @@ from wolvwealth.optimizer_core import build_portfolio_output, compute_max_sharpe
 from wolvwealth.optimizer_params import (
     MAX_CASH,
     MAX_SHARES,
+    Constraints,
     InvalidOptimizationInput,
+    feasibility_problem,
     parse_constraints,
     require_number,
     resolve_universe,
@@ -24,10 +26,12 @@ class Optimization:
 
     def __init__(self) -> None:
         """Initialize optimization."""
-        authenticate(require_csrf=True).charge()
+        caller = authenticate(require_csrf=True)  # 401/403 first, but nothing charged yet.
         self.state = ApplicationState()
         self.set_defaults()
         self.parse_input()
+        self.validate_investment()
+        caller.charge()  # Only well-formed, feasible requests cost a use.
         self.execute_optimization()
 
     def set_defaults(self) -> None:
@@ -113,16 +117,29 @@ class Optimization:
                 raise InvalidUsage(f"Invalid initial_holdings for {ticker}. {err}") from err
         self.initial_holdings = holdings
 
-    def execute_optimization(self) -> None:
-        """Run optimization."""
+    def validate_investment(self) -> None:
+        """Check the request can be optimized at all: money to invest, price data, feasible constraints."""
         total_investment = self.initial_cash
         for asset, shares in self.initial_holdings.items():
             total_investment += shares * self.state.fetch_ticker_price(asset)
         if total_investment == 0:
             raise InvalidUsage("Invalid input. Total investment value cannot be 0.")
+        self.total_investment = total_investment
         missing = [t for t in self.universe if t not in self.state.HISTORICAL_PRICES.columns]
         if missing:
             raise InvalidUsage(f"No price data available for: {', '.join(sorted(missing))}.")
+        constraints = Constraints(
+            max_weight=self.max_weight,
+            min_universal_weight=self.min_universal_weight,
+            max_positions=self.max_positions,
+            weight_threshold=self.weight_threshold,
+        )
+        problem = feasibility_problem(constraints, len(self.universe))
+        if problem:
+            raise InvalidUsage(problem)
+
+    def execute_optimization(self) -> None:
+        """Run optimization."""
         filtered_data = self.state.HISTORICAL_PRICES[self.universe]
         try:
             weights, performance = compute_max_sharpe_portfolio(
@@ -137,7 +154,7 @@ class Optimization:
             raise InvalidUsage("Optimization Error. Check your inputs and constraints. Infeasible.") from err
         output = build_portfolio_output(
             weights,
-            total_investment,
+            self.total_investment,
             self.state.fetch_ticker_price,
             performance=None if self.exclude_metrics else performance,
         )

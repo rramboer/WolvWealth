@@ -11,6 +11,7 @@ import datetime
 import pandas as pd
 
 from wolvwealth.backtest.config import BacktestConfig, Frequency
+from wolvwealth.backtest.preflight import check_runnable
 from wolvwealth.backtest.schedule import rebalance_dates
 from wolvwealth.backtest.service import DEFAULT_BENCHMARK_TICKERS
 from wolvwealth.optimizer_params import (
@@ -86,12 +87,8 @@ def parse_backtest_request(
         )
     except InvalidOptimizationInput as err:
         raise InvalidOptimizationInput(str(err)) from err
-    rebalances = count_rebalances(prices, config)
-    if rebalances > limits.max_rebalances:
-        raise InvalidOptimizationInput(
-            f"Too many rebalances: this request needs {rebalances}, the limit is {limits.max_rebalances}. "
-            "Shorten the date range or choose a lower frequency."
-        )
+    # Date range, rebalance limit, and "could anything actually trade?" — all before any charge.
+    check_runnable(prices, config, max_rebalances=limits.max_rebalances)
 
     benchmarks = _benchmarks(payload, prices, limits)
     include_equity = payload.get("include_equity", True)

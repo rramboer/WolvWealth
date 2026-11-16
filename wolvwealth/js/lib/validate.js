@@ -27,21 +27,30 @@ function numberError(value, { min, max, exclusiveMin = false, integer = false } 
   return null;
 }
 
+/** How many tickers the universe text expands to ("top50" counts as 50, capped at the data's size). */
+export function universeCount(text, universeSize) {
+  let count = 0;
+  for (const entry of parseUniverse(text ?? "")) {
+    count += TOP_N.test(entry) ? Math.min(Number(entry.slice(3)), universeSize ?? Infinity) : 1;
+  }
+  return count;
+}
+
 function universeError(text, maxUniverseSize, universeSize) {
   const entries = parseUniverse(text ?? "");
   if (!entries.length) return "Enter at least one ticker or topN.";
   const bad = entries.filter((entry) => !TICKER.test(entry) && !TOP_N.test(entry));
   if (bad.length) return `Not a ticker: ${bad.slice(0, 3).join(", ")}.`;
-  let count = 0;
-  for (const entry of entries) {
-    const top = TOP_N.exec(entry);
-    count += top ? Math.min(Number(entry.slice(3)), universeSize ?? Infinity) : 1;
-  }
-  if (maxUniverseSize && count > maxUniverseSize) return `At most ${maxUniverseSize} tickers.`;
+  if (maxUniverseSize && universeCount(text, universeSize) > maxUniverseSize) return `At most ${maxUniverseSize} tickers.`;
   return null;
 }
 
-function constraintErrors(form) {
+/**
+ * Mirrors the server's feasibility rule: the portfolio holds at most
+ * `positions` stocks (the universe, or fewer if max positions caps it), each at
+ * most max weight, so positions x max weight must reach 100%.
+ */
+function constraintErrors(form, stocks) {
   const errors = {};
   const maxPositions = numberError(form.maxPositions, { min: 0, integer: true });
   if (maxPositions) errors.maxPositions = maxPositions;
@@ -52,8 +61,21 @@ function constraintErrors(form) {
   if (!maxWeight && !minWeight && form.minWeight > form.maxWeight) {
     errors.minWeight = "Must not exceed max weight.";
   }
-  if (!maxPositions && !maxWeight && form.maxPositions > 0 && form.maxPositions * form.maxWeight < 1) {
-    errors.maxPositions = "Positions × max weight must reach 100%.";
+  if (!maxPositions && !maxWeight && stocks > 0) {
+    const capped = form.maxPositions > 0 && form.maxPositions < stocks;
+    const positions = capped ? form.maxPositions : stocks;
+    if (positions * form.maxWeight < 1 - 1e-9) {
+      const reach = `${Math.round(positions * form.maxWeight * 100)}%`;
+      if (capped) {
+        errors.maxPositions = `${positions} positions × max weight only reaches ${reach}; needs 100%.`;
+      } else {
+        const need = (Math.ceil((1 / positions) * 100) / 100).toFixed(2);
+        errors.maxWeight = `${positions} stocks × ${form.maxWeight} only reaches ${reach}; use at least ${need}.`;
+      }
+    }
+  }
+  if (!minWeight && stocks > 0 && form.minWeight * stocks > 1 + 1e-9) {
+    errors.minWeight = `${stocks} stocks × ${form.minWeight} exceeds 100%.`;
   }
   return errors;
 }
@@ -65,7 +87,7 @@ function dateError(value) {
 
 /** Errors keyed by form field; empty object means the form may be submitted. */
 export function validateBacktestForm(form, config = {}) {
-  const errors = { ...constraintErrors(form) };
+  const errors = { ...constraintErrors(form, universeCount(form.universe, config.universeSize)) };
   const start = dateError(form.start);
   const end = dateError(form.end);
   if (start) errors.start = start;
@@ -93,7 +115,7 @@ export function validateBacktestForm(form, config = {}) {
 }
 
 export function validateOptimizeForm(form, config = {}) {
-  const errors = { ...constraintErrors(form) };
+  const errors = { ...constraintErrors(form, universeCount(form.universe, config.universeSize)) };
   const cash = numberError(form.initialCash, { min: 0, max: LIMITS.maxCash, exclusiveMin: true });
   if (cash) errors.initialCash = cash;
   const universe = universeError(form.universe, undefined, config.universeSize);
