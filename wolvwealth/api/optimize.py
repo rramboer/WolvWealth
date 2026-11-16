@@ -9,7 +9,14 @@ from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import authenticate
 from wolvwealth.api.state import ApplicationState
 from wolvwealth.optimizer_core import build_portfolio_output, compute_max_sharpe_portfolio
-from wolvwealth.optimizer_params import InvalidOptimizationInput, parse_constraints, resolve_universe
+from wolvwealth.optimizer_params import (
+    MAX_CASH,
+    MAX_SHARES,
+    InvalidOptimizationInput,
+    parse_constraints,
+    require_number,
+    resolve_universe,
+)
 
 
 class Optimization:
@@ -71,11 +78,11 @@ class Optimization:
         """Validate the optional initial_cash amount."""
         if "initial_cash" not in self.input_json:
             return
-        if not isinstance(self.input_json["initial_cash"], (int, float)):
-            raise InvalidUsage("Invalid initial_cash. initial_cash must be a number.")
-        if self.input_json["initial_cash"] < 0.00:
-            raise InvalidUsage("Invalid initial_cash. initial_cash must be greater than 0.")
-        self.initial_cash = round(self.input_json["initial_cash"], 2)
+        try:
+            cash = require_number(self.input_json["initial_cash"], "initial_cash", minimum=0.0, maximum=MAX_CASH)
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
+        self.initial_cash = round(cash, 2)
 
     def parse_universe(self) -> None:
         """Validate the optional universe list, expanding topN aliases."""
@@ -96,19 +103,15 @@ class Optimization:
             return
         if not isinstance(self.input_json["initial_holdings"], dict):
             raise InvalidUsage("Invalid initial_holdings. initial_holdings must be a dictionary.")
-        unclean_initial_holdings = self.input_json["initial_holdings"]
-        for ticker, shares in unclean_initial_holdings.items():
-            if not isinstance(ticker, str):
-                raise InvalidUsage("Invalid initial_holdings. initial_holdings must be list of strings.")
-            if ticker.upper() not in self.state.TICKER_UNIVERSE:
+        holdings = {}
+        for ticker, shares in self.input_json["initial_holdings"].items():
+            if not isinstance(ticker, str) or ticker.upper() not in self.state.TICKER_UNIVERSE:
                 raise InvalidUsage(f"Invalid symbol in initial_holdings: {ticker}.")
-            if not isinstance(shares, (int, float)):
-                raise InvalidUsage(
-                    "Invalid initial_holdings. initial_holdings must be a dictionary of strings to numbers."
-                )
-            if shares < 0.00:
-                raise InvalidUsage("Invalid initial_holdings. Shares must be positive.")
-        self.initial_holdings = {s.upper(): unclean_initial_holdings[s] for s in unclean_initial_holdings}
+            try:
+                holdings[ticker.upper()] = require_number(shares, "shares", minimum=0.0, maximum=MAX_SHARES)
+            except InvalidOptimizationInput as err:
+                raise InvalidUsage(f"Invalid initial_holdings for {ticker}. {err}") from err
+        self.initial_holdings = holdings
 
     def execute_optimization(self) -> None:
         """Run optimization."""

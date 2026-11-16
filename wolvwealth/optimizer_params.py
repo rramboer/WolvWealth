@@ -5,6 +5,7 @@ InvalidOptimizationInput into whatever error type suits their transport.
 """
 
 import dataclasses
+import math
 import re
 
 TOP_N_PATTERN = re.compile(r"top(\d+)", re.IGNORECASE)
@@ -12,6 +13,49 @@ TOP_N_PATTERN = re.compile(r"top(\d+)", re.IGNORECASE)
 
 class InvalidOptimizationInput(ValueError):
     """Raised when a universe or constraint value is malformed or infeasible."""
+
+
+# Sanity ceilings. Anything beyond these is a typo or an attack, not a portfolio.
+MAX_CASH = 1e12
+MAX_SHARES = 1e12
+
+
+def require_number(
+    value: object,
+    name: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    exclusive_minimum: bool = False,
+) -> float:
+    """Return `value` as a finite float within [minimum, maximum], else raise.
+
+    Rejects bools (a JSON `true` is not a number), NaN and +/-Infinity (which
+    Python's JSON parser accepts and which slip through every `<`/`>` check),
+    and out-of-range values.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} must be a number.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} must be a finite number.")
+    if minimum is not None and (number < minimum or (exclusive_minimum and number == minimum)):
+        bound = f"greater than {minimum:g}" if exclusive_minimum else f"at least {minimum:g}"
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} must be {bound}.")
+    if maximum is not None and number > maximum:
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} must be at most {maximum:g}.")
+    return number
+
+
+def require_integer(value: object, name: str, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    """Return `value` as an int within [minimum, maximum], else raise. Floats such as 3.0 are rejected."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} must be an integer.")
+    if minimum is not None and value < minimum:
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} must be at least {minimum}.")
+    if maximum is not None and value > maximum:
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} must be at most {maximum}.")
+    return value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -22,6 +66,14 @@ class Constraints:
     min_universal_weight: float = 0.0  # Every asset must have at least this weight.
     max_positions: int = -1  # Keep only the N largest positions (-1 disables).
     weight_threshold: float = 0.0005  # Drop weights below this cutoff.
+
+    def __post_init__(self) -> None:
+        """Reject malformed values regardless of how the object was built (API, CLI, code)."""
+        require_number(self.max_weight, "max_weight", minimum=0.0, maximum=1.0, exclusive_minimum=True)
+        require_number(self.min_universal_weight, "min_universal_weight", minimum=0.0, maximum=1.0)
+        require_number(self.weight_threshold, "weight_threshold", minimum=0.0, maximum=1.0)
+        if self.max_positions != -1:
+            require_integer(self.max_positions, "max_positions", minimum=1)
 
     def as_kwargs(self) -> dict:
         """Keyword arguments for compute_max_sharpe_portfolio."""
@@ -56,30 +108,24 @@ def parse_constraints(raw: dict, universe_size: int) -> Constraints:
     """Validate a constraints mapping (as sent to the API) and check feasibility."""
     if not isinstance(raw, dict):
         raise InvalidOptimizationInput("Invalid constraints. constraints must be a dictionary.")
-    constraints = Constraints()
+    unknown = set(raw) - {"max_weight", "max_positions", "min_universal_weight"}
+    if unknown:
+        raise InvalidOptimizationInput(f"Unknown constraint(s): {', '.join(sorted(unknown))}.")
+    values: dict = {}
     if "max_weight" in raw:
-        value = raw["max_weight"]
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise InvalidOptimizationInput("Invalid max_weight. max_weight must be a number.")
-        if value < 0.0 or value > 1.0:
-            raise InvalidOptimizationInput("Invalid max_weight. max_weight must be greater than 0 and less than 1.")
-        constraints = dataclasses.replace(constraints, max_weight=round(value, 2))
+        max_weight = require_number(raw["max_weight"], "max_weight", minimum=0.0, maximum=1.0, exclusive_minimum=True)
+        values["max_weight"] = round(max_weight, 2)
+        if values["max_weight"] == 0:
+            raise InvalidOptimizationInput("Invalid max_weight. max_weight must be greater than 0.")
     if "max_positions" in raw:
-        value = raw["max_positions"]
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise InvalidOptimizationInput("Invalid max_positions. max_positions must be an integer.")
-        if value < 0:
-            raise InvalidOptimizationInput("Invalid max_positions. max_positions must be greater than 0.")
-        constraints = dataclasses.replace(constraints, max_positions=min(value, universe_size))
+        # 0 means "no limit" for backwards compatibility with the original API.
+        max_positions = require_integer(raw["max_positions"], "max_positions", minimum=0)
+        values["max_positions"] = min(max_positions, universe_size) if max_positions > 0 else -1
     if "min_universal_weight" in raw:
-        value = raw["min_universal_weight"]
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise InvalidOptimizationInput("Invalid min_universal_weight. min_universal_weight must be a number.")
-        if value < 0.0 or value > 1.0:
-            raise InvalidOptimizationInput(
-                "Invalid min_universal_weight. min_universal_weight must be greater than 0 and less than 1."
-            )
-        constraints = dataclasses.replace(constraints, min_universal_weight=round(value, 2))
+        values["min_universal_weight"] = round(
+            require_number(raw["min_universal_weight"], "min_universal_weight", minimum=0.0, maximum=1.0), 2
+        )
+    constraints = Constraints(**values)
     check_feasibility(constraints, universe_size)
     return constraints
 

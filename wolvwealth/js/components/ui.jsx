@@ -43,18 +43,29 @@ Tabs.propTypes = {
 const inputClass =
   "w-full rounded border border-white/20 bg-gray-dark px-3 py-2 text-sm text-white outline-none focus:border-cyan disabled:opacity-50";
 
-export function Field({ label, hint, children }) {
+export function Field({ label, hint, error, children }) {
   return (
     <div>
       <label className="block">
         <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-white/70">{label}</span>
         {children}
       </label>
-      {hint && <p className="mt-1 text-xs text-white/50">{hint}</p>}
+      {error ? (
+        <p className="mt-1 text-xs text-red" role="note">
+          {error}
+        </p>
+      ) : (
+        hint && <p className="mt-1 text-xs text-white/50">{hint}</p>
+      )}
     </div>
   );
 }
-Field.propTypes = { label: PropTypes.node.isRequired, hint: PropTypes.node, children: PropTypes.node };
+Field.propTypes = {
+  label: PropTypes.node.isRequired,
+  hint: PropTypes.node,
+  error: PropTypes.node,
+  children: PropTypes.node,
+};
 
 export function TextInput(props) {
   return <input {...props} className={inputClass} />;

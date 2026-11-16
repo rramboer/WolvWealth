@@ -6,7 +6,19 @@ import enum
 
 import pandas as pd
 
-from wolvwealth.optimizer_params import Constraints, InvalidOptimizationInput, check_feasibility
+from wolvwealth.optimizer_params import (
+    MAX_CASH,
+    Constraints,
+    InvalidOptimizationInput,
+    check_feasibility,
+    require_integer,
+    require_number,
+)
+
+MIN_LOOKBACK_DAYS = 30
+MAX_LOOKBACK_DAYS = 15 * 365
+MAX_EXECUTION_LAG = 30  # Trading days; anything longer is not a rebalance lag.
+MAX_TRANSACTION_COST_BPS = 1_000  # 10% per trade.
 
 
 class Frequency(enum.StrEnum):
@@ -53,19 +65,22 @@ class BacktestConfig:
     risk_free_rate: float = 0.02  # Annual rate used for Sharpe ratios.
 
     def __post_init__(self) -> None:
-        """Reject configurations that cannot be simulated."""
+        """Reject configurations that cannot be simulated, whatever built them (API, CLI, code)."""
+        if not isinstance(self.start, datetime.date) or not isinstance(self.end, datetime.date):
+            raise InvalidOptimizationInput("start and end must be dates.")
         if self.start >= self.end:
             raise InvalidOptimizationInput("start must be before end.")
-        if not self.universe:
+        if not self.universe or not all(isinstance(ticker, str) and ticker for ticker in self.universe):
             raise InvalidOptimizationInput("universe must contain at least one ticker.")
-        if self.initial_cash <= 0:
-            raise InvalidOptimizationInput("initial_cash must be positive.")
-        if self.lookback_days < 30:
-            raise InvalidOptimizationInput("lookback_days must be at least 30.")
-        if self.execution_lag < 0:
-            raise InvalidOptimizationInput("execution_lag cannot be negative.")
-        if self.transaction_cost_bps < 0:
-            raise InvalidOptimizationInput("transaction_cost_bps cannot be negative.")
+        if not isinstance(self.frequency, Frequency):
+            raise InvalidOptimizationInput("frequency must be a Frequency.")
+        require_number(self.initial_cash, "initial_cash", minimum=0.0, maximum=MAX_CASH, exclusive_minimum=True)
+        require_integer(self.lookback_days, "lookback_days", minimum=MIN_LOOKBACK_DAYS, maximum=MAX_LOOKBACK_DAYS)
+        require_integer(self.execution_lag, "execution_lag", minimum=0, maximum=MAX_EXECUTION_LAG)
+        require_number(self.transaction_cost_bps, "transaction_cost_bps", minimum=0.0, maximum=MAX_TRANSACTION_COST_BPS)
+        require_number(self.risk_free_rate, "risk_free_rate", minimum=-1.0, maximum=1.0)
+        if not isinstance(self.constraints, Constraints):
+            raise InvalidOptimizationInput("constraints must be a Constraints object.")
         check_feasibility(self.constraints, len(self.universe))
 
     @property

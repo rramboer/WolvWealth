@@ -6,6 +6,7 @@ import { Alert, Button, Card, Field, NumberInput, ProgressBar, Select, TextInput
 import { useBacktestJob } from "../hooks/useBacktestJob";
 import { formatPercent, formatSeconds, seriesLabel } from "../lib/format";
 import { estimateRebalances, estimateSeconds, parseUniverse } from "../lib/series";
+import { isValid, validateBacktestForm } from "../lib/validate";
 
 const FREQUENCIES = ["daily", "weekly", "biweekly", "monthly", "quarterly", "semiannually", "yearly"].map((f) => ({
   value: f,
@@ -70,11 +71,12 @@ export default function BacktestTab({ config, onUseConsumed }) {
   const onText = (key) => (event) => update(key)(event.target.value);
 
   const universeEntries = useMemo(() => parseUniverse(form.universe), [form.universe]);
+  const errors = useMemo(() => validateBacktestForm(form, config), [form, config]);
   const rebalances = estimateRebalances(form.start, form.end, form.frequency);
   const tooMany = rebalances > config.maxRebalances;
   const universeGuess = universeSizeGuess(universeEntries, config.universeSize);
   const seconds = estimateSeconds(rebalances, universeGuess);
-  const canRun = !busy && !tooMany && universeEntries.length > 0 && form.start < form.end;
+  const canRun = !busy && !tooMany && isValid(errors);
 
   const report = state.status === "succeeded" ? state.job.report : null;
 
@@ -89,41 +91,45 @@ export default function BacktestTab({ config, onUseConsumed }) {
           }}
         >
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Start">
+            <Field label="Start" error={errors.start}>
               <TextInput type="date" value={form.start} min={config.firstPriceDate} max={config.lastPriceDate} onChange={onText("start")} />
             </Field>
-            <Field label="End">
+            <Field label="End" error={errors.end}>
               <TextInput type="date" value={form.end} min={config.firstPriceDate} max={config.lastPriceDate} onChange={onText("end")} />
             </Field>
           </div>
-          <Field label="Initial cash ($)">
+          <Field label="Initial cash ($)" error={errors.initialCash}>
             <NumberInput value={form.initialCash} min={1} step={1000} onChange={update("initialCash")} />
           </Field>
           <Field label="Rebalance frequency" hint={`≈ ${rebalances} rebalances (limit ${config.maxRebalances}), about ${formatSeconds(seconds)}`}>
             <Select value={form.frequency} options={FREQUENCIES} onChange={onText("frequency")} />
           </Field>
-          <Field label="Universe" hint={`Tickers and/or topN, e.g. "top50" or "AAPL MSFT NVDA". Max ${config.maxUniverseSize} tickers.`}>
+          <Field
+            label="Universe"
+            error={errors.universe}
+            hint={`Tickers and/or topN, e.g. "top50" or "AAPL MSFT NVDA". Max ${config.maxUniverseSize} tickers.`}
+          >
             <TextInput type="text" value={form.universe} onChange={onText("universe")} spellCheck={false} />
           </Field>
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Lookback (days)">
+            <Field label="Lookback (days)" error={errors.lookbackDays}>
               <NumberInput value={form.lookbackDays} min={30} step={30} onChange={update("lookbackDays")} />
             </Field>
-            <Field label="Lag (days)">
+            <Field label="Lag (days)" error={errors.executionLag}>
               <NumberInput value={form.executionLag} min={0} max={5} onChange={update("executionLag")} />
             </Field>
-            <Field label="Cost (bps)">
+            <Field label="Cost (bps)" error={errors.costBps}>
               <NumberInput value={form.costBps} min={0} step={1} onChange={update("costBps")} />
             </Field>
           </div>
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Max positions">
+            <Field label="Max positions" error={errors.maxPositions}>
               <NumberInput value={form.maxPositions} min={0} onChange={update("maxPositions")} />
             </Field>
-            <Field label="Max weight">
+            <Field label="Max weight" error={errors.maxWeight}>
               <NumberInput value={form.maxWeight} min={0} max={1} step={0.05} onChange={update("maxWeight")} />
             </Field>
-            <Field label="Min weight">
+            <Field label="Min weight" error={errors.minWeight}>
               <NumberInput value={form.minWeight} min={0} max={1} step={0.01} onChange={update("minWeight")} />
             </Field>
           </div>

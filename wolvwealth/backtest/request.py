@@ -13,9 +13,14 @@ import pandas as pd
 from wolvwealth.backtest.config import BacktestConfig, Frequency
 from wolvwealth.backtest.schedule import rebalance_dates
 from wolvwealth.backtest.service import DEFAULT_BENCHMARK_TICKERS
-from wolvwealth.optimizer_params import Constraints, InvalidOptimizationInput, parse_constraints, resolve_universe
-
-MAX_LOOKBACK_DAYS = 15 * 365
+from wolvwealth.optimizer_params import (
+    Constraints,
+    InvalidOptimizationInput,
+    parse_constraints,
+    require_integer,
+    require_number,
+    resolve_universe,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,10 +85,7 @@ def parse_backtest_request(
             constraints=constraints,
         )
     except InvalidOptimizationInput as err:
-        raise InvalidOptimizationInput(f"Invalid backtest parameters. {err}") from err
-    if config.lookback_days > MAX_LOOKBACK_DAYS:
-        raise InvalidOptimizationInput(f"lookback_days cannot exceed {MAX_LOOKBACK_DAYS}.")
-
+        raise InvalidOptimizationInput(str(err)) from err
     rebalances = count_rebalances(prices, config)
     if rebalances > limits.max_rebalances:
         raise InvalidOptimizationInput(
@@ -135,17 +137,13 @@ def _date(payload: dict, key: str, required: bool = False) -> datetime.date | No
 
 
 def _number(payload: dict, key: str, default: float) -> float:
-    value = payload.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise InvalidOptimizationInput(f"Invalid {key}. {key} must be a number.")
-    return float(value)
+    """Type and finiteness only; BacktestConfig applies the ranges."""
+    return require_number(payload.get(key, default), key)
 
 
 def _integer(payload: dict, key: str, default: int) -> int:
-    value = payload.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise InvalidOptimizationInput(f"Invalid {key}. {key} must be an integer.")
-    return value
+    """Type only; BacktestConfig applies the ranges."""
+    return require_integer(payload.get(key, default), key)
 
 
 def _frequency(payload: dict) -> Frequency:

@@ -1,10 +1,11 @@
 import PropTypes from "prop-types";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AllocationTable } from "../components/tables";
 import { Alert, Button, Card, Field, NumberInput, TextInput } from "../components/ui";
 import { optimize } from "../lib/api";
 import { formatMoney, formatNumber, formatPercent } from "../lib/format";
 import { parseUniverse } from "../lib/series";
+import { isValid, validateOptimizeForm } from "../lib/validate";
 
 const DEFAULT_FORM = { initialCash: 10000, universe: "top50", maxPositions: 10, maxWeight: 1, minWeight: 0 };
 
@@ -21,9 +22,12 @@ export default function OptimizeTab({ config, onUseConsumed }) {
   const [form, setForm] = useState(DEFAULT_FORM);
   const [status, setStatus] = useState({ busy: false, result: null, error: null });
   const update = (key) => (value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const errors = useMemo(() => validateOptimizeForm(form, config), [form, config]);
+  const canRun = !status.busy && isValid(errors);
 
   const submit = async (event) => {
     event.preventDefault();
+    if (!canRun) return;
     setStatus({ busy: true, result: null, error: null });
     try {
       const result = await optimize(buildOptimizePayload(form), config.csrfToken);
@@ -34,17 +38,16 @@ export default function OptimizeTab({ config, onUseConsumed }) {
     }
   };
 
-  const canRun = !status.busy && form.initialCash > 0 && parseUniverse(form.universe).length > 0;
   const metrics = status.result?.metrics;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
       <Card title="Portfolio settings" className="h-fit">
         <form className="space-y-4" onSubmit={submit}>
-          <Field label="Amount to invest ($)">
+          <Field label="Amount to invest ($)" error={errors.initialCash}>
             <NumberInput value={form.initialCash} min={1} step={500} onChange={update("initialCash")} />
           </Field>
-          <Field label="Universe" hint='Tickers and/or topN, e.g. "top50" or "AAPL MSFT NVDA".'>
+          <Field label="Universe" error={errors.universe} hint='Tickers and/or topN, e.g. "top50" or "AAPL MSFT NVDA".'>
             <TextInput
               type="text"
               value={form.universe}
@@ -53,13 +56,13 @@ export default function OptimizeTab({ config, onUseConsumed }) {
             />
           </Field>
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Max positions">
+            <Field label="Max positions" error={errors.maxPositions}>
               <NumberInput value={form.maxPositions} min={0} onChange={update("maxPositions")} />
             </Field>
-            <Field label="Max weight">
+            <Field label="Max weight" error={errors.maxWeight}>
               <NumberInput value={form.maxWeight} min={0} max={1} step={0.05} onChange={update("maxWeight")} />
             </Field>
-            <Field label="Min weight">
+            <Field label="Min weight" error={errors.minWeight}>
               <NumberInput value={form.minWeight} min={0} max={1} step={0.01} onChange={update("minWeight")} />
             </Field>
           </div>

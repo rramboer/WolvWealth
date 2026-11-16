@@ -11,6 +11,8 @@
 - `max_positions` re-optimizes over the kept assets, so `max_weight` still holds and the reported expected return / volatility / Sharpe describe the returned weights (affects the API as well).
 - Optimizer weights always sum to 1 after small weights are dropped.
 
+- Input validation hardened on every path into the optimizer. JSON bodies containing `NaN`, `Infinity` or `-Infinity` are refused at parse time (Python's `json` accepts them and NaN passes every range check). Shared `require_number` / `require_integer` validators reject bools, non-finite values and out-of-range values for cash, holdings, costs, lookback, execution lag and constraints, and the `Constraints` / `BacktestConfig` dataclasses validate themselves so the CLI and library callers get the same protection. Nothing is charged for a rejected request. The dashboard validates the same rules before enabling the Run / Optimize buttons and shows the reason under the field.
+
 ### Changed
 - Backtesting moved into the `wolvwealth.backtest` package (config, schedule, strategies, engine, metrics, service, cli); `backtest.py` is now a thin wrapper and the CLI is also installed as `wolvwealth-backtest`.
 - Universe / constraint validation shared between the API and the backtester (`wolvwealth/optimizer_params.py`); CSV loading shared via `wolvwealth/market_data.py`.

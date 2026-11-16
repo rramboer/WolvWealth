@@ -54,6 +54,17 @@ describe("OptimizerPage", () => {
     expect(screen.getByRole("button", { name: "Run backtest" }).disabled).toBe(true);
   });
 
+  it("blocks submission and explains when a number is invalid", () => {
+    render(<OptimizerPage config={config} />);
+    fireEvent.change(screen.getByLabelText("Amount to invest ($)"), { target: { value: "-5" } });
+    expect(screen.getByRole("button", { name: "Optimize" }).disabled).toBe(true);
+    expect(screen.getByRole("note").textContent).toBe("Must be greater than 0.");
+    fireEvent.change(screen.getByLabelText("Amount to invest ($)"), { target: { value: "" } });
+    expect(screen.getByRole("note").textContent).toBe("Required.");
+    fireEvent.change(screen.getByLabelText("Amount to invest ($)"), { target: { value: "5000" } });
+    expect(screen.getByRole("button", { name: "Optimize" }).disabled).toBe(false);
+  });
+
   it("runs an optimization and shows the allocation, decrementing uses", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       jsonResponse(200, {
