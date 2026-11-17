@@ -165,6 +165,13 @@ export default function BacktestTab({ config, onUseConsumed }) {
                   : "Estimating time remaining…"
               }
             />
+            {state.reconnecting && (
+              <p role="status" className="mt-3 text-xs text-yellow">
+                Connection problem ({state.reconnecting.reason}). The backtest is still running on the server; retrying in{" "}
+                {formatSeconds(state.reconnecting.delayMs / 1000)} (attempt {state.reconnecting.attempt} of{" "}
+                {state.reconnecting.maxRetries}).
+              </p>
+            )}
           </Card>
         )}
         {state.status === "failed" && <Alert>{state.error}</Alert>}

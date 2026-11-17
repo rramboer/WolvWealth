@@ -1,16 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBacktestJob, startBacktest } from "../lib/api";
+import { isTransient, permanentFailureMessage, retryDelay } from "../lib/retry";
 
-export const IDLE = { status: "idle", job: null, error: null };
+export const IDLE = { status: "idle", job: null, error: null, reconnecting: null };
 
 const FINISHED = new Set(["succeeded", "failed"]);
+const RATE_LIMIT_FALLBACK_SECONDS = 5; // When a 429 arrives without Retry-After.
 
 /**
  * Drives one backtest job: POST to start, then poll its status URL until it
  * finishes. `state.status` is "idle" | "starting" | "queued" | "running" |
  * "succeeded" | "failed"; `state.job` is the latest server snapshot.
+ *
+ * Polling survives transient failures (network errors, 5xx, 408, 429): the
+ * job keeps running on the server, so the hook backs off and retries, and
+ * exposes `state.reconnecting` ({ attempt, maxRetries, delayMs, reason }) so
+ * the UI can say so. It gives up after `maxRetries` consecutive failures;
+ * 429s do not count, because the server answered and the job is alive.
+ * Permanent failures (404 job gone, 401/403 session ended) fail at once.
+ *
+ * Starting the job is never retried automatically: it is a POST that charges
+ * a use, and after a network error we cannot know whether it arrived.
  */
-export function useBacktestJob({ csrfToken, pollIntervalMs = 1000, onStarted } = {}) {
+export function useBacktestJob({
+  csrfToken,
+  pollIntervalMs = 1000,
+  maxRetries = 8,
+  maxRetryDelayMs = 30000,
+  random = Math.random,
+  onStarted,
+} = {}) {
   const [state, setState] = useState(IDLE);
   const runId = useRef(0); // Bumped on every run/reset so stale polls are ignored.
   const timer = useRef(null);
@@ -31,7 +50,7 @@ export function useBacktestJob({ csrfToken, pollIntervalMs = 1000, onStarted } =
 
   const applySnapshot = useCallback((id, job) => {
     if (id !== runId.current) return false;
-    setState({ status: job.status, job, error: job.status === "failed" ? job.error : null });
+    setState({ status: job.status, job, error: job.status === "failed" ? job.error : null, reconnecting: null });
     return !FINISHED.has(job.status);
   }, []);
 
@@ -39,36 +58,61 @@ export function useBacktestJob({ csrfToken, pollIntervalMs = 1000, onStarted } =
     async (payload) => {
       const id = ++runId.current;
       clearTimer();
-      setState({ status: "starting", job: null, error: null });
+      setState({ status: "starting", job: null, error: null, reconnecting: null });
       let job;
       try {
         job = await startBacktest(payload, csrfToken);
       } catch (error) {
-        if (id === runId.current) setState({ status: "failed", job: null, error: error.message });
+        if (id === runId.current) setState({ status: "failed", job: null, error: error.message, reconnecting: null });
         return;
       }
       onStarted?.(job);
       if (!applySnapshot(id, job)) return;
 
+      const fail = (message) => setState((prev) => ({ ...prev, status: "failed", error: message, reconnecting: null }));
+      let failures = 0; // Consecutive transient failures; reset by any successful poll.
+
       const poll = async () => {
         if (id !== runId.current) return;
+        let snapshot;
         try {
-          const snapshot = await getBacktestJob(job.status_url);
-          if (applySnapshot(id, snapshot)) timer.current = setTimeout(poll, pollIntervalMs);
+          snapshot = await getBacktestJob(job.status_url);
         } catch (error) {
           if (id !== runId.current) return;
-          if (error.status === 429) {
-            // Rate limited: the job is still running server-side. Wait as told, then keep polling.
-            const delay = Math.max(pollIntervalMs, (error.retryAfter ?? 5) * 1000);
-            timer.current = setTimeout(poll, delay);
+          if (!isTransient(error)) {
+            fail(permanentFailureMessage(error));
             return;
           }
-          setState((prev) => ({ ...prev, status: "failed", error: error.message }));
+          if (error.status === 429) {
+            // Rate limited: the server is up and the job is running. Wait as told; not a failure.
+            const seconds = error.retryAfter ?? RATE_LIMIT_FALLBACK_SECONDS;
+            timer.current = setTimeout(poll, Math.max(pollIntervalMs, seconds * 1000));
+            return;
+          }
+          failures += 1;
+          if (failures > maxRetries) {
+            fail(
+              `Lost contact with the server while the backtest was running (${error.message}). ` +
+                "It may still finish; run it again in a minute and the result may come back from cache.",
+            );
+            return;
+          }
+          const delayMs = retryDelay(failures, {
+            baseMs: pollIntervalMs,
+            maxMs: maxRetryDelayMs,
+            retryAfterSec: error.retryAfter,
+            random,
+          });
+          setState((prev) => ({ ...prev, reconnecting: { attempt: failures, maxRetries, delayMs, reason: error.message } }));
+          timer.current = setTimeout(poll, delayMs);
+          return;
         }
+        failures = 0;
+        if (applySnapshot(id, snapshot)) timer.current = setTimeout(poll, pollIntervalMs);
       };
       timer.current = setTimeout(poll, pollIntervalMs);
     },
-    [csrfToken, pollIntervalMs, onStarted, applySnapshot],
+    [csrfToken, pollIntervalMs, maxRetries, maxRetryDelayMs, random, onStarted, applySnapshot],
   );
 
   const reset = useCallback(() => {
