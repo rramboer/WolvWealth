@@ -52,7 +52,19 @@ def job_response(snapshot: dict) -> flask.Response:
 
 @wolvwealth.app.route("/api/backtest/", methods=["POST"])
 def backtest_start():
-    """Validate the request, then start a job (or finish one instantly from cache)."""
+    """Authenticate, validate, charge, then start a job (or finish one instantly from cache).
+
+    Order matters for availability: an anonymous or invalid caller must cost
+    the server one indexed token lookup and nothing else, so authentication
+    comes before the body is even parsed. Validation (bounded work, see
+    wolvwealth.backtest.preflight) comes next, and the charge last, inside the
+    job manager's capacity check, so rejected and refused requests are free.
+    """
+    caller = authenticate(require_csrf=True)
+    try:
+        job_manager.check_capacity(caller.owner)  # Refuse a full queue before spending any validation work.
+    except JobLimitError as err:
+        raise InvalidUsage(str(err), status_code=429 if err.scope == "owner" else 503) from err
     payload = flask.request.get_json(silent=True)
     if payload is None:
         raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
@@ -65,9 +77,6 @@ def backtest_start():
     except InvalidOptimizationInput as err:
         raise InvalidUsage(str(err)) from err
 
-    # Validation happens first so malformed requests cost nothing; the charge
-    # runs inside the job manager's capacity check so refused jobs cost nothing.
-    caller = authenticate(require_csrf=True)
     config, benchmarks = request.config, request.benchmark_tickers
     try:
         cached_report = report_cache.peek(prices, config, benchmarks)

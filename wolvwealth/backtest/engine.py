@@ -50,17 +50,27 @@ class Decision:
         return len(self.window) >= MIN_WINDOW_ROWS and bool(self.eligible)
 
 
-def prepare(prices: pd.DataFrame, config: BacktestConfig) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
-    """Universe prices and the trading days in [start, end]. Raises ValueError if unusable."""
+def trading_days_in_range(prices: pd.DataFrame, config: BacktestConfig) -> pd.DatetimeIndex:
+    """Trading days in [start, end]. Index-only, so it is cheap. Raises ValueError if fewer than two."""
+    index = prices.index if prices.index.is_monotonic_increasing else prices.index.sort_values()
+    start, end = pd.Timestamp(config.start), pd.Timestamp(config.end)
+    trading_days = index[(index >= start) & (index <= end)]
+    if len(trading_days) < 2:
+        raise ValueError(f"Fewer than two trading days of price data between {config.start} and {config.end}.")
+    return trading_days
+
+
+def universe_prices(prices: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
+    """Price columns for the universe, sorted by date. Raises ValueError for unknown tickers."""
     missing = [ticker for ticker in config.universe if ticker not in prices.columns]
     if missing:
         raise ValueError(f"No price data available for: {', '.join(sorted(missing))}.")
-    prices = prices.sort_index()
-    start, end = pd.Timestamp(config.start), pd.Timestamp(config.end)
-    trading_days = prices.index[(prices.index >= start) & (prices.index <= end)]
-    if len(trading_days) < 2:
-        raise ValueError(f"Fewer than two trading days of price data between {config.start} and {config.end}.")
-    return prices[list(config.universe)], trading_days
+    return prices[list(config.universe)].sort_index()
+
+
+def prepare(prices: pd.DataFrame, config: BacktestConfig) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
+    """Universe prices and the trading days in [start, end]. Raises ValueError if unusable."""
+    return universe_prices(prices, config), trading_days_in_range(prices, config)
 
 
 def iter_decisions(

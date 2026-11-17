@@ -139,6 +139,19 @@ class TestJobManager:
         manager.wait(first["job_id"], timeout=5)
         manager.shutdown()
 
+    def test_check_capacity_is_advisory_and_does_not_create_jobs(self):
+        manager = JobManager(max_workers=1, max_active_per_owner=1)
+        manager.check_capacity("alice")  # nothing running: fine
+        release = threading.Event()
+        first = manager.submit("alice", lambda progress: release.wait(5) and FakeReport())
+        with pytest.raises(JobLimitError):
+            manager.check_capacity("alice")
+        manager.check_capacity("bob")
+        assert len(manager._jobs) == 1
+        release.set()
+        manager.wait(first["job_id"], timeout=5)
+        manager.shutdown()
+
     def test_server_queue_limit(self):
         manager = JobManager(max_workers=1, max_pending=1, max_active_per_owner=5)
         release = threading.Event()

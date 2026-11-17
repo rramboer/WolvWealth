@@ -10,7 +10,7 @@ import dataclasses
 import pandas as pd
 
 from wolvwealth.backtest.config import BacktestConfig
-from wolvwealth.backtest.engine import MIN_WINDOW_ROWS, iter_decisions, prepare
+from wolvwealth.backtest.engine import MIN_WINDOW_ROWS, iter_decisions, trading_days_in_range, universe_prices
 from wolvwealth.backtest.schedule import rebalance_dates
 from wolvwealth.optimizer_params import InvalidOptimizationInput, feasibility_problem
 
@@ -28,10 +28,27 @@ class Preflight:
     first_executable: pd.Timestamp | None
 
 
-def preflight(prices: pd.DataFrame, config: BacktestConfig) -> Preflight:
-    """Classify every scheduled decision. Raises ValueError if the range has no usable trading days."""
-    raw, trading_days = prepare(prices, config)
+class TooManyRebalances(InvalidOptimizationInput):
+    """The schedule exceeds the per-request limit. Raised before any price data is examined."""
+
+
+def preflight(prices: pd.DataFrame, config: BacktestConfig, max_rebalances: int | None = None) -> Preflight:
+    """Classify every scheduled decision without running the optimizer.
+
+    The schedule is built first from dates alone; if it exceeds
+    `max_rebalances`, TooManyRebalances is raised right there, so the cost of
+    an over-limit request is independent of how far over the limit it is. Only
+    an in-limit schedule is walked (one lookback window slice per decision).
+    Raises ValueError if the range has no usable trading days.
+    """
+    trading_days = trading_days_in_range(prices, config)  # Index only: no column work before the limit check.
     dates = rebalance_dates(trading_days, config.frequency)
+    if max_rebalances is not None and len(dates) > max_rebalances:
+        raise TooManyRebalances(
+            f"Too many rebalances: this request needs {len(dates)}, the limit is {max_rebalances}. "
+            "Shorten the date range or choose a lower frequency."
+        )
+    raw = universe_prices(prices, config)
     counts = {"executable": 0, "no_history": 0, "infeasible": 0, "after_end": 0}
     max_eligible = 0
     first_executable = None
@@ -59,14 +76,11 @@ def check_runnable(prices: pd.DataFrame, config: BacktestConfig, max_rebalances:
     if config.end > last:
         raise InvalidOptimizationInput(f"end is after the last available price date ({last}).")
     try:
-        plan = preflight(prices, config)
-    except ValueError as err:
+        plan = preflight(prices, config, max_rebalances=max_rebalances)
+    except InvalidOptimizationInput:  # TooManyRebalances: already the right type and message.
+        raise
+    except ValueError as err:  # prepare(): no usable trading days.
         raise InvalidOptimizationInput(str(err)) from err
-    if max_rebalances is not None and plan.decisions > max_rebalances:
-        raise InvalidOptimizationInput(
-            f"Too many rebalances: this request needs {plan.decisions}, the limit is {max_rebalances}. "
-            "Shorten the date range or choose a lower frequency."
-        )
     if plan.executable == 0:
         raise InvalidOptimizationInput(f"No rebalance could execute in this range: {_reason(plan, config, first)}")
     return plan

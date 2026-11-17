@@ -498,3 +498,51 @@ class TestHugeTopN:
         }[url]
         response = raw_json_post(client, url, body.format(d="1" + "0" * 5000))
         assert response.status_code in (200, 202), response.data[:200]
+
+
+class TestOverLimitRequestsAreCheap:
+    """Regression: the rebalance limit was enforced only after walking every scheduled decision."""
+
+    def test_limit_is_enforced_before_any_decision_is_examined(self, monkeypatch):
+        import wolvwealth.backtest.preflight as preflight_module
+        from wolvwealth.backtest.preflight import TooManyRebalances, check_runnable
+
+        def must_not_iterate(*args, **kwargs):
+            raise AssertionError("iter_decisions ran for an over-limit schedule")
+
+        monkeypatch.setattr(preflight_module, "iter_decisions", must_not_iterate)
+        prices = fixture_prices()
+        config = BacktestConfig(
+            start=prices.index[0].date(),
+            end=prices.index[-1].date(),
+            universe=tuple(prices.columns),
+            frequency=Frequency.DAILY,
+            lookback_days=30,
+        )
+        with pytest.raises(TooManyRebalances, match="Too many rebalances"):
+            check_runnable(prices, config, max_rebalances=120)
+
+    def test_in_limit_schedule_is_still_walked(self):
+        from wolvwealth.backtest.preflight import check_runnable
+
+        prices = fixture_prices()
+        config = BacktestConfig(
+            start=datetime.date(2023, 7, 1),
+            end=prices.index[-1].date(),
+            universe=tuple(prices.columns),
+            frequency=Frequency.MONTHLY,
+            lookback_days=120,
+        )
+        plan = check_runnable(prices, config, max_rebalances=120)
+        assert plan.executable > 0
+
+    def test_worst_case_over_limit_request_is_fast(self):
+        """Whole-history daily schedule: thousands of decisions, must be refused in well under a second."""
+        import time
+
+        prices = fixture_prices()
+        payload = {"start": prices.index[0].date().isoformat(), "frequency": "daily", "universe": ["top5"]}
+        started = time.perf_counter()
+        with pytest.raises(InvalidOptimizationInput, match="Too many rebalances"):
+            parse_backtest_request(payload, ticker_universe=fixture_universe(), prices=prices)
+        assert time.perf_counter() - started < 0.5

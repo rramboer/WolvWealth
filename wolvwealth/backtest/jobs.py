@@ -141,6 +141,16 @@ class JobManager:
             self._succeed_locked(job, report, report_dict)
             return self._snapshot_locked(job)
 
+    def check_capacity(self, owner: str) -> None:
+        """Raise JobLimitError if a submit from `owner` would be refused right now.
+
+        A cheap pre-check so callers can refuse before doing validation work;
+        submit() repeats it atomically with the charge, so this is advisory.
+        """
+        with self._lock:
+            self._prune_locked()
+            self._check_capacity_locked(owner)
+
     def get(self, job_id: str, owner: str) -> dict | None:
         """Snapshot of the job, or None if it does not exist, expired, or belongs to someone else."""
         with self._lock:

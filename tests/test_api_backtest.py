@@ -205,8 +205,22 @@ class TestBacktestEndpoint:
         assert remaining_uses(client) == before
 
     def test_non_json_body_rejected(self, client):
-        response = client.post("/api/backtest/", data="nope", content_type="text/plain")
+        response = client.post(
+            "/api/backtest/", data="nope", content_type="text/plain", headers={"Authorization": DEV_USER_TOKEN}
+        )
         assert response.status_code == 400
+
+    @pytest.mark.parametrize("headers", [{}, {"Authorization": "bogus"}])
+    def test_unauthenticated_requests_do_no_validation_work(self, client, monkeypatch, headers):
+        """Regression: an anonymous POST used to run the full (seconds-long) pre-run check before auth."""
+
+        def must_not_run(*args, **kwargs):
+            raise AssertionError("parse_backtest_request ran for an unauthenticated request")
+
+        monkeypatch.setattr(backtest_api, "parse_backtest_request", must_not_run)
+        heavy = {"start": "2023-01-02", "frequency": "daily", "universe": ["top5"]}
+        response = client.post("/api/backtest/", json=heavy, headers=headers)
+        assert response.status_code == (401 if not headers else 403)
 
     def test_include_equity_false(self, client):
         data = finish(client, api_key_post(client, {**PAYLOAD, "include_equity": False}))
@@ -246,6 +260,28 @@ class TestBacktestEndpoint:
             second = api_key_post(client, {**PAYLOAD, "lookback_days": 121})
             assert second.status_code == 429
             assert remaining_uses(client) == before
+        finally:
+            blocker.set()
+            backtest_api.job_manager.wait(first.get_json()["job_id"], timeout=30)
+
+    def test_full_queue_is_refused_before_validation(self, client, monkeypatch):
+        blocker = threading.Event()
+
+        def slow_report(*args, **kwargs):
+            blocker.wait(30)
+            raise ValueError("stopped by test")
+
+        monkeypatch.setattr(backtest_api, "run_report", slow_report)
+        backtest_api.job_manager.max_active_per_owner = 1
+        try:
+            first = api_key_post(client, PAYLOAD)
+            assert first.status_code == 202
+
+            def must_not_run(*args, **kwargs):
+                raise AssertionError("validation ran although the owner's queue was full")
+
+            monkeypatch.setattr(backtest_api, "parse_backtest_request", must_not_run)
+            assert api_key_post(client, {**PAYLOAD, "lookback_days": 121}).status_code == 429
         finally:
             blocker.set()
             backtest_api.job_manager.wait(first.get_json()["job_id"], timeout=30)
