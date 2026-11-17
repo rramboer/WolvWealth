@@ -12,7 +12,6 @@ import pandas as pd
 
 from wolvwealth.backtest.config import BacktestConfig, Frequency
 from wolvwealth.backtest.preflight import check_runnable
-from wolvwealth.backtest.schedule import rebalance_dates
 from wolvwealth.backtest.service import DEFAULT_BENCHMARK_TICKERS
 from wolvwealth.optimizer_params import (
     Constraints,
@@ -95,13 +94,6 @@ def parse_backtest_request(
     if not isinstance(include_equity, bool):
         raise InvalidOptimizationInput("Invalid include_equity. include_equity must be a boolean.")
     return BacktestRequest(config=config, benchmark_tickers=benchmarks, include_equity=include_equity)
-
-
-def count_rebalances(prices: pd.DataFrame, config: BacktestConfig) -> int:
-    """Number of rebalance decisions the config implies on this price calendar."""
-    index = prices.index
-    trading_days = index[(index >= pd.Timestamp(config.start)) & (index <= pd.Timestamp(config.end))]
-    return len(rebalance_dates(trading_days, config.frequency))
 
 
 _KNOWN_KEYS = {

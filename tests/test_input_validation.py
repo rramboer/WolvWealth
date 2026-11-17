@@ -272,6 +272,34 @@ def remaining_uses(client) -> int:
     return account.get_json()["optimizations_remaining"]
 
 
+class TestInfeasibilityHintIsActionable:
+    """Regression: for 3 stocks the hint said 0.33, but 3 * 0.33 = 0.99 is still infeasible."""
+
+    @pytest.mark.parametrize("positions", range(1, 41))
+    def test_suggested_max_weight_is_feasible_at_api_precision(self, positions):
+        from wolvwealth.optimizer_params import feasibility_problem, minimum_feasible_max_weight
+
+        suggested = minimum_feasible_max_weight(positions)
+        assert suggested == round(suggested, 2)  # what the API would store
+        assert feasibility_problem(Constraints(max_weight=suggested), positions) is None
+        # And it is the smallest such value: one cent less must fail (unless already at 0.01).
+        if suggested > 0.01:
+            assert feasibility_problem(Constraints(max_weight=round(suggested - 0.01, 2)), positions) is not None
+
+    def test_three_stocks_hint_says_0_34(self):
+        with pytest.raises(InvalidOptimizationInput, match=r"at least 0\.34, or hold at least 10 stocks"):
+            parse_constraints({"max_weight": 0.1}, universe_size=3)
+
+    def test_stock_count_alternative_is_feasible(self):
+        from wolvwealth.optimizer_params import feasibility_problem
+
+        for max_weight in (0.1, 0.15, 0.3, 0.07):
+            problem = feasibility_problem(Constraints(max_weight=max_weight), universe_size=1)
+            needed = int(problem.split("hold at least ")[1].split(" ")[0])
+            assert feasibility_problem(Constraints(max_weight=max_weight), needed) is None
+            assert feasibility_problem(Constraints(max_weight=max_weight), needed - 1) is not None
+
+
 class TestInfeasibleWeightsAreRejectedUpFront:
     """Regression: top5 with max_weight 0.1 can only ever invest 50%, but was accepted."""
 

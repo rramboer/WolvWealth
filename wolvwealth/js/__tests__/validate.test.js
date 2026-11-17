@@ -79,6 +79,16 @@ describe("feasibility against the universe size", () => {
     expect(errors.maxWeight).toBe("5 stocks × 0.1 only reaches 50%; use at least 0.20.");
   });
 
+  it("rounds the suggested max weight up so the suggestion actually works", () => {
+    // 1/3 to nearest cent is 0.33, but 3 x 0.33 = 0.99; the hint must say 0.34.
+    const errors = validateBacktestForm({ ...good, universe: "top3", maxPositions: 0, maxWeight: 0.1 }, config);
+    expect(errors.maxWeight).toMatch(/use at least 0\.34\./);
+    expect(validateBacktestForm({ ...good, universe: "top3", maxPositions: 0, maxWeight: 0.34 }, config)).toEqual({});
+    expect(validateBacktestForm({ ...good, universe: "top7", maxPositions: 0, maxWeight: 0.1 }, config).maxWeight).toMatch(
+      /use at least 0\.15\./,
+    );
+  });
+
   it("counts explicit tickers and accepts the exact boundary", () => {
     expect(validateBacktestForm({ ...good, universe: "AAPL MSFT", maxPositions: 0, maxWeight: 0.4 }, config).maxWeight).toMatch(
       /80%/,

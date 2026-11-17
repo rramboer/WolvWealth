@@ -164,9 +164,12 @@ def feasibility_problem(constraints: Constraints, universe_size: int) -> str | N
     if positions * constraints.max_weight < 1 - FEASIBILITY_TOLERANCE:
         reachable = positions * constraints.max_weight
         source = f"max_positions ({positions})" if capped else f"{positions} stock(s) in the universe"
+        hint = f"Raise max_weight to at least {minimum_feasible_max_weight(positions):.2f}"
+        if constraints.max_weight > 0:
+            hint += f", or hold at least {math.ceil(1 / constraints.max_weight - FEASIBILITY_TOLERANCE)} stocks"
         return (
             f"Infeasible. {source} * max_weight ({constraints.max_weight:g}) can invest at most {reachable:.0%}; "
-            f"full allocation needs 100%. Raise max_weight to at least {1 / positions:.2f} or add more stocks."
+            f"full allocation needs 100%. {hint}."
         )
     if constraints.min_universal_weight > constraints.max_weight:
         return "Invalid constraints. min_weight must be less than max_weight."
@@ -176,6 +179,15 @@ def feasibility_problem(constraints: Constraints, universe_size: int) -> str | N
             "Lower min_universal_weight or shrink the universe."
         )
     return None
+
+
+def minimum_feasible_max_weight(positions: int) -> float:
+    """Smallest max_weight, at the API's 2-decimal precision, with which `positions` assets reach 100%.
+
+    Rounded up, not to nearest: 1/3 to nearest is 0.33, and 3 * 0.33 = 0.99
+    is still infeasible, so the hint must say 0.34.
+    """
+    return math.ceil(100 / positions - FEASIBILITY_TOLERANCE) / 100
 
 
 def check_feasibility(constraints: Constraints, universe_size: int) -> None:

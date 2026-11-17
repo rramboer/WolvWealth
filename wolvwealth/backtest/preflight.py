@@ -25,7 +25,6 @@ class Preflight:
     infeasible: int  # Eligible assets exist but the constraints cannot fully invest them.
     after_end: int  # The execution lag pushes the trade past the end date.
     max_eligible: int  # Most eligible assets seen at any decision with enough history.
-    first_executable: pd.Timestamp | None
 
 
 class TooManyRebalances(InvalidOptimizationInput):
@@ -51,7 +50,6 @@ def preflight(prices: pd.DataFrame, config: BacktestConfig, max_rebalances: int 
     raw = universe_prices(prices, config)
     counts = {"executable": 0, "no_history": 0, "infeasible": 0, "after_end": 0}
     max_eligible = 0
-    first_executable = None
     for index, decision in enumerate(iter_decisions(raw, trading_days, dates, config)):
         if decision.execution_position is None:
             counts["after_end"] = len(dates) - index  # Every later decision is past the end too.
@@ -64,8 +62,7 @@ def preflight(prices: pd.DataFrame, config: BacktestConfig, max_rebalances: int 
             counts["infeasible"] += 1
             continue
         counts["executable"] += 1
-        first_executable = first_executable or decision.date
-    return Preflight(decisions=len(dates), max_eligible=max_eligible, first_executable=first_executable, **counts)
+    return Preflight(decisions=len(dates), max_eligible=max_eligible, **counts)
 
 
 def check_runnable(prices: pd.DataFrame, config: BacktestConfig, max_rebalances: int | None = None) -> Preflight:

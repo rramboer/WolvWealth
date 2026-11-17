@@ -10,7 +10,7 @@ from tests.conftest import DEV_ADMIN_TOKEN, DEV_USER, DEV_USER_TOKEN, FIXTURES_D
 from wolvwealth.backtest import BacktestConfig, Frequency
 from wolvwealth.backtest.cache import ReportCache
 from wolvwealth.backtest.jobs import JobManager
-from wolvwealth.backtest.request import BacktestLimits, count_rebalances, parse_backtest_request
+from wolvwealth.backtest.request import BacktestLimits, parse_backtest_request
 from wolvwealth.optimizer_params import InvalidOptimizationInput
 
 PAYLOAD = {"start": "2023-07-01", "universe": ["top3"], "lookback_days": 120, "frequency": "monthly"}
@@ -90,16 +90,6 @@ class TestParseBacktestRequest:
     def test_constraints_are_validated(self):
         with pytest.raises(InvalidOptimizationInput, match="max_positions"):
             parse({"start": "2023-07-01", "constraints": {"max_positions": 2, "max_weight": 0.2}})
-
-    def test_count_rebalances_matches_schedule(self):
-        prices = fixture_prices()
-        config = BacktestConfig(
-            start=pd.Timestamp("2023-01-02").date(),
-            end=pd.Timestamp("2023-12-31").date(),
-            universe=("AAPL",),
-            frequency=Frequency.MONTHLY,
-        )
-        assert count_rebalances(prices, config) == 12
 
 
 class TestReportCache:

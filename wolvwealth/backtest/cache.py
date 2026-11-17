@@ -61,10 +61,6 @@ class ReportCache:
         with self._lock:
             self._entries.clear()
 
-    def __len__(self) -> int:
-        """Number of cached reports."""
-        return len(self._entries)
-
 
 def _fingerprint(prices: pd.DataFrame) -> tuple:
     """Cheap identity for a price table: shape plus first and last date."""

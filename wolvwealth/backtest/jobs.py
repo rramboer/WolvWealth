@@ -161,7 +161,7 @@ class JobManager:
             return self._snapshot_locked(job)
 
     def wait(self, job_id: str, timeout: float | None = None) -> bool:
-        """Block until the job finishes. Returns False on timeout. For tests and shutdown."""
+        """Block until the job finishes. Returns False on timeout. Used by tests."""
         with self._lock:
             future = self._futures.get(job_id)
         if future is None:
