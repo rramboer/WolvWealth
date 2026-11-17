@@ -34,6 +34,15 @@ describe("validateBacktestForm", () => {
     expect(validateBacktestForm({ ...good, executionLag: -1 }, config).executionLag).toMatch(/at least 0/);
   });
 
+  it("calls a typed number too big for the browser out of range (regression)", () => {
+    // Number("1" + "0".repeat(400)) is Infinity.
+    const huge = Number("1" + "0".repeat(400));
+    expect(validateBacktestForm({ ...good, initialCash: huge }, config).initialCash).toBe("Out of range.");
+    expect(validateBacktestForm({ ...good, lookbackDays: huge }, config).lookbackDays).toBe("Out of range.");
+    expect(validateBacktestForm({ ...good, initialCash: -huge }, config).initialCash).toBe("Out of range.");
+    expect(validateBacktestForm({ ...good, initialCash: NaN }, config).initialCash).toBe("Must be a finite number.");
+  });
+
   it("bounds transaction costs", () => {
     expect(validateBacktestForm({ ...good, costBps: 1001 }, config).costBps).toBeTruthy();
     expect(validateBacktestForm({ ...good, costBps: NaN }, config).costBps).toMatch(/finite/);

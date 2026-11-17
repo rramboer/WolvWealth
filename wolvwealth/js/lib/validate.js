@@ -18,7 +18,9 @@ const isInteger = (value) => Number.isInteger(value);
 
 function numberError(value, { min, max, exclusiveMin = false, integer = false } = {}) {
   if (value === "" || value === null || value === undefined) return "Required.";
-  if (!isFinite(value)) return "Must be a finite number.";
+  if (typeof value !== "number" || Number.isNaN(value)) return "Must be a finite number.";
+  // A typed 1 followed by hundreds of zeros parses to Infinity in the browser.
+  if (!isFinite(value)) return "Out of range.";
   if (integer && !isInteger(value)) return "Must be a whole number.";
   if (min !== undefined && (value < min || (exclusiveMin && value === min))) {
     return exclusiveMin ? `Must be greater than ${min}.` : `Must be at least ${min}.`;

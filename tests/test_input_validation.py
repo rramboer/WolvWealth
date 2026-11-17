@@ -399,3 +399,102 @@ class TestDatesOutsideThePriceData:
         )
         assert response.status_code == 400, response.get_json()
         assert remaining_uses(client) == before
+
+
+HUGE_INT = "1" + "0" * 400  # A valid JSON integer that no float can represent.
+
+
+class TestHugeNumbersDoNotCrash:
+    """Regression: a 1 followed by hundreds of zeros raised OverflowError in float() -> HTTP 500."""
+
+    @pytest.mark.parametrize("value", [10**400, -(10**400)])
+    def test_require_number_reports_out_of_range(self, value):
+        with pytest.raises(InvalidOptimizationInput, match="cash is out of range"):
+            require_number(value, "cash")
+
+    def test_require_integer_handles_huge_ints_with_bounds(self):
+        with pytest.raises(InvalidOptimizationInput, match="at most 30"):
+            require_integer(10**400, "lag", maximum=30)
+
+    @pytest.mark.parametrize(
+        ("url", "template", "field"),
+        [
+            ("/api/optimize/", '{{"initial_cash": {n}, "universe": ["top3"]}}', "initial_cash"),
+            ("/api/optimize/", '{{"initial_cash": -{n}, "universe": ["top3"]}}', "initial_cash"),
+            ("/api/optimize/", '{{"initial_holdings": {{"AAPL": {n}}}}}', "shares"),
+            ("/api/optimize/", '{{"initial_cash": 1000, "constraints": {{"max_weight": {n}}}}}', "max_weight"),
+            (
+                "/api/optimize/",
+                '{{"initial_cash": 1000, "constraints": {{"min_universal_weight": {n}}}}}',
+                "min_universal_weight",
+            ),
+            ("/api/backtest/", '{{"start": "2023-07-01", "universe": ["top3"], "initial_cash": {n}}}', "initial_cash"),
+            (
+                "/api/backtest/",
+                '{{"start": "2023-07-01", "universe": ["top3"], "transaction_cost_bps": {n}}}',
+                "transaction_cost_bps",
+            ),
+            (
+                "/api/backtest/",
+                '{{"start": "2023-07-01", "universe": ["top3"], "lookback_days": {n}}}',
+                "lookback_days",
+            ),
+            (
+                "/api/backtest/",
+                '{{"start": "2023-07-01", "universe": ["top3"], "execution_lag": {n}}}',
+                "execution_lag",
+            ),
+            (
+                "/api/backtest/",
+                '{{"start": "2023-07-01", "universe": ["top3"], "constraints": {{"max_weight": {n}}}}}',
+                "max_weight",
+            ),
+        ],
+    )
+    def test_endpoints_return_400_and_charge_nothing(self, client, url, template, field):
+        before = remaining_uses(client)
+        response = raw_json_post(client, url, template.format(n=HUGE_INT))
+        assert response.status_code == 400, response.data[:200]
+        assert field in response.get_json()["error"]["message"]
+        assert remaining_uses(client) == before
+
+    def test_more_digits_than_json_allows_is_a_parse_error(self, client):
+        response = raw_json_post(client, "/api/optimize/", '{"initial_cash": 1' + "0" * 5000 + "}")
+        assert response.status_code == 400
+        assert "Parse Error" in response.get_json()["error"]["message"]
+
+    def test_huge_max_positions_is_clamped_not_rejected(self, client):
+        body = f'{{"initial_cash": 1000, "universe": ["top3"], "constraints": {{"max_positions": {HUGE_INT}}}}}'
+        assert raw_json_post(client, "/api/optimize/", body).status_code == 200
+
+
+class TestHugeTopN:
+    """Regression: int() on a topN alias longer than 4300 digits raised ValueError -> HTTP 500."""
+
+    @pytest.mark.parametrize("digits", [400, 5000])
+    def test_clamps_to_the_whole_universe(self, digits):
+        from wolvwealth.optimizer_params import resolve_universe
+
+        universe = fixture_universe()
+        assert resolve_universe(["top1" + "0" * digits], universe) == universe
+
+    def test_leading_zeros(self):
+        from wolvwealth.optimizer_params import resolve_universe
+
+        assert resolve_universe(["top0002"], fixture_universe()) == fixture_universe()[:2]
+
+    @pytest.mark.parametrize("entry", ["top0", "top000"])
+    def test_top_zero_is_rejected(self, entry):
+        from wolvwealth.optimizer_params import resolve_universe
+
+        with pytest.raises(InvalidOptimizationInput, match="selects no stocks"):
+            resolve_universe([entry], fixture_universe())
+
+    @pytest.mark.parametrize("url", ["/api/optimize/", "/api/backtest/"])
+    def test_endpoints_accept_huge_top_n(self, client, url):
+        body = {
+            "/api/optimize/": '{{"initial_cash": 1000, "universe": ["top{d}"]}}',
+            "/api/backtest/": '{{"start": "2023-07-01", "universe": ["top{d}"]}}',
+        }[url]
+        response = raw_json_post(client, url, body.format(d="1" + "0" * 5000))
+        assert response.status_code in (200, 202), response.data[:200]

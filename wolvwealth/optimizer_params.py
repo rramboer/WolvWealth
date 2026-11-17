@@ -36,7 +36,10 @@ def require_number(
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InvalidOptimizationInput(f"Invalid {name}. {name} must be a number.")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as err:  # A JSON integer with ~309+ digits is a valid int but no float can hold it.
+        raise InvalidOptimizationInput(f"Invalid {name}. {name} is out of range.") from err
     if not math.isfinite(number):
         raise InvalidOptimizationInput(f"Invalid {name}. {name} must be a finite number.")
     if minimum is not None and (number < minimum or (exclusive_minimum and number == minimum)):
@@ -98,10 +101,24 @@ def resolve_universe(entries: list, ticker_universe: list[str]) -> list[str]:
             continue
         top_n = TOP_N_PATTERN.fullmatch(entry)
         if top_n:  # e.g. "top50" expands to the 50 largest stocks by market cap
-            universe.extend(ticker_universe[: int(top_n.group(1))])
+            universe.extend(ticker_universe[: _top_n_count(top_n.group(1), entry, len(ticker_universe))])
             continue
         raise InvalidOptimizationInput(f"Invalid symbol in universe: {entry}.")
     return list(dict.fromkeys(universe))
+
+
+def _top_n_count(digits: str, entry: str, universe_size: int) -> int:
+    """N from a "topN" alias, clamped to the universe size.
+
+    Any N longer than the universe size's digit count is clamped without
+    calling int(), which raises ValueError past Python's 4300-digit limit.
+    """
+    digits = digits.lstrip("0")
+    if not digits:
+        raise InvalidOptimizationInput(f"Invalid universe entry {entry}: top0 selects no stocks.")
+    if len(digits) > len(str(universe_size)):
+        return universe_size
+    return min(int(digits), universe_size)
 
 
 def parse_constraints(raw: dict, universe_size: int) -> Constraints:
