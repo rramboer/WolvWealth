@@ -35,6 +35,10 @@ if app.config["SECRET_KEY"] == app.config["DEV_SECRET_KEY"]:
         "Using the insecure development SECRET_KEY. Set WOLVWEALTH_SECRET_KEY before deploying to production."
     )
 
+import wolvwealth.ratelimit  # noqa: E402  (must be initialized before routes register their limits)
+
+wolvwealth.ratelimit.init_app(app)
+
 import wolvwealth.api  # noqa: E402  (route registration requires the app object above)
 import wolvwealth.model  # noqa: E402,F401
 import wolvwealth.views  # noqa: E402,F401

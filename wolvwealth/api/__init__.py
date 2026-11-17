@@ -9,9 +9,11 @@ import wolvwealth.api.auth
 import wolvwealth.api.backtest
 import wolvwealth.api.optimize
 from wolvwealth.api.state import ApplicationState  # noqa: F401  (re-exported for wolvwealth.__init__)
+from wolvwealth.ratelimit import api_per_ip
 
 
 @wolvwealth.app.route("/api/", methods=["GET", "POST"])
+@api_per_ip
 def api_default():
     """WolvWealth API Usage Endpoint."""
     api_key = flask.request.headers.get("Authorization")

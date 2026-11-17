@@ -56,7 +56,14 @@ export function useBacktestJob({ csrfToken, pollIntervalMs = 1000, onStarted } =
           const snapshot = await getBacktestJob(job.status_url);
           if (applySnapshot(id, snapshot)) timer.current = setTimeout(poll, pollIntervalMs);
         } catch (error) {
-          if (id === runId.current) setState((prev) => ({ ...prev, status: "failed", error: error.message }));
+          if (id !== runId.current) return;
+          if (error.status === 429) {
+            // Rate limited: the job is still running server-side. Wait as told, then keep polling.
+            const delay = Math.max(pollIntervalMs, (error.retryAfter ?? 5) * 1000);
+            timer.current = setTimeout(poll, delay);
+            return;
+          }
+          setState((prev) => ({ ...prev, status: "failed", error: error.message }));
         }
       };
       timer.current = setTimeout(poll, pollIntervalMs);

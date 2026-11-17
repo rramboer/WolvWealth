@@ -15,6 +15,7 @@ from wolvwealth.api.auth import (
     generate_api_key,
     hash_password,
 )
+from wolvwealth.ratelimit import configured, limiter, login_username_key
 
 USERNAME_MAX_LENGTH = 20  # matches VARCHAR(20) in sql/schema.sql
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -55,6 +56,7 @@ def is_logged_in() -> bool:
 
 
 @wolvwealth.app.route("/accounts/register/", methods=["POST"])
+@limiter.limit(configured("RATELIMIT_REGISTER_PER_IP"))
 def accounts_create():
     """Create a new user account."""
     validate_csrf()
@@ -87,6 +89,8 @@ def accounts_create():
 
 
 @wolvwealth.app.route("/accounts/login/", methods=["POST"])
+@limiter.limit(configured("RATELIMIT_LOGIN_PER_IP"))
+@limiter.limit(configured("RATELIMIT_LOGIN_PER_USERNAME"), key_func=login_username_key)
 def login():
     """Login a user."""
     validate_csrf()

@@ -10,6 +10,7 @@ import flask
 
 import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
+from wolvwealth.ratelimit import api_per_ip, configured, limiter
 from wolvwealth.timeutil import utc_to_eastern_display
 
 
@@ -33,6 +34,8 @@ class Tier:
 
 
 @wolvwealth.app.route("/api/account/", methods=["POST"])
+@api_per_ip
+@limiter.limit(configured("RATELIMIT_ACCOUNT_PER_IP"))
 def api_account_info():
     """Return credentials information."""
     api_key = flask.request.headers.get("Authorization")

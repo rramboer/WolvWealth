@@ -86,6 +86,10 @@ All configuration is environment-driven (see [.env.example](.env.example)):
 | `WOLVWEALTH_BACKTEST_MAX_PENDING_JOBS` | `20`                | Queued + running jobs before new ones get 503        |
 | `WOLVWEALTH_BACKTEST_MAX_JOBS_PER_USER` | `2`                | Jobs one account may have in flight before 429       |
 | `WOLVWEALTH_BACKTEST_JOB_TTL_SECONDS` | `900`                | How long a finished job stays pollable               |
+| `WOLVWEALTH_TRUSTED_PROXIES` | `0`                        | Reverse proxies in front of the app; see [Rate limiting](#rate-limiting) |
+| `WOLVWEALTH_RATELIMIT_ENABLED` | `true`                    | Turn rate limiting off entirely (not for production) |
+| `WOLVWEALTH_RATELIMIT_STORAGE_URI` | `memory://`           | Counter storage; use `redis://...` with several workers |
+| `WOLVWEALTH_RATELIMIT_*`     | see below                    | Individual limits, e.g. `WOLVWEALTH_RATELIMIT_LOGIN_PER_IP="5 per minute"` |
 
 Generate a production secret key with:
 
@@ -268,6 +272,28 @@ Jobs are held in the memory of the process that accepted them, so polls must rea
 - **Backtest** — date range, frequency, universe, lookback, execution lag, costs and constraints in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
 
 Each run costs one use, shown in the page header. The source is in `wolvwealth/js/` (`lib/` pure helpers, `hooks/useBacktestJob.js` for the job lifecycle, `components/` presentational pieces, `features/` the two tabs) and is built by Vite into `static/js/bundle.js`.
+
+## Rate limiting
+
+Every request is rate limited before its view runs, so before authentication, request parsing or any database work beyond what identifying the caller needs. Over-limit requests get `429 Too Many Requests` with a `Retry-After` header (JSON under `/api/`, an HTML page elsewhere) and are never charged. Responses carry `X-RateLimit-Limit`, `-Remaining` and `-Reset` headers.
+
+| Limit (env suffix after `WOLVWEALTH_RATELIMIT_`) | Default | Keyed by | Applies to |
+| --- | --- | --- | --- |
+| `SITE_PER_IP` | 600 per minute | client IP | every route except static files, one shared bucket |
+| `API_PER_IP` | 300 per minute | client IP | every `/api/` route, one shared bucket (stops anonymous floods and API-key guessing) |
+| `OPTIMIZE_PER_CALLER` | 20 per minute; 200 per hour | API key or session user | `POST /api/optimize/` |
+| `BACKTEST_START_PER_CALLER` | 10 per minute; 60 per hour | API key or session user | `POST /api/backtest/` |
+| `BACKTEST_STATUS_PER_CALLER` | 180 per minute | API key or session user | `GET /api/backtest/<id>/` (the dashboard polls once a second) |
+| `ACCOUNT_PER_IP` | 30 per minute | client IP | `POST /api/account/` |
+| `LOGIN_PER_IP` | 10 per minute; 50 per hour | client IP | `POST /accounts/login/` |
+| `LOGIN_PER_USERNAME` | 20 per hour | submitted username | `POST /accounts/login/` (distributed brute force on one account) |
+| `REGISTER_PER_IP` | 5 per hour | client IP | `POST /accounts/register/` |
+
+**Behind a reverse proxy, set `WOLVWEALTH_TRUSTED_PROXIES`.** Gunicorn reports the socket peer as the client address, so behind nginx every visitor looks like `127.0.0.1` and would share one set of per-IP limits; one abusive client would lock everyone out. Set it to the number of proxies in front of the app (usually `1`) and make sure the proxy appends to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Only that many right-most entries are believed, so clients cannot spoof their address. Leave it at `0` when gunicorn is exposed directly; the header is then ignored.
+
+Counters live in process memory by default, like backtest jobs, which is right for the default single gunicorn worker. With `GUNICORN_PROCESSES > 1`, point `WOLVWEALTH_RATELIMIT_STORAGE_URI` at a shared store such as `redis://localhost:6379` (install the `redis` package) or each worker will enforce its own copy of every limit.
+
+Application-level limits complement, not replace, connection limits at the proxy or load balancer (e.g. nginx `limit_req` / `limit_conn`), which can refuse floods before they reach Python at all.
 
 ## Backtesting
 

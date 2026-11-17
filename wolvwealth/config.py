@@ -41,5 +41,33 @@ BACKTEST_MAX_PENDING_JOBS = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_PENDING_
 BACKTEST_MAX_JOBS_PER_USER = int(os.environ.get("WOLVWEALTH_BACKTEST_MAX_JOBS_PER_USER", 2))
 BACKTEST_JOB_TTL_SECONDS = int(os.environ.get("WOLVWEALTH_BACKTEST_JOB_TTL_SECONDS", 900))
 
+# Rate limiting (see wolvwealth/ratelimit.py). Limit strings use the "N per
+# period;M per period" syntax of the `limits` library and are read per request.
+RATELIMIT_ENABLED = os.environ.get("WOLVWEALTH_RATELIMIT_ENABLED", "true").lower() not in ("0", "false", "no")
+# memory:// is per process. With GUNICORN_PROCESSES > 1 use a shared store, e.g. redis://localhost:6379.
+RATELIMIT_STORAGE_URI = os.environ.get("WOLVWEALTH_RATELIMIT_STORAGE_URI", "memory://")
+RATELIMIT_STRATEGY = "moving-window"
+RATELIMIT_HEADERS_ENABLED = True  # X-RateLimit-Limit / -Remaining / -Reset and Retry-After
+RATELIMIT_KEY_PREFIX = "wolvwealth"
+RATELIMIT_SITE_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_SITE_PER_IP", "600 per minute")
+RATELIMIT_API_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_API_PER_IP", "300 per minute")
+RATELIMIT_LOGIN_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_LOGIN_PER_IP", "10 per minute;50 per hour")
+RATELIMIT_LOGIN_PER_USERNAME = os.environ.get("WOLVWEALTH_RATELIMIT_LOGIN_PER_USERNAME", "20 per hour")
+RATELIMIT_REGISTER_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_REGISTER_PER_IP", "5 per hour")
+RATELIMIT_ACCOUNT_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_ACCOUNT_PER_IP", "30 per minute")
+RATELIMIT_OPTIMIZE_PER_CALLER = os.environ.get("WOLVWEALTH_RATELIMIT_OPTIMIZE_PER_CALLER", "20 per minute;200 per hour")
+RATELIMIT_BACKTEST_START_PER_CALLER = os.environ.get(
+    "WOLVWEALTH_RATELIMIT_BACKTEST_START_PER_CALLER", "10 per minute;60 per hour"
+)
+# The dashboard polls once a second; this leaves room for a few open tabs.
+RATELIMIT_BACKTEST_STATUS_PER_CALLER = os.environ.get(
+    "WOLVWEALTH_RATELIMIT_BACKTEST_STATUS_PER_CALLER", "180 per minute"
+)
+
+# Number of reverse proxies in front of the app whose X-Forwarded-For can be
+# trusted. 0 (default) ignores the header: right when gunicorn is exposed
+# directly, wrong behind nginx (every client would share 127.0.0.1's limits).
+TRUSTED_PROXY_COUNT = int(os.environ.get("WOLVWEALTH_TRUSTED_PROXIES", 0))
+
 # SQLite database location. Build it with `./bin/db create`.
 DATABASE_FILENAME = pathlib.Path(os.environ.get("WOLVWEALTH_DATABASE", WOLVWEALTH_ROOT / "var" / "wolvwealth.sqlite3"))

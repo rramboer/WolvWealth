@@ -48,6 +48,31 @@ describe("useBacktestJob", () => {
     expect(globalThis.fetch.mock.calls.filter(([, init]) => init.method === "GET").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps polling through a 429 instead of failing the job", async () => {
+    const started = { job_id: "j1", status: "queued", status_url: STATUS_URL };
+    const done = { ...started, status: "succeeded", progress: { fraction: 1 }, report: {} };
+    const limited = {
+      ok: false,
+      status: 429,
+      headers: new Headers({ "Retry-After": "0" }),
+      json: () => Promise.resolve({ error: { message: "Too many requests. Try again in 1 second.", status_code: 429 } }),
+    };
+    let gets = 0;
+    globalThis.fetch = vi.fn((url, init) => {
+      if (init.method === "POST") return Promise.resolve(jsonResponse(202, started));
+      gets += 1;
+      return Promise.resolve(gets === 1 ? limited : jsonResponse(200, done));
+    });
+
+    const { result } = renderHook(() => useBacktestJob({ csrfToken: "tok", pollIntervalMs: 5 }));
+    act(() => {
+      result.current.run({});
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("succeeded"));
+    expect(gets).toBe(2);
+    expect(result.current.state.error).toBeNull();
+  });
+
   it("stops polling once the job fails and exposes the error", async () => {
     const started = { job_id: "j1", status: "queued", status_url: STATUS_URL };
     const failed = { ...started, status: "failed", error: "Fewer than two trading days" };

@@ -13,7 +13,8 @@ workers = int(os.environ.get("GUNICORN_PROCESSES", "1"))
 if workers > 1:
     print(
         f"WARNING: GUNICORN_PROCESSES={workers}; backtest job polling requires requests to reach "
-        "the worker that started the job (sticky routing).",
+        "the worker that started the job (sticky routing), and rate limits need a shared "
+        "WOLVWEALTH_RATELIMIT_STORAGE_URI (e.g. redis://) or each worker counts separately.",
         file=sys.stderr,
     )
 

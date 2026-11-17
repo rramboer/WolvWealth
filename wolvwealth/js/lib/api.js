@@ -2,11 +2,17 @@
 // session. State-changing calls carry the CSRF token from the page.
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, retryAfter = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.retryAfter = retryAfter; // Seconds, from the Retry-After header on 429 responses.
   }
+}
+
+function retryAfterSeconds(response) {
+  const value = Number(response.headers?.get?.("Retry-After"));
+  return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 async function request(method, url, { body, csrfToken } = {}) {
@@ -34,7 +40,7 @@ async function request(method, url, { body, csrfToken } = {}) {
   }
   if (!response.ok) {
     const message = data?.error?.message ?? `Request failed with status ${response.status}.`;
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, retryAfterSeconds(response));
   }
   return data;
 }

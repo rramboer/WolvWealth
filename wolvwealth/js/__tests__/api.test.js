@@ -33,6 +33,19 @@ describe("startBacktest", () => {
     });
   });
 
+  it("exposes Retry-After on rate-limited responses", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: new Headers({ "Retry-After": "12" }),
+      json: () => Promise.resolve({ error: { message: "Too many requests. Try again in 12 seconds." } }),
+    });
+    const error = await startBacktest({}, "tok").catch((e) => e);
+    expect(error.status).toBe(429);
+    expect(error.retryAfter).toBe(12);
+    expect(error.message).toBe("Too many requests. Try again in 12 seconds.");
+  });
+
   it("falls back to a generic message when the body is not JSON", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 502, json: () => Promise.reject(new Error()) });
     await expect(startBacktest({}, "tok")).rejects.toThrow("Request failed with status 502.");

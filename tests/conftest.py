@@ -26,6 +26,16 @@ DEV_ADMIN_TOKEN = "insecure-dev-admin-token"
 CSRF_TOKEN = "test-csrf-token"
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limits():
+    """Every test starts with empty rate-limit counters (the whole suite shares one client IP)."""
+    from wolvwealth.ratelimit import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
 @pytest.fixture
 def app(tmp_path):
     """Flask app configured with a throwaway database built from sql/."""

@@ -21,6 +21,7 @@ from wolvwealth.backtest.jobs import JobLimitError, JobManager
 from wolvwealth.backtest.request import BacktestLimits, parse_backtest_request
 from wolvwealth.backtest.service import run_report
 from wolvwealth.optimizer_params import InvalidOptimizationInput
+from wolvwealth.ratelimit import api_per_ip, caller_key, configured, limiter
 
 _config = wolvwealth.app.config
 report_cache = ReportCache(maxsize=_config["BACKTEST_CACHE_SIZE"])
@@ -51,6 +52,8 @@ def job_response(snapshot: dict) -> flask.Response:
 
 
 @wolvwealth.app.route("/api/backtest/", methods=["POST"])
+@api_per_ip
+@limiter.limit(configured("RATELIMIT_BACKTEST_START_PER_CALLER"), key_func=caller_key)
 def backtest_start():
     """Authenticate, validate, charge, then start a job (or finish one instantly from cache).
 
@@ -101,6 +104,8 @@ def backtest_start():
 
 
 @wolvwealth.app.route("/api/backtest/<job_id>/", methods=["GET"])
+@api_per_ip
+@limiter.limit(configured("RATELIMIT_BACKTEST_STATUS_PER_CALLER"), key_func=caller_key)
 def backtest_status(job_id: str):
     """Report a job's progress, and its result once finished. Free; never charges."""
     caller = authenticate(require_csrf=False)

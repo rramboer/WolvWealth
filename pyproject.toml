@@ -19,6 +19,7 @@ dependencies = [
     "cvxpy>=1.4",
     "yfinance>=0.2.36",
     "gunicorn>=21.0",
+    "flask-limiter>=4.1",
 ]
 
 [project.urls]

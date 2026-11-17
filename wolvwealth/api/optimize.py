@@ -19,6 +19,7 @@ from wolvwealth.optimizer_params import (
     require_number,
     resolve_universe,
 )
+from wolvwealth.ratelimit import api_per_ip, caller_key, configured, limiter
 
 
 class Optimization:
@@ -162,6 +163,8 @@ class Optimization:
 
 
 @wolvwealth.app.route("/api/optimize/", methods=["POST"])
+@api_per_ip
+@limiter.limit(configured("RATELIMIT_OPTIMIZE_PER_CALLER"), key_func=caller_key)
 def optimize():
     """Execute Optimization."""
     return Optimization().output

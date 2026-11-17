@@ -8,6 +8,7 @@ import flask
 
 import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
+from wolvwealth.ratelimit import api_per_ip
 from wolvwealth.timeutil import eastern_to_utc_storage, utc_to_eastern_display
 
 
@@ -45,6 +46,7 @@ def parse_username_json() -> dict:
 
 
 @wolvwealth.app.route("/api/admin/add/", methods=["POST"])
+@api_per_ip
 def add_admin():
     """Add user to admin list."""
     require_admin()
@@ -61,6 +63,7 @@ def add_admin():
 
 
 @wolvwealth.app.route("/api/admin/remove/", methods=["POST"])
+@api_per_ip
 def remove_admin():
     """Remove user from admin list."""
     require_admin()
@@ -74,6 +77,7 @@ def remove_admin():
 
 
 @wolvwealth.app.route("/api/db/dump/", methods=["POST"])
+@api_per_ip
 def db_dump():
     """Summarize database contents. Requires admin privileges.
 
@@ -92,6 +96,7 @@ def db_dump():
 
 
 @wolvwealth.app.route("/api/db/status/", methods=["POST"])
+@api_per_ip
 def db_test():
     """Test database in route. Requires admin privileges."""
     require_admin()
@@ -105,6 +110,7 @@ def db_test():
 
 
 @wolvwealth.app.route("/api/admin/user-info/", methods=["POST"])
+@api_per_ip
 def user_info():
     """Get user info."""
     require_admin()
@@ -134,6 +140,7 @@ def user_info():
 
 
 @wolvwealth.app.route("/api/admin/update-user/", methods=["POST"])
+@api_per_ip
 def update_user():
     """Update a user's information."""
     require_admin()
@@ -165,6 +172,7 @@ def update_user():
 
 
 @wolvwealth.app.route("/api/admin/delete-user/", methods=["POST"])
+@api_per_ip
 def delete_user():
     """Delete a user."""
     require_admin()
