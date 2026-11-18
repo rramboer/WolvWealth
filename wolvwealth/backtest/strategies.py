@@ -11,7 +11,7 @@ import cvxpy
 import pandas as pd
 from pypfopt import exceptions as pypfopt_exceptions
 
-from wolvwealth.optimizer_core import compute_max_sharpe_portfolio
+from wolvwealth.optimizer_core import NoAssetBeatsRiskFreeRate, compute_max_sharpe_portfolio
 from wolvwealth.optimizer_params import Constraints
 
 Weights = dict[str, float]
@@ -27,7 +27,7 @@ class Strategy(Protocol):
     name: str
 
     def target_weights(self, window: pd.DataFrame) -> Weights | None:
-        """Return target weights (summing to 1) or None to keep current holdings.
+        """Return target weights (summing to 1), {} to move everything to cash, or None to keep current holdings.
 
         `window` holds the lookback prices of the eligible assets only. May
         raise StrategyError when no sensible allocation exists.
@@ -44,6 +44,7 @@ class MaxSharpeStrategy:
         self.constraints = constraints or Constraints()
         self.risk_free_rate = risk_free_rate
         self.last_performance: tuple[float, float, float] | None = None
+        self.last_note: str | None = None  # Why the last decision was what it was, if notable.
 
     def target_weights(self, window: pd.DataFrame) -> Weights:
         """Optimize over the window, enforcing max_positions against the eligible count."""
@@ -52,10 +53,15 @@ class MaxSharpeStrategy:
             constraints = dataclasses.replace(
                 constraints, max_positions=min(constraints.max_positions, window.shape[1])
             )
+        self.last_note = None
         try:
             weights, self.last_performance = compute_max_sharpe_portfolio(
                 window, risk_free_rate=self.risk_free_rate, **constraints.as_kwargs()
             )
+        except NoAssetBeatsRiskFreeRate as answer:
+            # The model's answer, not a failure: sell into cash rather than keep stale positions.
+            self.last_performance, self.last_note = answer.performance, str(answer)
+            return {}
         except (pypfopt_exceptions.OptimizationError, cvxpy.error.SolverError, ValueError) as err:
             raise StrategyError(f"optimization failed: {err}") from err
         return weights

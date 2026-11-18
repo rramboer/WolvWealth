@@ -19,6 +19,7 @@ class RebalanceEvent:
     transaction_cost: float
     eligible_assets: int  # Universe members with enough history on the decision date.
     expected_performance: tuple[float, float, float] | None = None  # (return, vol, sharpe) the optimizer predicted.
+    note: str | None = None  # Why the strategy chose this allocation, when notable (e.g. holding cash).
 
     def to_dict(self) -> dict:
         """JSON-friendly representation."""
@@ -32,6 +33,7 @@ class RebalanceEvent:
             "turnover": round(self.turnover, 4),
             "transaction_cost": round(self.transaction_cost, 2),
             "eligible_assets": self.eligible_assets,
+            "note": self.note,
             "expected_performance": None
             if self.expected_performance is None
             else {

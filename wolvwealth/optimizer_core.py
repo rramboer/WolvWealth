@@ -16,6 +16,32 @@ DEFAULT_RISK_FREE_RATE = 0.02  # Matches pypfopt's max_sharpe default.
 Performance = tuple[float, float, float]  # (expected_return, annual_volatility, sharpe_ratio)
 
 
+class NoAssetBeatsRiskFreeRate(Exception):
+    """No asset's expected return exceeds the risk-free rate, so the max-Sharpe answer is cash.
+
+    This is a valid result, not an error in the request: under the model,
+    every risky portfolio has a Sharpe ratio at or below zero, and the best
+    allocation is to hold the risk-free asset. Callers turn it into a
+    hold-cash answer. Deliberately not a ValueError, so generic error handling
+    cannot swallow it as a failure.
+    """
+
+    def __init__(self, risk_free_rate: float, best_asset: str, best_return: float) -> None:
+        """Record the rate and the closest asset, for the explanation."""
+        self.risk_free_rate = risk_free_rate
+        self.best_asset = best_asset
+        self.best_return = best_return
+        super().__init__(
+            f"No asset's expected annual return beats the {risk_free_rate:.1%} risk-free rate "
+            f"(best: {best_asset} at {best_return:.1%}), so the max-Sharpe recommendation is to hold cash."
+        )
+
+    @property
+    def performance(self) -> Performance:
+        """Expected performance of the cash answer: the risk-free return with no volatility."""
+        return self.risk_free_rate, 0.0, 0.0
+
+
 def compute_max_sharpe_portfolio(
     prices: pd.DataFrame,
     *,
@@ -44,10 +70,16 @@ def compute_max_sharpe_portfolio(
         sharpe_ratio) for exactly those weights.
 
     Raises:
-        pypfopt/cvxpy optimization errors when the problem is infeasible, and
-        ValueError when the price data cannot be optimized (e.g. NaN columns).
+        NoAssetBeatsRiskFreeRate when no asset's expected return exceeds
+        risk_free_rate (the answer is then to hold cash); pypfopt/cvxpy
+        optimization errors when the solver fails; ValueError when the price
+        data cannot be optimized (e.g. NaN columns).
     """
     mu = expected_returns.mean_historical_return(prices)
+    finite_mu = mu.dropna()
+    if not finite_mu.empty and not (finite_mu > risk_free_rate).any():
+        best = finite_mu.idxmax()
+        raise NoAssetBeatsRiskFreeRate(risk_free_rate, str(best), float(finite_mu[best]))
     cov_matrix = risk_models.exp_cov(prices)
     weights = _solve(mu, cov_matrix, max_weight, min_universal_weight, weight_threshold, risk_free_rate)
     if max_positions != -1 and len(weights) > max_positions:
@@ -105,9 +137,19 @@ def build_portfolio_output(
     total_investment: float,
     price_of: Callable[[str], float],
     performance: Performance | None = None,
+    notes: list[str] | None = None,
 ) -> dict:
-    """Convert optimized weights into the API output structure."""
-    output = {"optimized_portfolio": {}}
+    """Convert optimized weights into the API output structure.
+
+    `cash` is whatever the weights leave unallocated: zero for a normal
+    portfolio (weights sum to 1), everything for a hold-cash answer (no weights).
+    """
+    cash_weight = max(0.0, 1.0 - sum(weights.values()))
+    output = {
+        "optimized_portfolio": {},
+        "cash": {"value": round(cash_weight * total_investment, 2), "percent_weight": round(cash_weight * 100, 2)},
+        "notes": list(notes or []),
+    }
     for asset, weight in weights.items():
         output["optimized_portfolio"][asset] = {
             "shares": round(weight * total_investment / price_of(asset), 4),

@@ -3,6 +3,7 @@
 ## Unreleased (backtesting)
 
 ### Fixed
+- "No asset beats the risk-free rate" is now treated as the answer it is (hold cash), not an error. `/api/optimize/` returns `200` with an empty portfolio, the full amount under a new `cash` field and the reason in a new `notes` field, instead of `400 "Optimization Error ... Infeasible"`; genuine solver failures now say the solver could not find a portfolio rather than blaming the constraints. Backtests sell into cash at such a rebalance (previously they logged "optimization failed" and kept the previous, stale positions), record a `note` on the rebalance and add one summary warning. The dashboard shows a cash row and the explanation; the CLI prints `cash 100%`. Every optimize response now includes `cash` and `notes`.
 - Backtests no longer crash for start dates before a universe member's IPO: assets without history in the lookback window are skipped for that rebalance.
 - The period after the final rebalance is now included; the equity curve is marked to market on every trading day through the end date.
 - Rebalance dates use calendar steps instead of fixed day counts, so "monthly" no longer drifts.

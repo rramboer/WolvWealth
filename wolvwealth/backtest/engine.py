@@ -149,6 +149,7 @@ def run_backtest(
                 execution_date=trading_days[execution_position],
                 eligible_count=len(decision.eligible),
                 expected_performance=getattr(strategy, "last_performance", None),
+                note=getattr(strategy, "last_note", None),
             )
         )
 
@@ -157,6 +158,13 @@ def run_backtest(
         on_step(len(dates), len(dates))
     if not events:
         warnings.append("No rebalance was executed; the portfolio stayed in cash.")
+    cash_decisions = [event for event in events if not event.weights and event.note]
+    if cash_decisions:
+        first = cash_decisions[0]
+        warnings.append(
+            f"{len(cash_decisions)} of {len(events)} rebalance(s) moved to cash, "
+            f"first on {first.decision_date.date()}: {first.note}"
+        )
     return BacktestResult(strategy=strategy.name, equity=equity, rebalances=events, warnings=warnings)
 
 
@@ -199,6 +207,7 @@ class _Ledger:
         execution_date: pd.Timestamp,
         eligible_count: int,
         expected_performance: tuple[float, float, float] | None,
+        note: str | None = None,
     ) -> RebalanceEvent:
         """Trade from the current holdings to `weights`, paying fees out of the portfolio."""
         value = self.value(prices_now)
@@ -225,6 +234,7 @@ class _Ledger:
             transaction_cost=cost,
             eligible_assets=eligible_count,
             expected_performance=expected_performance,
+            note=note,
         )
 
 

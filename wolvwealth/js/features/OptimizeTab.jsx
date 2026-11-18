@@ -79,6 +79,11 @@ export default function OptimizeTab({ config, onUseConsumed }) {
         {status.error && <Alert>{status.error}</Alert>}
         {status.result && (
           <>
+            {(status.result.notes ?? []).map((note) => (
+              <Alert key={note} kind="info">
+                {note}
+              </Alert>
+            ))}
             {metrics && (
               <div className="grid gap-4 sm:grid-cols-3">
                 <Stat label="Expected annual return" value={formatPercent(metrics.expected_annual_return)} />
@@ -87,7 +92,7 @@ export default function OptimizeTab({ config, onUseConsumed }) {
               </div>
             )}
             <Card title={`Allocation of ${formatMoney(metrics?.portfolio_value ?? form.initialCash, { digits: 0 })}`}>
-              <AllocationTable portfolio={status.result.optimized_portfolio} />
+              <AllocationTable portfolio={status.result.optimized_portfolio} cash={status.result.cash} />
               <p className="mt-3 text-xs text-white/40">
                 Expected figures come from the optimizer&apos;s model of the past and are not forecasts. Use the Backtest
                 tab to see how the strategy actually behaved.

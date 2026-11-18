@@ -81,8 +81,9 @@ def format_report(report: BacktestReport) -> str:
     previous = report.result.start_value
     for event in report.result.rebalances:
         change = (event.portfolio_value / previous - 1) * 100
-        holdings = ", ".join(
-            f"{asset} {weight:.0%}" for asset, weight in sorted(event.weights.items(), key=lambda i: -i[1])
+        holdings = (
+            ", ".join(f"{asset} {weight:.0%}" for asset, weight in sorted(event.weights.items(), key=lambda i: -i[1]))
+            or "cash 100%"
         )
         lines.append(
             f"  {event.execution_date.date()}  ${event.portfolio_value:>12,.2f}  {change:>+7.2f}%  "

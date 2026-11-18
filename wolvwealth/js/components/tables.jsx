@@ -92,23 +92,30 @@ export function RebalanceLog({ result }) {
                 </td>
                 <td className={`${cell} text-right tabular-nums text-white/80`}>{formatMoney(event.transaction_cost)}</td>
                 <td className={`${cell} text-white/80`}>
-                  <details>
-                    <summary className="cursor-pointer">
-                      {weights
-                        .slice(0, 4)
-                        .map(([ticker, weight]) => `${ticker} ${formatPercent(weight, { signed: false, digits: 0 })}`)
-                        .join(", ")}
-                      {weights.length > 4 && ` +${weights.length - 4} more`}
-                    </summary>
-                    <ul className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
-                      {weights.map(([ticker, weight]) => (
-                        <li key={ticker} className="flex justify-between tabular-nums">
-                          <span>{ticker}</span>
-                          <span>{formatPercent(weight, { signed: false })}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
+                  {weights.length === 0 ? (
+                    <div>
+                      <span className="text-yellow">Cash 100%</span>
+                      {event.note && <p className="mt-1 text-xs text-white/50">{event.note}</p>}
+                    </div>
+                  ) : (
+                    <details>
+                      <summary className="cursor-pointer">
+                        {weights
+                          .slice(0, 4)
+                          .map(([ticker, weight]) => `${ticker} ${formatPercent(weight, { signed: false, digits: 0 })}`)
+                          .join(", ")}
+                        {weights.length > 4 && ` +${weights.length - 4} more`}
+                      </summary>
+                      <ul className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
+                        {weights.map(([ticker, weight]) => (
+                          <li key={ticker} className="flex justify-between tabular-nums">
+                            <span>{ticker}</span>
+                            <span>{formatPercent(weight, { signed: false })}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </td>
               </tr>
             );
@@ -120,9 +127,10 @@ export function RebalanceLog({ result }) {
 }
 RebalanceLog.propTypes = { result: PropTypes.object.isRequired };
 
-export function AllocationTable({ portfolio }) {
+export function AllocationTable({ portfolio, cash }) {
   const rows = Object.entries(portfolio).sort((a, b) => b[1].percent_weight - a[1].percent_weight);
-  const max = rows.length ? rows[0][1].percent_weight : 100;
+  const showCash = cash && cash.value > 0;
+  const max = Math.max(rows.length ? rows[0][1].percent_weight : 0, showCash ? cash.percent_weight : 0) || 100;
   return (
     <table className="w-full border-collapse">
       <thead>
@@ -149,8 +157,26 @@ export function AllocationTable({ portfolio }) {
             <td className={`${cell} text-right tabular-nums text-white/80`}>{formatNumber(position.shares, { digits: 4 })}</td>
           </tr>
         ))}
+        {showCash && (
+          <tr className="border-b border-white/5">
+            <td className={`${cell} font-medium text-yellow`}>Cash</td>
+            <td className={cell}>
+              <div className="flex items-center gap-3">
+                <div className="h-2 flex-1 overflow-hidden rounded bg-white/10">
+                  <div className="h-full bg-yellow" style={{ width: `${(cash.percent_weight / max) * 100}%` }} />
+                </div>
+                <span className="w-16 text-right tabular-nums text-white">{cash.percent_weight.toFixed(2)}%</span>
+              </div>
+            </td>
+            <td className={`${cell} text-right tabular-nums text-white`}>{formatMoney(cash.value)}</td>
+            <td className={`${cell} text-right tabular-nums text-white/40`}>—</td>
+          </tr>
+        )}
       </tbody>
     </table>
   );
 }
-AllocationTable.propTypes = { portfolio: PropTypes.object.isRequired };
+AllocationTable.propTypes = {
+  portfolio: PropTypes.object.isRequired,
+  cash: PropTypes.shape({ value: PropTypes.number, percent_weight: PropTypes.number }),
+};

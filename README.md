@@ -180,9 +180,13 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
     "BND": { "percent_weight": 10.74, "shares": 14.6842, "value": 1073.71 },
     "MA": { "percent_weight": 41.82, "shares": 9.3929, "value": 4181.61 },
     "NFLX": { "percent_weight": 7.48, "shares": 1.3286, "value": 747.78 }
-  }
+  },
+  "cash": { "percent_weight": 0.0, "value": 0.0 },
+  "notes": []
 }
 ```
+
+If no asset in the universe has an expected return above the 2% risk-free rate, that is an answer, not an error: the max-Sharpe recommendation is to hold cash. The response is `200` with an empty `optimized_portfolio`, `cash` holding the full amount, `metrics` of the cash position (the risk-free return, zero volatility, `num_assets` 0), and the reason in `notes`, e.g. *No asset's expected annual return beats the 2.0% risk-free rate (best: AAPL at -5.0%), so the max-Sharpe recommendation is to hold cash.* It costs a use like any other answer.
 
 Errors return `{"error": {"message": "...", "status_code": ...}}`:
 
@@ -286,7 +290,7 @@ Jobs are held in the memory of the process that accepted them, so polls must rea
 
 `/optimizer/` (login required) is a React app with two tabs that call the JSON API with the browser session:
 
-- **Optimize** — amount, universe and constraints in; allocation table and the optimizer's expected return / volatility / Sharpe out.
+- **Optimize** — amount, universe and constraints in; allocation table (with a cash row when anything is held in cash) and the optimizer's expected return / volatility / Sharpe out. A hold-cash answer is shown with its explanation.
 - **Backtest** — date range, frequency, universe, lookback, execution lag, costs and constraints in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
 
 Both forms validate the same rules as the server (finite numbers, ranges, dates within the data, universe size, constraint feasibility) and disable the button with the reason under the field until the input is valid. Each run costs one use, shown in the page header.
@@ -340,6 +344,7 @@ How the simulation works:
 - **Execution lag** (`--execution-lag`, default 1 trading day): the optimizer decides on day *t*'s close and trades at day *t+1*'s close.
 - **Transaction costs** (`--cost-bps`) are charged on traded value and paid out of the portfolio.
 - **Accounting** carries exact share counts and cash; the equity curve is marked to market every trading day through the end date.
+- **Holding cash**: when no eligible asset's expected return over the lookback window beats the risk-free rate (`--risk-free-rate`, default 2%), the optimizer's answer is cash, so that rebalance sells into cash rather than keeping the previous positions. Each such rebalance carries a `note`, and the report adds one summary warning (e.g. *3 of 7 rebalance(s) moved to cash, first on 2022-06-01: ...*).
 - **Metrics** (total return, CAGR, volatility, Sharpe, max drawdown, Calmar, turnover, costs) are computed from the realized equity curve, not from the optimizer's forecasts.
 
 The ticker universe is a snapshot of today's listings ranked by today's market cap, so every backtest carries survivorship bias. The report says so; read the optimizer's results relative to the equal-weight benchmark rather than in absolute terms.

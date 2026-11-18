@@ -8,7 +8,7 @@ import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import authenticate
 from wolvwealth.api.state import ApplicationState
-from wolvwealth.optimizer_core import build_portfolio_output, compute_max_sharpe_portfolio
+from wolvwealth.optimizer_core import NoAssetBeatsRiskFreeRate, build_portfolio_output, compute_max_sharpe_portfolio
 from wolvwealth.optimizer_params import (
     MAX_CASH,
     MAX_SHARES,
@@ -142,6 +142,7 @@ class Optimization:
     def execute_optimization(self) -> None:
         """Run optimization."""
         filtered_data = self.state.HISTORICAL_PRICES[self.universe]
+        notes: list[str] = []
         try:
             weights, performance = compute_max_sharpe_portfolio(
                 filtered_data,
@@ -150,14 +151,20 @@ class Optimization:
                 max_positions=self.max_positions,
                 weight_threshold=self.weight_threshold,
             )
+        except NoAssetBeatsRiskFreeRate as answer:  # A valid result: hold cash.
+            weights, performance, notes = {}, answer.performance, [str(answer)]
         except (pypfopt_exceptions.OptimizationError, cvxpy.error.SolverError, ValueError) as err:
+            # Constraints are checked for feasibility before this point, so this is a solver failure.
             wolvwealth.app.logger.exception("Portfolio optimization failed")
-            raise InvalidUsage("Optimization Error. Check your inputs and constraints. Infeasible.") from err
+            raise InvalidUsage(
+                "Optimization Error. The solver could not find a portfolio for this universe and these constraints."
+            ) from err
         output = build_portfolio_output(
             weights,
             self.total_investment,
             self.state.fetch_ticker_price,
             performance=None if self.exclude_metrics else performance,
+            notes=notes,
         )
         self.output = flask.jsonify(output)
 
