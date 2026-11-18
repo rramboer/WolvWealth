@@ -6,6 +6,9 @@ Layers (inner to outer):
 * ``schedule`` / ``strategies`` / ``engine`` - the simulation itself. The
   engine depends only on the ``Strategy`` protocol; the optimizer is one
   strategy, the benchmarks are others.
+* ``preflight`` - pre-run checks (date range, rebalance limit, "could anything
+  trade?") using the engine's own decision iterator, without the optimizer.
+* ``progress`` - the Progress value reported while a backtest runs.
 * ``service`` - runs the optimizer with its benchmarks and produces a report.
 * ``request`` / ``cache`` / ``jobs`` - validate untrusted payloads against
   work limits, memoize reports, and run them on a background pool with

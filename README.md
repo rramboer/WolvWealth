@@ -19,7 +19,7 @@ WolvWealth is a web application that democratizes high quality investment portfo
 ### Features
 
 - **Web dashboard** — register, log in, manage your account and API key, and use the optimizer and backtester from the browser with live progress
-- **JSON API** — token-authenticated portfolio optimization with tiered usage limits
+- **JSON API** — portfolio optimization and backtesting, authenticated by API token (or the browser session), with tiered usage limits, strict input validation and rate limiting
 - **Constraint options** — maximum positions, maximum weight per asset, minimum universal weight, custom ticker universes (`"top50"`, `"AAPL"`, ...)
 - **Backtester** — replay the optimizer over historical data with lookback windows, execution lag, transaction costs, realized metrics and benchmarks
 
@@ -127,27 +127,32 @@ The bundled price data is a snapshot; the last row is treated as the "current" p
 
 ## API
 
-All endpoints accept JSON over POST and authenticate with an API token in the `Authorization` header. Tokens are tied to an account, carry a use count and an expiration, and are shown on the account page. `GET /api/` lists the available routes.
+Endpoints take JSON and authenticate with an API token in the `Authorization` header. Tokens are tied to an account, carry a use count and an expiration, and are shown on the account page. `/api/optimize/` and `/api/backtest/` also accept the logged-in browser session (that is how the dashboard calls them); state-changing session requests must send the session's CSRF token in an `X-CSRF-Token` header. `GET /api/` lists the available routes.
 
-| Endpoint         | Description                                            |
-| ---------------- | ------------------------------------------------------ |
-| `/api/`          | Usage info (GET or POST, no auth)                      |
-| `/api/optimize/` | Optimize a portfolio (consumes one use per call)       |
-| `/api/backtest/` | Start a backtest job (one use); poll `/api/backtest/<id>/` |
-| `/api/account/`  | Account details for the token's owner                  |
-| `/api/admin/*`, `/api/db/*` | Administration (admin token required)       |
+| Endpoint | Description |
+| --- | --- |
+| `GET`/`POST /api/` | Usage info (no auth) |
+| `POST /api/optimize/` | Optimize a portfolio (one use) |
+| `POST /api/backtest/` | Start a backtest job (one use) |
+| `GET /api/backtest/<job_id>/` | Poll a backtest job (free) |
+| `POST /api/account/` | Account details for the token's owner |
+| `POST /api/admin/*`, `/api/db/*` | Administration (admin token required) |
+
+Optimize and backtest requests are authenticated first, then validated, and only a valid, feasible request is charged a use: malformed input, infeasible constraints, rate-limited requests and refused jobs are free. Request bodies are strict JSON: the non-standard `NaN` / `Infinity` literals are rejected.
 
 ### `POST /api/optimize/`
 
-Request fields (all optional except that total investment must be > 0):
+Request fields (all optional except that total investment must be > 0). Numbers must be finite; booleans are not numbers.
 
-- `initial_cash` (number) — cash to allocate
-- `initial_holdings` (object) — current holdings as `{"TICKER": shares}`
-- `universe` (list of strings) — tickers to consider; `"topN"` (e.g. `"top50"`) expands to the N largest by market cap. Default: top 500
-- `constraints.max_weight` (0-1) — maximum weight per asset
-- `constraints.max_positions` (int) — keep only the N largest positions
-- `constraints.min_universal_weight` (0-1) — minimum weight for every universe asset
+- `initial_cash` (number, 0 to 1e12) — cash to allocate
+- `initial_holdings` (object) — current holdings as `{"TICKER": shares}`, shares 0 to 1e12
+- `universe` (list of strings) — tickers to consider; `"topN"` (e.g. `"top50"`) expands to the N largest by market cap, clamped to the universe size (`top0` is rejected). Default: top 500
+- `constraints.max_weight` (greater than 0, at most 1) — maximum weight per asset
+- `constraints.max_positions` (integer ≥ 0; 0 means no limit) — keep only the N largest positions
+- `constraints.min_universal_weight` (0 to 1) — minimum weight for every universe asset
 - `exclude_metrics` (bool) — omit the `metrics` block from the response
+
+Unknown constraint keys are rejected. Constraints must be able to invest 100%: the portfolio holds at most the universe size (or `max_positions`, if smaller) assets, each at most `max_weight`, so that product must reach 1. Otherwise the request fails with a hint that works at the API's 2-decimal precision, e.g. for `top3` with `max_weight` 0.1: *Raise max_weight to at least 0.34, or hold at least 10 stocks.*
 
 ```bash
 curl -s -X POST http://localhost:8000/api/optimize/ \
@@ -179,29 +184,42 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
 }
 ```
 
-Errors return `{"error": {"message": "...", "status_code": ...}}` with 400 (invalid input), 401 (missing token), or 403 (invalid/expired/exhausted token).
+Errors return `{"error": {"message": "...", "status_code": ...}}`:
+
+| Status | Meaning |
+| --- | --- |
+| 400 | Invalid input (unparseable or non-finite JSON, bad or out-of-range values, infeasible constraints, unrunnable backtest) |
+| 401 | No API key and no logged-in session |
+| 403 | Invalid, expired or exhausted token, or missing/invalid CSRF token on a session request |
+| 404 | Backtest job not found (expired, belongs to another account, or the server restarted) |
+| 429 | Rate limited (see [Rate limiting](#rate-limiting); honor `Retry-After`) or too many of your backtest jobs running |
+| 503 | Backtest queue full; retry shortly |
 
 ### `POST /api/backtest/` and `GET /api/backtest/<job_id>/`
 
 Runs the simulation described under [Backtesting](#backtesting) as a background job and returns the optimizer's result next to its benchmarks. A 50-stock monthly backtest takes roughly 0.6–1 s per rebalance, so the POST returns immediately with a job id and the client polls for progress.
 
-1. `POST /api/backtest/` validates the request, charges one use, and returns `202 Accepted` with a job snapshot and a `Location` / `status_url` to poll. If an identical request is already cached, it returns `200` with the finished job (`"cached": true`) right away.
+1. `POST /api/backtest/` authenticates, checks that your job queue has room, validates the request, charges one use, and returns `202 Accepted` with a job snapshot and a `Location` / `status_url` to poll. If an identical request is already cached, it returns `200` with the finished job (`"cached": true`) right away.
 2. `GET /api/backtest/<job_id>/` (about once a second) returns the job's `status` (`queued`, `running`, `succeeded`, `failed`), `progress` (`completed`, `total`, `fraction`, `message`), `elapsed_seconds` and `estimated_seconds_remaining`. When `status` is `succeeded` the snapshot includes the full `report`; when `failed`, an `error` message. Polling is free.
 
-Authenticate with an API key as above, or from the browser with the logged-in session cookie; starting a job from a session also requires an `X-CSRF-Token` header (the token the templates expose). Jobs are visible only to the account that started them and expire 15 minutes after finishing. Malformed requests cost nothing, and neither do jobs refused for capacity: `429` when you already have `WOLVWEALTH_BACKTEST_MAX_JOBS_PER_USER` jobs running, `503` when the server queue is full.
+Authenticate with an API key as above, or from the browser with the logged-in session cookie; starting a job from a session also requires an `X-CSRF-Token` header (the token the templates expose). Jobs are visible only to the account that started them and expire 15 minutes after finishing. Nothing is charged for a rejected request or for a job refused for capacity: `429` when you already have `WOLVWEALTH_BACKTEST_MAX_JOBS_PER_USER` jobs running, `503` when the server queue is full.
 
 Request fields (`start` required, everything else optional):
 
-- `start`, `end` (YYYY-MM-DD) — `end` defaults to the last price date
-- `initial_cash` (number, default 100000)
+- `start`, `end` (YYYY-MM-DD, within the price data) — `end` defaults to the last price date
+- `initial_cash` (number, greater than 0 up to 1e12, default 100000)
 - `frequency` — `daily`, `weekly`, `biweekly`, `monthly` (default), `quarterly`, `semiannually`, `yearly`
 - `universe` (list) — tickers and/or `"topN"` aliases, default `["top50"]`
-- `lookback_days` (int, default 1095), `execution_lag` (trading days, default 1), `transaction_cost_bps` (default 0)
+- `lookback_days` (integer 30–5475, default 1095), `execution_lag` (trading days, 0–30, default 1), `transaction_cost_bps` (0–1000, default 0)
 - `constraints` — same object as `/api/optimize/`
 - `benchmarks` (list of tickers, default `["SPY"]`) — buy-and-hold comparisons; an equal-weight portfolio of the universe is always included
 - `include_equity` (bool, default true) — set false to omit the daily equity curves
 
-Requests that would need more than `WOLVWEALTH_BACKTEST_MAX_REBALANCES` rebalances or more than `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE` tickers are rejected with 400.
+Unknown fields are rejected. Before anything is charged the request is also checked against the data and the limits, all with 400:
+
+- dates outside the price data;
+- more than `WOLVWEALTH_BACKTEST_MAX_REBALANCES` rebalances (counted from the schedule dates alone, so an oversized request is refused in milliseconds) or more than `WOLVWEALTH_BACKTEST_MAX_UNIVERSE_SIZE` tickers;
+- ranges in which no rebalance could execute, found by a dry run of the schedule without the optimizer: no lookback history yet, too few stocks with history for the constraints, or a range shorter than the execution lag. The message says which.
 
 ```bash
 curl -s -X POST http://localhost:8000/api/backtest/ \
@@ -271,7 +289,11 @@ Jobs are held in the memory of the process that accepted them, so polls must rea
 - **Optimize** — amount, universe and constraints in; allocation table and the optimizer's expected return / volatility / Sharpe out.
 - **Backtest** — date range, frequency, universe, lookback, execution lag, costs and constraints in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
 
-Each run costs one use, shown in the page header. The source is in `wolvwealth/js/` (`lib/` pure helpers, `hooks/useBacktestJob.js` for the job lifecycle, `components/` presentational pieces, `features/` the two tabs) and is built by Vite into `static/js/bundle.js`.
+Both forms validate the same rules as the server (finite numbers, ranges, dates within the data, universe size, constraint feasibility) and disable the button with the reason under the field until the input is valid. Each run costs one use, shown in the page header.
+
+While a backtest runs, polling survives transient trouble: network errors, 408, 5xx and malformed responses are retried with capped, jittered exponential backoff (a "retrying" notice is shown), 429s wait for `Retry-After`, and after 8 consecutive failures the job is reported as lost with an explanation. A vanished job (404) or ended session (401/403) is reported immediately. Starting a job is never retried automatically, since that request charges a use.
+
+The source is in `wolvwealth/js/` (`lib/` pure helpers: API client, validation, retry policy, chart data; `hooks/useBacktestJob.js` for the job lifecycle; `components/` presentational pieces; `features/` the two tabs) and is built by Vite into `static/js/bundle.js`.
 
 ## Rate limiting
 
@@ -285,9 +307,13 @@ Every request is rate limited before its view runs, so before authentication, re
 | `BACKTEST_START_PER_CALLER` | 10 per minute; 60 per hour | API key or session user | `POST /api/backtest/` |
 | `BACKTEST_STATUS_PER_CALLER` | 180 per minute | API key or session user | `GET /api/backtest/<id>/` (the dashboard polls once a second) |
 | `ACCOUNT_PER_IP` | 30 per minute | client IP | `POST /api/account/` |
-| `LOGIN_PER_IP` | 10 per minute; 50 per hour | client IP | `POST /accounts/login/` |
-| `LOGIN_PER_USERNAME` | 20 per hour | submitted username | `POST /accounts/login/` (distributed brute force on one account) |
+| `LOGIN_PER_IP` | 30 per minute | client IP | `POST /accounts/login/`, all attempts (bounds password-hashing CPU) |
+| `LOGIN_FAILURES_PER_IP` | 10 per minute; 50 per hour | client IP | failed logins |
+| `LOGIN_FAILURES_PER_ACCOUNT_CLIENT` | 5 per minute; 20 per hour | account + known device, else account + IP | failed logins at one account from one place |
+| `LOGIN_FAILURES_PER_ACCOUNT` | 20 per hour | account | failed logins at one account from clients that have never logged in to it (distributed brute force) |
 | `REGISTER_PER_IP` | 5 per hour | client IP | `POST /accounts/register/` |
+
+**Login throttling cannot be used to lock someone out.** Only failed logins count against the failure limits, so normal logins from a shared office IP never add up. The per-account limit, which stops a botnet spreading guesses across many IPs, only applies to clients that have never logged in to that account: a successful login stores a signed device cookie (`wolvwealth_device`, HttpOnly, scoped to `/accounts/`), and from that browser the owner is throttled per device instead. So an attacker who knows a username can exhaust the guesses available to strangers, but not the owner's access from their own devices (OWASP's "device cookie" pattern). Logging in from a brand-new device while an account is under attack can still be delayed until the hour rolls over.
 
 **Behind a reverse proxy, set `WOLVWEALTH_TRUSTED_PROXIES`.** Gunicorn reports the socket peer as the client address, so behind nginx every visitor looks like `127.0.0.1` and would share one set of per-IP limits; one abusive client would lock everyone out. Set it to the number of proxies in front of the app (usually `1`) and make sure the proxy appends to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Only that many right-most entries are believed, so clients cannot spoof their address. Leave it at `0` when gunicorn is exposed directly; the header is then ignored.
 
@@ -304,6 +330,8 @@ wolvwealth-backtest --start 2019-01-01 --frequency monthly --universe top50 --co
 wolvwealth-backtest --start 2015-01-01 --universe AAPL MSFT GOOGL --max-positions -1 --json > report.json
 wolvwealth-backtest --help
 ```
+
+The CLI applies the same pre-run checks as the API (dates within the data, a feasible universe, at least one rebalance that can execute) and exits with status 2 and a message otherwise. Run in a terminal, it shows a progress bar on stderr (`--quiet` to hide it).
 
 How the simulation works:
 
@@ -322,17 +350,20 @@ The ticker universe is a snapshot of today's listings ranked by today's market c
 ├── wolvwealth/            Flask application package
 │   ├── api/               JSON API (optimize, backtest, auth, admin) + in-memory market data
 │   ├── views/             Server-rendered pages (login, account, optimizer, ...)
-│   ├── templates/         Jinja templates (base.html + pages)
+│   ├── templates/         Jinja templates (base.html + pages, 429.html)
 │   ├── js/                React dashboard source: lib/, hooks/, components/, features/, __tests__/ (built by Vite)
 │   ├── static/            CSS/images + generated js/bundle.js, css/output.css
-│   ├── backtest/          Backtesting package (config, schedule, strategies, engine, metrics, service, request, cache, jobs, cli)
+│   ├── backtest/          Backtesting package: config, schedule, strategies, engine, preflight (pre-run checks),
+│   │                      progress, metrics, service, request, cache, jobs, cli
 │   ├── optimizer_core.py  Shared max-Sharpe optimization core
-│   ├── optimizer_params.py Shared universe/constraint validation (API + backtester)
+│   ├── optimizer_params.py Shared universe/constraint validation and feasibility (API + backtester)
+│   ├── ratelimit.py       Rate limits, client-IP handling behind trusted proxies, 429 responses
+│   ├── device_cookies.py  Signed "known device" cookies for login throttling
 │   ├── market_data.py     Loads the two market-data CSVs
 │   └── config.py          Environment-driven configuration
 ├── bin/                   setup / run / db / update_prices scripts
 ├── sql/                   schema.sql + development seed data
-├── tests/                 pytest suite (fixture market data in tests/fixtures)
+├── tests/                 pytest suite (fixture market data in tests/fixtures); JS tests live in wolvwealth/js/__tests__/
 ├── var/                   generated SQLite database (gitignored)
 ├── ticker_universe.csv    ticker universe, sorted by market cap
 ├── historical_prices.csv  bundled price history snapshot
@@ -348,10 +379,11 @@ uv run ruff check .          # lint
 uv run ruff format .         # format
 uv run pytest                # tests (fast: uses small fixture data)
 npm run lint                 # eslint (React sources)
+npm test                     # vitest (React sources)
 npm run build                # production asset build
 ```
 
-CI runs all of the above on every push and pull request.
+CI runs all of the above on every push and pull request. Lint with the ruff version pinned in `uv.lock` (what `uv run ruff` and the pre-commit hook use; `pre-commit install` runs it on every commit). A newer globally installed ruff can disagree with CI. Without a project environment, `uvx ruff@<locked version> check .` does the same.
 
 ## Deployment
 
@@ -360,7 +392,13 @@ export WOLVWEALTH_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_h
 ./bin/run prod    # npm run build + gunicorn -c gunicorn_config.py wolvwealth:app
 ```
 
-Gunicorn binds `0.0.0.0:8000` by default; run it behind a reverse proxy (nginx, Caddy) and set `GUNICORN_FORWARDED_ALLOW_IPS` to your proxy's address.
+Gunicorn binds `0.0.0.0:8000` by default; run it behind a reverse proxy (nginx, Caddy) and:
+
+- set `WOLVWEALTH_TRUSTED_PROXIES` to the number of proxies in front of the app (usually `1`), or every visitor shares one set of per-IP rate limits (see [Rate limiting](#rate-limiting));
+- set `GUNICORN_FORWARDED_ALLOW_IPS` to your proxy's address;
+- serve over HTTPS and set `SESSION_COOKIE_SECURE = True` in a `WOLVWEALTH_SETTINGS` file (the device cookie follows it).
+
+Backtest jobs and rate-limit counters live in process memory, so keep `GUNICORN_PROCESSES=1` (the default), or add sticky routing for job polling and a shared `WOLVWEALTH_RATELIMIT_STORAGE_URI` such as Redis. `gunicorn_config.py` warns when more workers are configured.
 
 ## License
 

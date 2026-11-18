@@ -9,8 +9,12 @@ or any database work beyond what the key needs):
 * Per caller on the expensive endpoints (optimize, backtest start/poll),
   keyed by API key or session user, so one account cannot crowd out others
   behind the same NAT and cannot exceed its share from many IPs.
-* Login per IP and per submitted username (credential stuffing and
-  distributed brute force); registration per IP.
+* Login: all attempts per IP (bounds password-hashing CPU); failed attempts
+  per IP, per (account, client) and per account. The per-account limit stops
+  distributed brute force but exempts the account owner's known devices
+  (wolvwealth.device_cookies), so nobody can lock an owner out just by
+  knowing their username. Successful logins never count against failures.
+* Registration per IP.
 
 Limit strings ("10 per minute;50 per hour") come from app config at request
 time, so they can be tuned through environment variables (wolvwealth.config)
@@ -27,6 +31,8 @@ import time
 import flask
 from flask_limiter import Limiter
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+from wolvwealth.device_cookies import normalize, trusted_device_id
 
 
 def client_ip() -> str:
@@ -50,10 +56,39 @@ def caller_key() -> str:
     return f"ip:{client_ip()}"
 
 
-def login_username_key() -> str:
-    """Bucket per username submitted to the login form (case-insensitive)."""
-    username = (flask.request.form.get("username") or "").strip().lower()
+def _submitted_username() -> str:
+    return normalize(flask.request.form.get("username") or "")
+
+
+def login_failed(response: flask.Response) -> bool:
+    """deduct_when for the failure limits: only wrong credentials count (the view sets g.login_failed)."""
+    return bool(flask.g.get("login_failed"))
+
+
+def login_account_client_key() -> str:
+    """Bucket per (account, client): the device if it is known for this account, else the IP.
+
+    Throttles guessing one account from one place without touching anyone
+    else's attempts at that account.
+    """
+    username = _submitted_username()
+    if not username:
+        return f"ip:{client_ip()}"
+    device_id = trusted_device_id(username)
+    client = f"device:{device_id}" if device_id else f"ip:{client_ip()}"
+    return f"login:{username}:{client}"
+
+
+def login_account_key() -> str:
+    """Bucket per account, shared by every client that has never logged in to it."""
+    username = _submitted_username()
     return f"login:{username}" if username else f"ip:{client_ip()}"
+
+
+def is_known_device_for_login() -> bool:
+    """exempt_when for the per-account limit: the owner's known browsers are never locked out by it."""
+    username = _submitted_username()
+    return bool(username) and trusted_device_id(username) is not None
 
 
 def configured(name: str):

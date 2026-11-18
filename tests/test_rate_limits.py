@@ -115,34 +115,123 @@ class TestPerCallerLimits:
         assert codes[3] == 429
 
 
-class TestLogin:
-    def test_brute_force_from_one_ip_is_cut_off(self, client, limits):
-        limits(RATELIMIT_LOGIN_PER_IP="3 per minute")
-        codes = [post_login(client, username=f"user{i}").status_code for i in range(5)]
-        assert codes[:3] == [302, 302, 302]
-        assert codes[3:] == [429, 429]
+def login_from(client, ip, username=DEV_USER, password="wrong-password"):
+    """A login attempt arriving through a trusted proxy from `ip`."""
+    return post_login(client, username=username, password=password, headers={"X-Forwarded-For": ip})
 
-    def test_one_username_from_many_ips_is_cut_off(self, client, limits):
-        limits(RATELIMIT_LOGIN_PER_USERNAME="2 per hour", TRUSTED_PROXY_COUNT=1)
-        codes = [
-            post_login(client, username="DevUser", headers={"X-Forwarded-For": f"203.0.113.{i}"}).status_code
-            for i in range(4)
-        ]
-        assert codes == [302, 302, 429, 429]  # case-insensitive: DevUser == devuser
+
+def logged_in_as(client):
+    with client.session_transaction() as session:
+        return session.get("username")
+
+
+class TestLogin:
+    def test_failures_from_one_ip_are_cut_off(self, client, limits):
+        limits(RATELIMIT_LOGIN_FAILURES_PER_IP="3 per minute")
+        codes = [post_login(client, username=f"user{i}").status_code for i in range(5)]
+        assert codes == [302, 302, 302, 429, 429]
+
+    def test_successful_logins_do_not_count_as_failures(self, app, limits):
+        """An office behind one NAT IP must not lock itself out by logging in normally."""
+        limits(
+            RATELIMIT_LOGIN_FAILURES_PER_IP="2 per minute", RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT_CLIENT="2 per minute"
+        )
+        codes = []
+        for _ in range(6):
+            fresh = app.test_client()
+            codes.append(post_login(fresh, password=DEV_PASSWORD).status_code)
+            assert logged_in_as(fresh) == DEV_USER
+        assert codes == [302] * 6
+
+    def test_all_attempts_per_ip_still_bound_password_hashing(self, app, limits):
+        limits(RATELIMIT_LOGIN_PER_IP="3 per minute")
+        codes = [post_login(app.test_client(), password=DEV_PASSWORD).status_code for _ in range(4)]
+        assert codes == [302, 302, 302, 429]
+
+    def test_guessing_one_account_from_one_ip_does_not_affect_other_ips(self, app, limits):
+        limits(RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT_CLIENT="2 per hour", TRUSTED_PROXY_COUNT=1)
+        attacker = app.test_client()
+        assert [login_from(attacker, "203.0.113.1").status_code for _ in range(3)] == [302, 302, 429]
+        # Someone else trying the same account from elsewhere is unaffected.
+        other = app.test_client()
+        assert login_from(other, "198.51.100.9", password=DEV_PASSWORD).status_code == 302
+        assert logged_in_as(other) == DEV_USER
+
+    def test_distributed_guessing_of_one_account_is_still_capped(self, app, limits):
+        """Many IPs, no device cookie: the per-account limit stops a botnet."""
+        limits(RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT="3 per hour", TRUSTED_PROXY_COUNT=1)
+        attacker = app.test_client()
+        codes = [login_from(attacker, f"203.0.113.{i}").status_code for i in range(5)]
+        assert codes == [302, 302, 302, 429, 429]
+
+    def test_attacker_cannot_lock_the_owner_out_of_a_known_device(self, app, limits):
+        """Regression: knowing a username was enough to lock its owner out of their account."""
+        limits(RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT="3 per hour", TRUSTED_PROXY_COUNT=1)
+        owner = app.test_client()
+        assert login_from(owner, "198.51.100.7", password=DEV_PASSWORD).status_code == 302  # earlier visit
+        with owner.session_transaction() as session:
+            session.pop("username")  # logged out since
+
+        attacker = app.test_client()
+        assert [login_from(attacker, f"203.0.113.{i}").status_code for i in range(5)][-1] == 429
+
+        response = login_from(owner, "198.51.100.7", password=DEV_PASSWORD)
+        assert response.status_code == 302
+        assert logged_in_as(owner) == DEV_USER
+
+    def test_known_device_is_still_throttled_per_device(self, app, limits):
+        """A stolen or shared device cookie is not a free pass for guessing."""
+        limits(RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT_CLIENT="2 per hour", TRUSTED_PROXY_COUNT=1)
+        device = app.test_client()
+        login_from(device, "198.51.100.7", password=DEV_PASSWORD)
+        with device.session_transaction() as session:
+            session.pop("username")
+        codes = [login_from(device, f"203.0.113.{i}").status_code for i in range(3)]
+        assert codes == [302, 302, 429]  # same device, different IPs: one bucket
+
+    def test_device_cookie_for_another_account_does_not_exempt(self, app, limits):
+        from tests.conftest import DEV_ADMIN
+
+        limits(RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT="2 per hour", TRUSTED_PROXY_COUNT=1)
+        browser = app.test_client()
+        login_from(browser, "198.51.100.7", username=DEV_ADMIN, password=DEV_PASSWORD)
+        with browser.session_transaction() as session:
+            session.pop("username")
+        codes = [login_from(browser, f"203.0.113.{i}", username=DEV_USER).status_code for i in range(3)]
+        assert codes == [302, 302, 429]
+
+    def test_forged_device_cookie_is_ignored(self, app, limits):
+        from wolvwealth.device_cookies import COOKIE_NAME, COOKIE_PATH
+
+        limits(RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT="2 per hour", TRUSTED_PROXY_COUNT=1)
+        attacker = app.test_client()
+        attacker.set_cookie(COOKIE_NAME, '{"id": "x", "accounts": ["devuser"]}', path=COOKIE_PATH)
+        codes = [login_from(attacker, f"203.0.113.{i}").status_code for i in range(3)]
+        assert codes == [302, 302, 429]
+
+    def test_device_cookie_attributes(self, client):
+        from wolvwealth.device_cookies import COOKIE_NAME
+
+        response = post_login(client, password=DEV_PASSWORD)
+        cookie = next(header for header in response.headers.getlist("Set-Cookie") if header.startswith(COOKIE_NAME))
+        assert "HttpOnly" in cookie
+        assert "SameSite=Lax" in cookie
+        assert "Path=/accounts/" in cookie
+
+    def test_failed_login_sets_no_device_cookie(self, client):
+        from wolvwealth.device_cookies import COOKIE_NAME
+
+        response = post_login(client)
+        assert not any(h.startswith(COOKIE_NAME) for h in response.headers.getlist("Set-Cookie"))
 
     def test_limit_page_is_html_with_retry_after(self, client, limits):
-        limits(RATELIMIT_LOGIN_PER_IP="1 per minute")
+        limits(RATELIMIT_LOGIN_FAILURES_PER_IP="1 per minute")
         post_login(client)
         response = post_login(client)
         assert response.status_code == 429
         assert response.mimetype == "text/html"
         assert b"Too many requests" in response.data
         assert int(response.headers["Retry-After"]) >= 1
-
-    def test_correct_password_still_works_within_limit(self, client, limits):
-        limits(RATELIMIT_LOGIN_PER_IP="5 per minute")
-        response = post_login(client, password=DEV_PASSWORD)
-        assert response.status_code == 302
 
 
 class TestRegistration:

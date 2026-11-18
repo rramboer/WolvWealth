@@ -51,8 +51,16 @@ RATELIMIT_HEADERS_ENABLED = True  # X-RateLimit-Limit / -Remaining / -Reset and 
 RATELIMIT_KEY_PREFIX = "wolvwealth"
 RATELIMIT_SITE_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_SITE_PER_IP", "600 per minute")
 RATELIMIT_API_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_API_PER_IP", "300 per minute")
-RATELIMIT_LOGIN_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_LOGIN_PER_IP", "10 per minute;50 per hour")
-RATELIMIT_LOGIN_PER_USERNAME = os.environ.get("WOLVWEALTH_RATELIMIT_LOGIN_PER_USERNAME", "20 per hour")
+# Login: all attempts per IP bound bcrypt CPU; the FAILURES limits count wrong credentials only.
+RATELIMIT_LOGIN_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_LOGIN_PER_IP", "30 per minute")
+RATELIMIT_LOGIN_FAILURES_PER_IP = os.environ.get(
+    "WOLVWEALTH_RATELIMIT_LOGIN_FAILURES_PER_IP", "10 per minute;50 per hour"
+)
+RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT_CLIENT = os.environ.get(
+    "WOLVWEALTH_RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT_CLIENT", "5 per minute;20 per hour"
+)
+# Shared by all clients that have never logged in to the account; the owner's known devices are exempt.
+RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT = os.environ.get("WOLVWEALTH_RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT", "20 per hour")
 RATELIMIT_REGISTER_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_REGISTER_PER_IP", "5 per hour")
 RATELIMIT_ACCOUNT_PER_IP = os.environ.get("WOLVWEALTH_RATELIMIT_ACCOUNT_PER_IP", "30 per minute")
 RATELIMIT_OPTIMIZE_PER_CALLER = os.environ.get("WOLVWEALTH_RATELIMIT_OPTIMIZE_PER_CALLER", "20 per minute;200 per hour")

@@ -15,7 +15,15 @@ from wolvwealth.api.auth import (
     generate_api_key,
     hash_password,
 )
-from wolvwealth.ratelimit import configured, limiter, login_username_key
+from wolvwealth.device_cookies import remember_login
+from wolvwealth.ratelimit import (
+    configured,
+    is_known_device_for_login,
+    limiter,
+    login_account_client_key,
+    login_account_key,
+    login_failed,
+)
 
 USERNAME_MAX_LENGTH = 20  # matches VARCHAR(20) in sql/schema.sql
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -89,10 +97,28 @@ def accounts_create():
 
 
 @wolvwealth.app.route("/accounts/login/", methods=["POST"])
-@limiter.limit(configured("RATELIMIT_LOGIN_PER_IP"))
-@limiter.limit(configured("RATELIMIT_LOGIN_PER_USERNAME"), key_func=login_username_key)
+@limiter.limit(configured("RATELIMIT_LOGIN_PER_IP"), scope="login-all-per-ip")
+@limiter.limit(configured("RATELIMIT_LOGIN_FAILURES_PER_IP"), scope="login-failures-per-ip", deduct_when=login_failed)
+@limiter.limit(
+    configured("RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT_CLIENT"),
+    scope="login-failures-per-account-client",
+    key_func=login_account_client_key,
+    deduct_when=login_failed,
+)
+@limiter.limit(
+    configured("RATELIMIT_LOGIN_FAILURES_PER_ACCOUNT"),
+    scope="login-failures-per-account",
+    key_func=login_account_key,
+    deduct_when=login_failed,
+    exempt_when=is_known_device_for_login,
+)
 def login():
-    """Login a user."""
+    """Login a user.
+
+    Throttling (see wolvwealth.ratelimit): wrong credentials set g.login_failed,
+    which is what the failure limits count; a success marks this browser as a
+    known device for the account (wolvwealth.device_cookies).
+    """
     validate_csrf()
     if is_logged_in():
         return flask.redirect(flask.url_for("show_landing"))
@@ -102,10 +128,11 @@ def login():
         flask.flash("Username and password are required.", "error")
         return flask.redirect(flask.url_for("show_login"))
     if not check_user_exists(user) or not check_user_password(user, pwd):
+        flask.g.login_failed = True
         flask.flash("Incorrect username or password.", "error")
         return flask.redirect(flask.url_for("show_login"))
     flask.session["username"] = user
-    return flask.redirect(flask.url_for("show_landing"))
+    return remember_login(flask.redirect(flask.url_for("show_landing")), user)
 
 
 @wolvwealth.app.route("/accounts/logout/", methods=["POST"])
