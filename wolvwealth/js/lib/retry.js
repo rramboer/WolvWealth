@@ -5,12 +5,16 @@
  * Whether a failed request is worth repeating unchanged.
  *
  * Transient: no response at all (network error, status 0), request timeout
- * (408), rate limiting (429) and server-side failures (5xx), where the same
+ * (408), rate limiting (429), server-side failures (5xx) and success
+ * responses with an unusable body (see ApiError.invalidBody), where the same
  * GET can succeed moments later. Everything else, notably 404 (the job is
  * gone: expired, or a server restart cleared the in-memory job store) and
  * 401/403 (the session ended), will fail the same way every time.
  */
 export function isTransient(error) {
+  // A 2xx with an unusable body: typically a proxy error page, captive portal
+  // or truncated response. The next attempt usually gets the real API.
+  if (error?.invalidBody) return true;
   const status = error?.status;
   if (typeof status !== "number") return false; // A bug in our code, not the network.
   return status === 0 || status === 408 || status === 429 || status >= 500;

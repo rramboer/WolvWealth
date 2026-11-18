@@ -13,7 +13,7 @@ afterEach(() => {
 
 describe("startBacktest", () => {
   it("posts JSON with the CSRF token and same-origin cookies", async () => {
-    const fetch = mockFetch(202, { job_id: "j1", status: "queued" });
+    const fetch = mockFetch(202, { job_id: "j1", status: "queued", status_url: "/api/backtest/j1/" });
     const job = await startBacktest({ start: "2021-01-01" }, "tok");
     expect(job.job_id).toBe("j1");
     const [url, init] = fetch.mock.calls[0];
@@ -61,7 +61,7 @@ describe("startBacktest", () => {
 
 describe("getBacktestJob", () => {
   it("GETs the status URL without a CSRF header", async () => {
-    const fetch = mockFetch(200, { status: "running" });
+    const fetch = mockFetch(200, { job_id: "j1", status: "running", status_url: "/api/backtest/j1/" });
     await getBacktestJob("/api/backtest/j1/");
     const [url, init] = fetch.mock.calls[0];
     expect(url).toBe("/api/backtest/j1/");

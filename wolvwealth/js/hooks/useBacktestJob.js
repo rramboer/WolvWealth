@@ -6,13 +6,16 @@ export const IDLE = { status: "idle", job: null, error: null, reconnecting: null
 
 const FINISHED = new Set(["succeeded", "failed"]);
 const RATE_LIMIT_FALLBACK_SECONDS = 5; // When a 429 arrives without Retry-After.
+const STARTED_UNKNOWN =
+  "The backtest may still have started; running it again in a minute may return the cached result.";
 
 /**
  * Drives one backtest job: POST to start, then poll its status URL until it
  * finishes. `state.status` is "idle" | "starting" | "queued" | "running" |
  * "succeeded" | "failed"; `state.job` is the latest server snapshot.
  *
- * Polling survives transient failures (network errors, 5xx, 408, 429): the
+ * Polling survives transient failures (network errors, 5xx, 408, 429, and a
+ * 2xx whose body is not a valid snapshot): the
  * job keeps running on the server, so the hook backs off and retries, and
  * exposes `state.reconnecting` ({ attempt, maxRetries, delayMs, reason }) so
  * the UI can say so. It gives up after `maxRetries` consecutive failures;
@@ -59,20 +62,40 @@ export function useBacktestJob({
       const id = ++runId.current;
       clearTimer();
       setState({ status: "starting", job: null, error: null, reconnecting: null });
+      const fail = (message) => {
+        if (id === runId.current) setState((prev) => ({ ...prev, status: "failed", error: message, reconnecting: null }));
+      };
       let job;
       try {
         job = await startBacktest(payload, csrfToken);
       } catch (error) {
-        if (id === runId.current) setState({ status: "failed", job: null, error: error.message, reconnecting: null });
+        // An unreadable reply to the POST may still mean the job started (and was charged).
+        fail(error.invalidBody ? `${error.message} ${STARTED_UNKNOWN}` : error.message);
         return;
       }
-      onStarted?.(job);
-      if (!applySnapshot(id, job)) return;
+      try {
+        onStarted?.(job);
+        if (!applySnapshot(id, job)) return;
+      } catch (error) {
+        fail(`Unexpected error after starting the backtest: ${error.message}`);
+        return;
+      }
 
-      const fail = (message) => setState((prev) => ({ ...prev, status: "failed", error: message, reconnecting: null }));
       let failures = 0; // Consecutive transient failures; reset by any successful poll.
 
+      // Every path through poll() either schedules the next poll or ends in a
+      // terminal state. The outer try is the safety net that guarantees it:
+      // an exception escaping an async timer callback is otherwise swallowed
+      // as an unhandled rejection and the UI freezes on its last state.
       const poll = async () => {
+        try {
+          await pollOnce();
+        } catch (error) {
+          fail(`Unexpected error while checking the backtest: ${error.message}`);
+        }
+      };
+
+      const pollOnce = async () => {
         if (id !== runId.current) return;
         let snapshot;
         try {
