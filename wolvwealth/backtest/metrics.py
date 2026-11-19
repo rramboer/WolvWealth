@@ -8,7 +8,8 @@ import pandas as pd
 
 from wolvwealth.backtest.results import RebalanceEvent
 
-TRADING_DAYS_PER_YEAR = 252
+TRADING_DAYS_PER_YEAR = 252  # Fallback when the curve is too short to measure its own frequency.
+RISKLESS_TOLERANCE = 1e-12  # Daily excess-return spread below this is floating-point noise: no risk.
 
 
 @dataclasses.dataclass(frozen=True)
@@ -19,8 +20,8 @@ class PerformanceMetrics:
     end_value: float
     total_return: float  # Fraction, e.g. 0.23 for +23%.
     cagr: float
-    annual_volatility: float
-    sharpe_ratio: float
+    annual_volatility: float  # Of returns in excess of the risk-free rate, so cash contributes none.
+    sharpe_ratio: float  # Mean / spread of daily excess returns, annualized; 0 for a portfolio that only holds cash.
     max_drawdown: float  # Negative fraction, e.g. -0.18.
     calmar_ratio: float
     best_day: float
@@ -44,12 +45,40 @@ def _clean(value):
     return value
 
 
+def _volatility_and_sharpe(excess: np.ndarray, periods_per_year: float) -> tuple[float, float]:
+    """Annualized spread and Sharpe ratio of per-period excess returns.
+
+    A spread at floating-point-noise level means the portfolio took no risk
+    (it only held cash): volatility is 0, and so is the Sharpe ratio when the
+    mean excess return is also nil. Riskless outperformance has no finite
+    Sharpe ratio and is reported as undefined.
+    """
+    if len(excess) < 2:
+        return float("nan"), float("nan")
+    mean = float(np.mean(excess))
+    spread = float(np.std(excess, ddof=1))
+    if spread < RISKLESS_TOLERANCE:
+        return 0.0, (0.0 if abs(mean) < RISKLESS_TOLERANCE else float("nan"))
+    root = math.sqrt(periods_per_year)
+    return spread * root, mean / spread * root
+
+
 def compute_metrics(
     equity: pd.Series,
     rebalances: list[RebalanceEvent] | None = None,
     risk_free_rate: float = 0.0,
 ) -> PerformanceMetrics:
-    """Summarize an equity curve indexed by trading day."""
+    """Summarize an equity curve indexed by trading day.
+
+    Volatility and Sharpe are computed from each period's excess return: the
+    portfolio's return minus what the risk-free asset earned over the same
+    calendar days, (1 + rate) ** (days / 365.25) - 1, matching how the engine
+    accrues interest on cash. Comparing like with like matters: subtracting
+    the compound annual rate from an arithmetic mean of daily returns, or
+    counting the weekend-interest pattern of cash as volatility, made a
+    portfolio that only held cash show a negative Sharpe ratio. Both are
+    annualized with the curve's observed number of periods per year.
+    """
     equity = equity.dropna()
     if len(equity) < 2:
         raise ValueError("Need at least two equity observations to compute metrics.")
@@ -60,9 +89,11 @@ def compute_metrics(
     cagr = (end_value / start_value) ** (1 / years) - 1 if years > 0 else float("nan")
 
     daily = equity.pct_change().dropna()
-    annual_volatility = float(daily.std(ddof=1) * np.sqrt(TRADING_DAYS_PER_YEAR)) if len(daily) > 1 else float("nan")
-    excess = float(daily.mean()) * TRADING_DAYS_PER_YEAR - risk_free_rate
-    sharpe = excess / annual_volatility if annual_volatility and annual_volatility > 0 else float("nan")
+    gap_days = np.diff(equity.index.to_numpy()).astype("timedelta64[D]").astype(float)
+    risk_free = (1.0 + risk_free_rate) ** (gap_days / 365.25) - 1.0
+    excess = daily.to_numpy() - risk_free
+    periods_per_year = len(daily) / years if years > 0 else TRADING_DAYS_PER_YEAR
+    annual_volatility, sharpe = _volatility_and_sharpe(excess, periods_per_year)
 
     drawdown = equity / equity.cummax() - 1
     max_drawdown = float(drawdown.min())

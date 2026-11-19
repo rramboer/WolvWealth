@@ -346,7 +346,7 @@ How the simulation works:
 - **Accounting** carries exact share counts and cash; the equity curve is marked to market every trading day through the end date.
 - **Holding cash**: when no eligible asset's expected return over the lookback window beats the risk-free rate (`--risk-free-rate`, default 2%; the API uses the default), the optimizer's answer is cash, so that rebalance sells into cash rather than keeping the previous positions. Each such rebalance carries a `note`, and the report adds one summary warning (e.g. *3 of 7 rebalance(s) moved to cash, first on 2022-06-01: ...*).
 - **Cash earns the risk-free rate**, compounded over calendar days, so sitting in cash is valued the way the model assumed when it chose to. The same rate drives the hold-cash decision and the Sharpe ratio. The result reports the total as `cash_interest`; fully invested portfolios earn none.
-- **Metrics** (total return, CAGR, volatility, Sharpe, max drawdown, Calmar, turnover, costs) are computed from the realized equity curve, not from the optimizer's forecasts.
+- **Metrics** (total return, CAGR, volatility, Sharpe, max drawdown, Calmar, turnover, costs) are computed from the realized equity curve, not from the optimizer's forecasts. Volatility and Sharpe use daily returns in excess of what the risk-free asset earned over the same calendar days, annualized with the curve's own number of trading days per year, so a portfolio that only holds cash shows its 2% CAGR with 0 volatility and a Sharpe ratio of 0.
 
 The ticker universe is a snapshot of today's listings ranked by today's market cap, so every backtest carries survivorship bias. The report says so; read the optimizer's results relative to the equal-weight benchmark rather than in absolute terms.
 
