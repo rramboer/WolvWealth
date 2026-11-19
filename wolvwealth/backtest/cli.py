@@ -42,7 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-positions", type=int, default=10, help="keep only the N largest positions (-1: all)")
     parser.add_argument("--max-weight", type=float, default=1.0, help="maximum weight per asset")
     parser.add_argument("--min-weight", type=float, default=0.0, help="minimum weight for every asset")
-    parser.add_argument("--risk-free-rate", type=float, default=0.02, help="annual rate for Sharpe ratios")
+    parser.add_argument(
+        "--risk-free-rate", type=float, default=0.02, help="annual rate cash earns; also used for Sharpe ratios"
+    )
     parser.add_argument("--benchmark", nargs="*", default=["SPY"], help="buy-and-hold benchmark tickers")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     parser.add_argument("--no-equity", action="store_true", help="omit the daily equity curves from --json output")
@@ -91,6 +93,10 @@ def format_report(report: BacktestReport) -> str:
         )
         previous = event.portfolio_value
     lines.append(f"  {report.result.equity.index[-1].date()}  ${report.result.end_value:>12,.2f}  (final)")
+    if report.result.cash_interest:
+        lines.append(
+            f"  cash earned ${report.result.cash_interest:,.2f} interest at {report.config.risk_free_rate:.1%} a year"
+        )
     lines += ["", _metrics_table({"optimizer": report.metrics, **report.benchmark_metrics})]
     warnings = report.warnings + report.result.warnings
     if warnings:

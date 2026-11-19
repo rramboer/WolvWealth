@@ -62,7 +62,7 @@ class BacktestConfig:
     execution_lag: int = 1  # Trading days between the optimization decision and the trade.
     transaction_cost_bps: float = 0.0  # Fee on traded value, in basis points.
     constraints: Constraints = Constraints()
-    risk_free_rate: float = 0.02  # Annual rate used for Sharpe ratios.
+    risk_free_rate: float = 0.02  # Annual rate cash earns, used for the hold-cash decision and Sharpe ratios.
 
     def __post_init__(self) -> None:
         """Reject configurations that cannot be simulated, whatever built them (API, CLI, code)."""
@@ -78,7 +78,7 @@ class BacktestConfig:
         require_integer(self.lookback_days, "lookback_days", minimum=MIN_LOOKBACK_DAYS, maximum=MAX_LOOKBACK_DAYS)
         require_integer(self.execution_lag, "execution_lag", minimum=0, maximum=MAX_EXECUTION_LAG)
         require_number(self.transaction_cost_bps, "transaction_cost_bps", minimum=0.0, maximum=MAX_TRANSACTION_COST_BPS)
-        require_number(self.risk_free_rate, "risk_free_rate", minimum=-1.0, maximum=1.0)
+        require_number(self.risk_free_rate, "risk_free_rate", minimum=-1.0, maximum=1.0, exclusive_minimum=True)
         if not isinstance(self.constraints, Constraints):
             raise InvalidOptimizationInput("constraints must be a Constraints object.")
         check_feasibility(self.constraints, len(self.universe))

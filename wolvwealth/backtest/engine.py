@@ -14,6 +14,10 @@ Accounting rules
 * Share counts and cash are carried as exact floats; rounding is a display
   concern. Cash left over (weights summing to less than one) stays as cash
   and is counted in the portfolio value.
+* Cash earns the configured risk-free rate, compounded over calendar days
+  between trading days. The same rate drives the hold-cash decision and the
+  Sharpe ratio, so a portfolio that sits in cash is valued the way the model
+  assumed when it chose to.
 * The equity curve is marked to market every trading day from `start` to
   `end`, including the days after the final rebalance.
 """
@@ -21,6 +25,7 @@ Accounting rules
 import dataclasses
 from collections.abc import Callable, Iterator
 
+import numpy as np
 import pandas as pd
 
 from wolvwealth.backtest.config import BacktestConfig
@@ -110,6 +115,7 @@ def run_backtest(
     fee_rate = config.transaction_cost_bps / 10_000
 
     ledger = _Ledger(cash=config.initial_cash, shares=pd.Series(0.0, index=universe))
+    growth = cash_growth_factors(trading_days, config.risk_free_rate)
     equity = pd.Series(index=trading_days, dtype=float)
     events: list[RebalanceEvent] = []
     warnings: list[str] = []
@@ -138,7 +144,8 @@ def run_backtest(
         if untradable:
             warnings.append(f"{decision.date.date()}: no execution price for {', '.join(untradable)}; holding.")
             continue
-        _write_equity(equity, valuation, ledger, cursor, execution_position)
+        _write_equity(equity, valuation, ledger, growth, cursor, execution_position)
+        ledger.accrue(growth[execution_position] / growth[cursor])
         cursor = execution_position
         events.append(
             ledger.rebalance(
@@ -153,7 +160,8 @@ def run_backtest(
             )
         )
 
-    _write_equity(equity, valuation, ledger, cursor, len(trading_days))
+    _write_equity(equity, valuation, ledger, growth, cursor, len(trading_days))
+    ledger.accrue(growth[-1] / growth[cursor])  # Interest through the last day, for the total.
     if on_step is not None:
         on_step(len(dates), len(dates))
     if not events:
@@ -165,7 +173,13 @@ def run_backtest(
             f"{len(cash_decisions)} of {len(events)} rebalance(s) moved to cash, "
             f"first on {first.decision_date.date()}: {first.note}"
         )
-    return BacktestResult(strategy=strategy.name, equity=equity, rebalances=events, warnings=warnings)
+    return BacktestResult(
+        strategy=strategy.name,
+        equity=equity,
+        rebalances=events,
+        warnings=warnings,
+        cash_interest=float(ledger.interest),  # Plain float: NumPy scalars are not JSON-serializable.
+    )
 
 
 def eligible_assets(window: pd.DataFrame) -> list[str]:
@@ -178,12 +192,28 @@ def eligible_assets(window: pd.DataFrame) -> list[str]:
     return list(window.columns[mask])
 
 
-def _write_equity(equity: pd.Series, valuation: pd.DataFrame, ledger: "_Ledger", start: int, stop: int) -> None:
-    """Mark the current holdings to market for trading-day positions [start, stop)."""
+def cash_growth_factors(trading_days: pd.DatetimeIndex, annual_rate: float) -> np.ndarray:
+    """Cumulative growth of one unit of cash from the first trading day to each trading day.
+
+    Compounded over calendar days (weekends and holidays earn interest too),
+    with the same 365.25-day year the CAGR metric uses.
+    """
+    days = (trading_days - trading_days[0]).days.to_numpy()
+    return (1.0 + annual_rate) ** (days / 365.25)
+
+
+def _write_equity(
+    equity: pd.Series, valuation: pd.DataFrame, ledger: "_Ledger", growth: np.ndarray, start: int, stop: int
+) -> None:
+    """Mark the current holdings to market for trading-day positions [start, stop).
+
+    `ledger.cash` is the balance on day `start`; it accrues interest across the segment.
+    """
     if stop <= start:
         return
-    values = valuation.iloc[start:stop].to_numpy() @ ledger.shares.to_numpy() + ledger.cash
-    equity.iloc[start:stop] = values
+    holdings = valuation.iloc[start:stop].to_numpy() @ ledger.shares.to_numpy()
+    cash = ledger.cash * growth[start:stop] / growth[start]
+    equity.iloc[start:stop] = holdings + cash
 
 
 class _Ledger:
@@ -192,6 +222,13 @@ class _Ledger:
     def __init__(self, cash: float, shares: pd.Series) -> None:
         self.cash = cash
         self.shares = shares
+        self.interest = 0.0  # Total interest the cash balance has earned.
+
+    def accrue(self, factor: float) -> None:
+        """Grow the cash balance by `factor` (interest since it was last brought up to date)."""
+        earned = self.cash * (factor - 1.0)
+        self.cash += earned
+        self.interest += earned
 
     def value(self, prices_now: pd.Series) -> float:
         """Mark holdings to market."""

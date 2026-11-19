@@ -70,6 +70,7 @@ def config(**overrides) -> BacktestConfig:
         "frequency": Frequency.MONTHLY,
         "lookback_days": 60,
         "execution_lag": 0,
+        "risk_free_rate": 0.0,  # These tests check trading mechanics; interest is covered in test_cash_interest.py.
     }
     defaults.update(overrides)
     return BacktestConfig(**defaults)

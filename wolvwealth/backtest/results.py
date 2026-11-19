@@ -52,6 +52,7 @@ class BacktestResult:
     equity: pd.Series  # Daily portfolio value, indexed by trading day, covering the whole period.
     rebalances: list[RebalanceEvent]
     warnings: list[str]
+    cash_interest: float = 0.0  # Interest earned by uninvested cash at the risk-free rate.
 
     @property
     def start_value(self) -> float:
@@ -71,6 +72,7 @@ class BacktestResult:
             "end_value": round(self.end_value, 2),
             "rebalances": [event.to_dict() for event in self.rebalances],
             "warnings": list(self.warnings),
+            "cash_interest": round(self.cash_interest, 2),
         }
         if include_equity:
             data["equity"] = {date.date().isoformat(): round(float(value), 2) for date, value in self.equity.items()}

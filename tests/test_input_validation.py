@@ -128,7 +128,7 @@ class TestBacktestConfig:
         with pytest.raises(InvalidOptimizationInput, match="execution_lag"):
             self.make(execution_lag=value)
 
-    @pytest.mark.parametrize("value", [NAN, INF, 2.0, -2.0])
+    @pytest.mark.parametrize("value", [NAN, INF, 2.0, -2.0, -1.0])  # -1.0 would make cash vanish (1 + r = 0)
     def test_risk_free_rate(self, value):
         with pytest.raises(InvalidOptimizationInput, match="risk_free_rate"):
             self.make(risk_free_rate=value)

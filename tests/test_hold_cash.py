@@ -166,7 +166,9 @@ class TestBacktest:
         assert second.note == "no asset beats cash"
         assert second.to_dict()["note"] == "no asset beats cash"
         after = result.equity.loc[second.execution_date :]
-        assert after.nunique() == 1  # flat in cash while A keeps rising (cash earns nothing yet)
+        assert after.is_monotonic_increasing  # cash earning the 2% risk-free rate while A keeps rising faster
+        years = (after.index[-1] - after.index[0]).days / 365.25
+        assert after.iloc[-1] / after.iloc[0] == pytest.approx(1.02**years)  # exactly the risk-free rate, not A
 
     def test_report_explains_cash_periods_once_not_as_failures(self):
         """A falling market at a normal 2% rate, like 2022: every rebalance holds cash."""
@@ -190,6 +192,9 @@ class TestBacktest:
         summary = [warning for warning in warnings if "moved to cash" in warning]
         assert len(summary) == 1
         assert summary[0].startswith(f"{len(events)} of {len(events)} rebalance(s) moved to cash")
-        assert report.result.equity.nunique() == 1  # never invested (cash earns nothing yet)
+        equity = report.result.equity
+        years = (equity.index[-1] - equity.index[0]).days / 365.25
+        assert equity.iloc[-1] == pytest.approx(100_000 * 1.02**years)  # never invested; cash earned 2%
+        assert report.result.cash_interest == pytest.approx(equity.iloc[-1] - 100_000)
         # The equal-weight benchmark is unaffected: it does not consult the risk-free rate.
         assert report.benchmarks["equal_weight"].rebalances[0].weights
