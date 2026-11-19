@@ -64,6 +64,7 @@ def backtest_start():
     job manager's capacity check, so rejected and refused requests are free.
     """
     caller = authenticate(require_csrf=True)
+    caller.verify()  # An expired or exhausted token is refused before validation work.
     try:
         job_manager.check_capacity(caller.owner)  # Refuse a full queue before spending any validation work.
     except JobLimitError as err:

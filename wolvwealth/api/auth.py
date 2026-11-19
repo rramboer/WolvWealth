@@ -93,9 +93,16 @@ def generate_api_key(owner: str, tier: TierSpec) -> str:
 
 @dataclasses.dataclass(frozen=True)
 class Caller:
-    """An authenticated account and a way to bill it one use."""
+    """An authenticated account, a way to check it can pay, and a way to bill it one use.
+
+    Endpoints call verify() before doing any work, so an expired or exhausted
+    token is refused cheaply, and charge() only once they have something to
+    return. charge() repeats the checks atomically, so if another request spent
+    the last use in between, it raises and no answer is given.
+    """
 
     owner: str
+    verify: Callable[[], None]
     charge: Callable[[], None]
 
 
@@ -112,7 +119,11 @@ def authenticate(require_csrf: bool = True) -> Caller:
         token_row = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,)).fetchone()
         if token_row is None:
             raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
-        return Caller(owner=token_row["owner"], charge=lambda: consume_token_use(token_row))
+        return Caller(
+            owner=token_row["owner"],
+            verify=lambda: check_token_live(token_row),
+            charge=lambda: consume_token_use(token_row),
+        )
 
     username = flask.session.get("username")
     if username is None or not check_user_exists(username):
@@ -122,49 +133,42 @@ def authenticate(require_csrf: bool = True) -> Caller:
         submitted = flask.request.headers.get("X-CSRF-Token", "")
         if not expected or not hmac.compare_digest(expected.encode(), submitted.encode()):
             raise InvalidUsage("Authorization Error. Missing or invalid CSRF token.", status_code=403)
-    return Caller(owner=username, charge=lambda: consume_session_use(username))
+    return Caller(
+        owner=username,
+        verify=lambda: check_token_live(_session_token_row(username)),
+        charge=lambda: consume_session_use(username),
+    )
 
 
-def check_api_key() -> bool:
-    """Check if API key is valid. Decrements API key and returns true if valid. Otherwise errors."""
-    api_key = flask.request.headers.get("Authorization")
-    if api_key is None:
-        raise InvalidUsage("No API key provided.", status_code=401)
+def _session_token_row(username: str) -> dict:
     connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,))
-    result = cur.fetchone()
+    result = connection.execute("SELECT * FROM tokens WHERE owner = ?", (username,)).fetchone()
     if result is None:
-        raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
-    consume_token_use(result)
-    return True
+        raise InvalidUsage("Authorization Error. No API key found for this account.", status_code=403)
+    return result
 
 
 def consume_session_use(username: str) -> None:
-    """Charge one use to the API token owned by the logged-in user. Errors like check_api_key()."""
+    """Charge one use to the API token owned by the logged-in user. Errors like consume_token_use()."""
+    consume_token_use(_session_token_row(username))
+
+
+def check_token_live(token_row: dict) -> None:
+    """Raise 403 unless the token is unexpired and has uses left. Charges nothing."""
     connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT * FROM tokens WHERE owner = ?", (username,))
-    result = cur.fetchone()
-    if result is None:
-        raise InvalidUsage("Authorization Error. No API key found for this account.", status_code=403)
-    consume_token_use(result)
+    current_time = connection.execute("SELECT datetime('now') AS now").fetchone()["now"]
+    if current_time > token_row["expires"]:
+        raise InvalidUsage("Authorization Error. API key has expired.", status_code=403)
+    if token_row["uses"] <= 0:
+        raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
 
 
 def consume_token_use(token_row: dict) -> None:
     """Verify a tokens row is live and atomically decrement its remaining uses."""
+    check_token_live(token_row)
+    # Consume one use atomically so concurrent requests cannot double-spend the last use. The row
+    # passed in may be stale (read before the work was done); the WHERE clause re-checks live state.
     connection = wolvwealth.model.get_db()
-
-    # Check if API key has expired
-    expiration_time = token_row["expires"]
-    cur = connection.execute("SELECT datetime('now') AS now")
-    current_time = cur.fetchone()["now"]
-    if current_time > expiration_time:
-        raise InvalidUsage("Authorization Error. API key has expired.", status_code=403)
-
-    # Check if API key has been used too many times
-    if token_row["uses"] == 0:
-        raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
-
-    # Consume one use atomically so concurrent requests cannot double-spend the last use.
     cur = connection.execute(
         "UPDATE tokens SET uses = uses - 1 WHERE token = ? AND uses > 0 AND expires > datetime('now')",
         (token_row["token"],),

@@ -138,7 +138,7 @@ Endpoints take JSON and authenticate with an API token in the `Authorization` he
 | `POST /api/account/` | Account details for the token's owner |
 | `POST /api/admin/*`, `/api/db/*` | Administration (admin token required) |
 
-Optimize and backtest requests are authenticated first, then validated, and only a valid, feasible request is charged a use: malformed input, infeasible constraints, rate-limited requests and refused jobs are free. Request bodies are strict JSON: the non-standard `NaN` / `Infinity` literals are rejected.
+Uses are charged for answers only. Optimize and backtest requests are authenticated first, and an expired or exhausted token is refused before any work is done. An optimize request is charged when it returns a result, including a hold-cash result; malformed input, infeasible constraints, solver failures, server errors and rate-limited requests are free. A backtest is charged when its job is accepted (its outcome is not known yet); rejected requests and jobs refused for capacity are free. If two requests race for an account's last use, only the first to finish is answered; the other gets a 403. Request bodies are strict JSON: the non-standard `NaN` / `Infinity` literals are rejected.
 
 ### `POST /api/optimize/`
 

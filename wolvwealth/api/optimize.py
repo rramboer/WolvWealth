@@ -28,12 +28,16 @@ class Optimization:
     def __init__(self) -> None:
         """Initialize optimization."""
         caller = authenticate(require_csrf=True)  # 401/403 first, but nothing charged yet.
+        caller.verify()  # Expired or exhausted tokens are refused before any work.
         self.state = ApplicationState()
         self.set_defaults()
         self.parse_input()
         self.validate_investment()
-        caller.charge()  # Only well-formed, feasible requests cost a use.
         self.execute_optimization()
+        # Charge only for an answer (including hold-cash): rejected input, solver failures and crashes
+        # never reach this line. If a concurrent request spent the last use meanwhile, this raises a 403
+        # and the computed answer is not returned.
+        caller.charge()
 
     def set_defaults(self) -> None:
         """Set default values for all optimization parameters."""
