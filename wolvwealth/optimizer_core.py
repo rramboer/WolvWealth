@@ -14,7 +14,8 @@ holding everything in cash at the risk-free rate. The optimizer recommends
 cash only when cash beats every stock portfolio on the objective's own
 terms; then it raises a HoldCashAnswer, a valid result rather than an error:
 
-- max_sharpe: no asset's expected return beats the risk-free rate.
+- max_sharpe: no asset's expected return beats the risk-free rate, or a
+  binding max_weight caps every allowed portfolio's expected return at it.
 - efficient_risk: no portfolio within the volatility limit is expected to
   beat the risk-free rate, which cash earns with no volatility at all.
 - efficient_return: the return target is at or below the risk-free rate, so
@@ -140,18 +141,30 @@ class CashMeetsReturnTarget(HoldCashAnswer):
 
 
 class NoPortfolioBeatsRiskFreeRate(HoldCashAnswer):
-    """Rebalancing from the current holdings, no reachable portfolio is expected to beat the risk-free rate."""
+    """Some asset beats the risk-free rate, but no portfolio that can actually be held does.
+
+    What is reachable is capped by the weight bounds (a binding max_weight),
+    and when rebalancing also by the turnover limit and trading costs.
+    """
 
     def __init__(
-        self, risk_free_rate: float, best_return: float, objective_label: str, *, limited: bool, costs: bool
+        self,
+        risk_free_rate: float,
+        best_return: float,
+        objective_label: str,
+        *,
+        from_holdings: bool = False,
+        limited: bool = False,
+        costs: bool = False,
     ) -> None:
-        """Record the best reachable return (net of trading costs), for the explanation."""
+        """Record the best reachable return (net of trading costs when rebalancing), for the explanation."""
         self.best_return = best_return
+        reachable = "reachable from the current holdings" if from_holdings else "allowed by these constraints"
         within = " within max_turnover" if limited else ""
         after = " after trading costs" if costs else ""
         super().__init__(
             risk_free_rate,
-            f"No portfolio reachable from the current holdings{within} is expected to beat the "
+            f"No portfolio {reachable}{within} is expected to beat the "
             f"{risk_free_rate:.1%} risk-free rate{after} (best: {best_return:.1%}), so the {objective_label} "
             "recommendation is to hold cash.",
         )
@@ -477,9 +490,16 @@ def _check_cash_beats_every_portfolio(
                 risk_free_rate,
                 best_net,
                 OBJECTIVE_LABELS[objective.name],
+                from_holdings=True,
                 limited=rebalance.max_turnover is not None,
                 costs=rebalance.cost_rate > 0,
             )
+        return
+    # Some asset beats the rate, but a binding max_weight can cap every allowed portfolio below it; pypfopt's
+    # max_sharpe then fails as "infeasible" although the answer is simply to hold cash.
+    best = highest_reachable_return(mu, min_weight, max_weight)
+    if best <= risk_free_rate:
+        raise NoPortfolioBeatsRiskFreeRate(risk_free_rate, best, OBJECTIVE_LABELS[objective.name])
 
 
 def _check_cash_beats_portfolio(

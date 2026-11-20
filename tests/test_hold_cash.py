@@ -14,7 +14,15 @@ import pytest
 import wolvwealth.api.optimize as optimize_api
 from tests.conftest import DEV_USER, DEV_USER_TOKEN, FIXTURES_DIR
 from wolvwealth.backtest import BacktestConfig, Frequency, MaxSharpeStrategy, run_backtest, run_report
-from wolvwealth.optimizer_core import NoAssetBeatsRiskFreeRate, build_portfolio_output, compute_max_sharpe_portfolio
+from wolvwealth.optimizer_core import (
+    NoAssetBeatsRiskFreeRate,
+    NoPortfolioBeatsRiskFreeRate,
+    build_portfolio_output,
+    compute_max_sharpe_portfolio,
+    estimate_inputs,
+    highest_reachable_return,
+)
+from wolvwealth.optimizer_params import Objective, ObjectiveName
 
 
 def fixture_prices() -> pd.DataFrame:
@@ -53,6 +61,47 @@ class TestCore:
         between_best_two = float(mu.iloc[-2] + mu.iloc[-1]) / 2  # only the best asset beats this
         weights, _ = compute_max_sharpe_portfolio(prices, risk_free_rate=between_best_two)
         assert list(weights) == [mu.index[-1]]
+
+    def test_constraints_capping_every_portfolio_below_the_rate_is_an_answer_not_a_solver_error(self):
+        """Regression: only NVDA beats a 50% rate, and max_weight 0.4 caps every allowed portfolio at ~37%.
+
+        pypfopt's max_sharpe only checks that some asset beats the rate, so it
+        failed with a generic "infeasible" instead of recommending cash.
+        """
+        prices = fixture_prices()
+        best = highest_reachable_return(estimate_inputs(prices)[0], 0.0, 0.4)
+        assert best < 0.5  # The premise: some asset beats the rate, no allowed portfolio does.
+        with pytest.raises(NoPortfolioBeatsRiskFreeRate) as excinfo:
+            compute_max_sharpe_portfolio(prices, risk_free_rate=0.5, max_weight=0.4)
+        answer = excinfo.value
+        assert answer.performance == (0.5, 0.0, 0.0)
+        message = str(answer)
+        assert f"(best: {best:.1%})" in message
+        assert "No portfolio allowed by these constraints" in message
+        assert "hold cash" in message
+        assert "current holdings" not in message  # That wording is for rebalancing requests.
+        assert "nfeasible" not in message
+
+    @pytest.mark.parametrize(
+        "objective",
+        [
+            Objective(ObjectiveName.EFFICIENT_RISK, target_volatility=0.2),
+            Objective(ObjectiveName.MAX_UTILITY, risk_aversion=1),
+        ],
+        ids=lambda objective: str(objective.name),
+    )
+    def test_the_capped_answer_holds_for_every_return_seeking_objective(self, objective):
+        from wolvwealth.optimizer_core import compute_portfolio
+
+        with pytest.raises(NoPortfolioBeatsRiskFreeRate):
+            compute_portfolio(fixture_prices(), objective, risk_free_rate=0.5, max_weight=0.4)
+
+    def test_a_rate_the_capped_best_still_beats_stays_invested(self):
+        weights, (expected_return, _, _) = compute_max_sharpe_portfolio(
+            fixture_prices(), risk_free_rate=0.35, max_weight=0.4
+        )
+        assert weights
+        assert expected_return > 0.35
 
     def test_output_reports_cash(self):
         hold_cash = build_portfolio_output({}, 5000, lambda _: 1.0, performance=(0.02, 0.0, 0.0), notes=["why"])

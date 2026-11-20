@@ -217,7 +217,7 @@ All five are one mean-variance trade-off framed differently: `max_utility` state
 
 Portfolios are fully invested; the only alternative is holding everything in cash at the 2% risk-free rate. The optimizer recommends cash only when cash beats every stock portfolio on the objective's own terms, and answers `200` with the reason in `notes`, charged like any answer:
 
-- `max_sharpe`, `efficient_risk`, `max_utility`: no asset's expected return beats the risk-free rate;
+- `max_sharpe`, `efficient_risk`, `max_utility`: no asset's expected return beats the risk-free rate, or a binding `max_weight` caps every allowed portfolio's expected return at it;
 - `efficient_risk`: no portfolio within the volatility limit is expected to beat the risk-free rate, which cash earns with no volatility;
 - `efficient_return`: the target is at or below the risk-free rate, so cash meets it with no volatility;
 - `max_utility`: no portfolio's return after the risk penalty beats the risk-free rate (e.g. *At risk aversion 100, the best portfolio's risk-adjusted return (28.6% expected, minus a 42.6% risk penalty, is -14.1%) does not beat the 2.0% risk-free rate, ...*);

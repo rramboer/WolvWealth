@@ -234,11 +234,17 @@ class TestEngine:
         )
         result = run_backtest(prices, cfg, MaxSharpeStrategy(cfg.constraints))
         assert result.rebalances
-        for event in result.rebalances:
+        invested = [event for event in result.rebalances if event.weights]
+        assert invested
+        for event in invested:
             assert len(event.weights) <= 3
             assert max(event.weights.values()) <= 0.5 + 1e-6
             assert sum(event.weights.values()) == pytest.approx(1.0)
             assert event.expected_performance is not None
+        # 2023-09-01: every portfolio under the 50% cap is expected to lose money, so the answer is cash
+        # (before the NoPortfolioBeatsRiskFreeRate fix this window was a solver error that kept stale positions).
+        cash_events = [event for event in result.rebalances if not event.weights]
+        assert all("No portfolio allowed by these constraints" in event.note for event in cash_events)
         assert result.equity.notna().all()
 
 
