@@ -27,6 +27,7 @@ from wolvwealth.backtest.strategies import (
     BuyAndHoldStrategy,
     EqualWeightStrategy,
     MaxSharpeStrategy,
+    OptimizerStrategy,
     Strategy,
     StrategyError,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "EqualWeightStrategy",
     "Frequency",
     "MaxSharpeStrategy",
+    "OptimizerStrategy",
     "PerformanceMetrics",
     "RebalanceEvent",
     "Strategy",

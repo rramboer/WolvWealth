@@ -1,13 +1,22 @@
 import PropTypes from "prop-types";
 import { useMemo, useState } from "react";
+import { ObjectiveFields } from "../components/ObjectiveFields";
 import { AllocationTable } from "../components/tables";
 import { Alert, Button, Card, Field, NumberInput, TextInput } from "../components/ui";
 import { optimize } from "../lib/api";
 import { formatMoney, formatNumber, formatPercent } from "../lib/format";
+import { DEFAULT_OBJECTIVE_FORM, buildObjectivePayload, describeObjective } from "../lib/objectives";
 import { parseUniverse } from "../lib/series";
 import { isValid, validateOptimizeForm } from "../lib/validate";
 
-const DEFAULT_FORM = { initialCash: 10000, universe: "top50", maxPositions: 10, maxWeight: 1, minWeight: 0 };
+const DEFAULT_FORM = {
+  initialCash: 10000,
+  universe: "top50",
+  ...DEFAULT_OBJECTIVE_FORM,
+  maxPositions: 10,
+  maxWeight: 1,
+  minWeight: 0,
+};
 
 /** Translate form state into the /api/optimize/ payload. */
 export function buildOptimizePayload(form) {
@@ -15,7 +24,12 @@ export function buildOptimizePayload(form) {
   if (form.maxPositions !== "" && form.maxPositions > 0) constraints.max_positions = form.maxPositions;
   if (form.maxWeight !== "" && form.maxWeight < 1) constraints.max_weight = form.maxWeight;
   if (form.minWeight !== "" && form.minWeight > 0) constraints.min_universal_weight = form.minWeight;
-  return { initial_cash: form.initialCash, universe: parseUniverse(form.universe), constraints };
+  return {
+    initial_cash: form.initialCash,
+    universe: parseUniverse(form.universe),
+    objective: buildObjectivePayload(form),
+    constraints,
+  };
 }
 
 export default function OptimizeTab({ config, onUseConsumed }) {
@@ -39,6 +53,7 @@ export default function OptimizeTab({ config, onUseConsumed }) {
   };
 
   const metrics = status.result?.metrics;
+  const optimizedFor = describeObjective(status.result?.objective);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
@@ -55,6 +70,7 @@ export default function OptimizeTab({ config, onUseConsumed }) {
               spellCheck={false}
             />
           </Field>
+          <ObjectiveFields form={form} errors={errors} update={update} />
           <div className="grid grid-cols-3 gap-3">
             <Field label="Max positions" error={errors.maxPositions}>
               <NumberInput value={form.maxPositions} min={0} onChange={update("maxPositions")} />
@@ -93,6 +109,7 @@ export default function OptimizeTab({ config, onUseConsumed }) {
             )}
             <Card title={`Allocation of ${formatMoney(metrics?.portfolio_value ?? form.initialCash, { digits: 0 })}`}>
               <AllocationTable portfolio={status.result.optimized_portfolio} cash={status.result.cash} />
+              {optimizedFor && <p className="mt-3 text-xs text-white/60">Optimized for: {optimizedFor}.</p>}
               <p className="mt-3 text-xs text-white/40">
                 Expected figures come from the optimizer&apos;s model of the past and are not forecasts. Use the Backtest
                 tab to see how the strategy actually behaved.
@@ -103,8 +120,8 @@ export default function OptimizeTab({ config, onUseConsumed }) {
         {!status.result && !status.error && (
           <Card>
             <p className="text-sm text-white/60">
-              Build a max-Sharpe portfolio from the latest prices. Set an amount, choose a universe, and optionally cap the
-              number of positions or the weight of any single stock.
+              Build an optimized portfolio from the latest prices. Set an amount, choose a universe and what to optimize
+              for, and optionally cap the number of positions or the weight of any single stock.
             </p>
           </Card>
         )}

@@ -10,6 +10,7 @@ from wolvwealth.optimizer_params import (
     MAX_CASH,
     Constraints,
     InvalidOptimizationInput,
+    Objective,
     check_feasibility,
     require_integer,
     require_number,
@@ -62,6 +63,7 @@ class BacktestConfig:
     execution_lag: int = 1  # Trading days between the optimization decision and the trade.
     transaction_cost_bps: float = 0.0  # Fee on traded value, in basis points.
     constraints: Constraints = Constraints()
+    objective: Objective = Objective()  # What the optimizer maximizes or minimizes at each rebalance.
     risk_free_rate: float = 0.02  # Annual rate cash earns, used for the hold-cash decision and Sharpe ratios.
 
     def __post_init__(self) -> None:
@@ -81,6 +83,8 @@ class BacktestConfig:
         require_number(self.risk_free_rate, "risk_free_rate", minimum=-1.0, maximum=1.0, exclusive_minimum=True)
         if not isinstance(self.constraints, Constraints):
             raise InvalidOptimizationInput("constraints must be a Constraints object.")
+        if not isinstance(self.objective, Objective):
+            raise InvalidOptimizationInput("objective must be an Objective object.")
         check_feasibility(self.constraints, len(self.universe))
 
     @property
@@ -95,4 +99,5 @@ class BacktestConfig:
         data["end"] = self.end.isoformat()
         data["universe"] = list(self.universe)
         data["frequency"] = str(self.frequency)
+        data["objective"] = self.objective.to_dict()
         return data

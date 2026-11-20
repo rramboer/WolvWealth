@@ -119,3 +119,31 @@ describe("validateOptimizeForm", () => {
     expect(Object.keys(errors).sort()).toEqual(["initialCash", "maxPositions", "universe"]);
   });
 });
+
+describe("objective parameters", () => {
+  it("needs no parameter for max Sharpe or min volatility", () => {
+    expect(validateOptimizeForm({ ...good, objective: "min_volatility", targetVolatility: "" }, config)).toEqual({});
+  });
+
+  it("checks only the selected objective's parameter", () => {
+    const form = { ...good, objective: "efficient_return", targetReturn: 10, targetVolatility: -5 };
+    expect(validateBacktestForm(form, config)).toEqual({});
+  });
+
+  it.each([
+    ["efficient_risk", "targetVolatility", 0, /greater than 0/],
+    ["efficient_risk", "targetVolatility", 501, /at most 500/],
+    ["efficient_risk", "targetVolatility", "", /Required/],
+    ["efficient_return", "targetReturn", -101, /at least -100/],
+    ["efficient_return", "targetReturn", Infinity, /Out of range/],
+    ["max_utility", "riskAversion", 0, /greater than 0/],
+    ["max_utility", "riskAversion", 1001, /at most 1,000/],
+  ])("%s rejects %s = %p", (objective, key, value, message) => {
+    expect(validateOptimizeForm({ ...good, objective, [key]: value }, config)[key]).toMatch(message);
+    expect(validateBacktestForm({ ...good, objective, [key]: value }, config)[key]).toMatch(message);
+  });
+
+  it("allows a negative return target (the server answers with cash)", () => {
+    expect(validateOptimizeForm({ ...good, objective: "efficient_return", targetReturn: -5 }, config)).toEqual({});
+  });
+});

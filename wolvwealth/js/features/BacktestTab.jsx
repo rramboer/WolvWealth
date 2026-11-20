@@ -1,10 +1,12 @@
 import PropTypes from "prop-types";
 import { useMemo, useState } from "react";
 import { DrawdownChart, EquityChart } from "../components/charts";
+import { ObjectiveFields } from "../components/ObjectiveFields";
 import { MetricsTable, RebalanceLog } from "../components/tables";
 import { Alert, Button, Card, Field, NumberInput, ProgressBar, Select, TextInput } from "../components/ui";
 import { useBacktestJob } from "../hooks/useBacktestJob";
 import { formatPercent, formatSeconds, seriesLabel } from "../lib/format";
+import { DEFAULT_OBJECTIVE_FORM, buildObjectivePayload, describeObjective } from "../lib/objectives";
 import { estimateRebalances, estimateSeconds, parseUniverse } from "../lib/series";
 import { isValid, validateBacktestForm } from "../lib/validate";
 
@@ -30,6 +32,7 @@ function defaultForm(config) {
     lookbackDays: 1095,
     executionLag: 1,
     costBps: 5,
+    ...DEFAULT_OBJECTIVE_FORM,
     maxPositions: 10,
     maxWeight: 1,
     minWeight: 0,
@@ -51,6 +54,7 @@ export function buildBacktestPayload(form) {
     lookback_days: form.lookbackDays,
     execution_lag: form.executionLag,
     transaction_cost_bps: form.costBps,
+    objective: buildObjectivePayload(form),
     constraints,
   };
 }
@@ -122,6 +126,7 @@ export default function BacktestTab({ config, onUseConsumed }) {
               <NumberInput value={form.costBps} min={0} step={1} onChange={update("costBps")} />
             </Field>
           </div>
+          <ObjectiveFields form={form} errors={errors} update={update} />
           <div className="grid grid-cols-3 gap-3">
             <Field label="Max positions" error={errors.maxPositions}>
               <NumberInput value={form.maxPositions} min={0} onChange={update("maxPositions")} />
@@ -195,6 +200,7 @@ function BacktestResults({ report, cached }) {
   const equal = report.benchmarks.equal_weight?.metrics;
   const edge = equal ? optimizer.total_return - equal.total_return : null;
   const warnings = [...report.warnings, ...report.result.warnings];
+  const optimizedFor = describeObjective(report.config.objective);
   return (
     <>
       <div className="grid gap-4 sm:grid-cols-3">
@@ -210,6 +216,7 @@ function BacktestResults({ report, cached }) {
       </Card>
       <Card title="Realized performance">
         <MetricsTable report={report} />
+        {optimizedFor && <p className="mt-3 text-xs text-white/60">Optimizer objective: {optimizedFor}.</p>}
         {cached && <p className="mt-3 text-xs text-white/40">Served from cache.</p>}
       </Card>
       <Card title={`Rebalances (${report.result.rebalances.length})`}>

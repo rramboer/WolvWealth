@@ -16,7 +16,9 @@ from wolvwealth.backtest.service import DEFAULT_BENCHMARK_TICKERS
 from wolvwealth.optimizer_params import (
     Constraints,
     InvalidOptimizationInput,
+    Objective,
     parse_constraints,
+    parse_objective,
     require_integer,
     require_number,
     resolve_universe,
@@ -55,7 +57,7 @@ def parse_backtest_request(
 
     Accepted keys (all optional unless noted): start (required, YYYY-MM-DD),
     end, initial_cash, frequency, universe, lookback_days, execution_lag,
-    transaction_cost_bps, constraints, benchmarks, include_equity.
+    transaction_cost_bps, constraints, objective, benchmarks, include_equity.
     """
     if not isinstance(payload, dict):
         raise InvalidOptimizationInput("Parse Error. Request body must be a JSON object.")
@@ -71,6 +73,7 @@ def parse_backtest_request(
     constraints = Constraints()
     if "constraints" in payload:
         constraints = parse_constraints(payload["constraints"], len(universe))
+    objective = parse_objective(payload["objective"]) if "objective" in payload else Objective()
 
     try:
         config = BacktestConfig(
@@ -83,6 +86,7 @@ def parse_backtest_request(
             execution_lag=_integer(payload, "execution_lag", default=1),
             transaction_cost_bps=_number(payload, "transaction_cost_bps", default=0.0),
             constraints=constraints,
+            objective=objective,
         )
     except InvalidOptimizationInput as err:
         raise InvalidOptimizationInput(str(err)) from err
@@ -106,6 +110,7 @@ _KNOWN_KEYS = {
     "execution_lag",
     "transaction_cost_bps",
     "constraints",
+    "objective",
     "benchmarks",
     "include_equity",
 }

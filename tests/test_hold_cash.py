@@ -72,7 +72,7 @@ class TestOptimizeApi:
         raise NoAssetBeatsRiskFreeRate(0.02, "AAPL", -0.05)
 
     def test_returns_a_hold_cash_answer_not_an_error(self, client, monkeypatch):
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", self.answer)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", self.answer)
         response = client.post(
             "/api/optimize/",
             json={"initial_cash": 1000, "universe": ["top3"]},
@@ -88,7 +88,7 @@ class TestOptimizeApi:
         assert "AAPL" in data["notes"][0]
 
     def test_a_hold_cash_answer_is_charged_like_any_answer(self, client, monkeypatch):
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", self.answer)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", self.answer)
         before = remaining_uses(client)
         client.post("/api/optimize/", json={"initial_cash": 1000}, headers={"Authorization": DEV_USER_TOKEN})
         assert remaining_uses(client) == before - 1
@@ -107,7 +107,7 @@ class TestOptimizeApi:
         def solver_failure(*args, **kwargs):
             raise cvxpy.error.SolverError("solver blew up")
 
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", solver_failure)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", solver_failure)
         response = client.post("/api/optimize/", json={"initial_cash": 1000}, headers={"Authorization": DEV_USER_TOKEN})
         assert response.status_code == 400
         message = response.get_json()["error"]["message"]

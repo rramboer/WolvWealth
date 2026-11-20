@@ -5,6 +5,7 @@ InvalidOptimizationInput into whatever error type suits their transport.
 """
 
 import dataclasses
+import enum
 import math
 import re
 
@@ -61,9 +62,129 @@ def require_integer(value: object, name: str, *, minimum: int | None = None, max
     return value
 
 
+class ObjectiveName(enum.StrEnum):
+    """What the optimizer maximizes or minimizes.
+
+    All five are special cases of one mean-variance utility, expected return
+    minus a risk penalty, the way enterprise optimizers frame it:
+    max_utility is that function with an explicit risk aversion, and the
+    others fix the trade-off by a ratio (max_sharpe), a risk budget
+    (efficient_risk), a return target (efficient_return), or by ignoring
+    return altogether (min_volatility).
+    """
+
+    MAX_SHARPE = "max_sharpe"  # Most expected return per unit of volatility.
+    MIN_VOLATILITY = "min_volatility"  # Calmest fully-invested portfolio.
+    EFFICIENT_RISK = "efficient_risk"  # Highest expected return with volatility <= target_volatility.
+    EFFICIENT_RETURN = "efficient_return"  # Lowest volatility with expected return >= target_return.
+    MAX_UTILITY = "max_utility"  # Highest return - risk_aversion / 2 * variance.
+
+
+# Objective parameters: which objective needs which, and their sane ranges.
+OBJECTIVE_PARAMETERS = {
+    ObjectiveName.EFFICIENT_RISK: "target_volatility",
+    ObjectiveName.EFFICIENT_RETURN: "target_return",
+    ObjectiveName.MAX_UTILITY: "risk_aversion",
+}
+MAX_TARGET_VOLATILITY = 5.0  # 500% a year; no real portfolio is near this.
+MIN_TARGET_RETURN = -1.0  # Losing everything; below that is meaningless.
+MAX_TARGET_RETURN = 5.0  # 500% a year.
+MAX_RISK_AVERSION = 1_000.0  # Far past the point where max_utility is just min_volatility.
+
+
+@dataclasses.dataclass(frozen=True)
+class Objective:
+    """The optimization objective and its parameter, if it takes one.
+
+    Exactly the parameter the objective needs must be set: efficient_risk
+    takes target_volatility, efficient_return takes target_return,
+    max_utility takes risk_aversion, and max_sharpe and min_volatility take
+    none. All rates are annual decimals (0.15 means 15%).
+    """
+
+    name: ObjectiveName = ObjectiveName.MAX_SHARPE
+    target_volatility: float | None = None
+    target_return: float | None = None
+    risk_aversion: float | None = None
+
+    def __post_init__(self) -> None:
+        """Reject malformed values regardless of how the object was built (API, CLI, code).
+
+        A plain-string name is accepted and stored as an ObjectiveName, and
+        parameters are stored as floats (pypfopt rejects an int target_return).
+        """
+        if isinstance(self.name, str) and self.name in ObjectiveName.__members__.values():
+            object.__setattr__(self, "name", ObjectiveName(self.name))
+        if not isinstance(self.name, ObjectiveName):
+            raise InvalidOptimizationInput(f"Invalid objective. objective must be one of: {_objective_choices()}.")
+        needed = OBJECTIVE_PARAMETERS.get(self.name)
+        for parameter in OBJECTIVE_PARAMETERS.values():
+            value = getattr(self, parameter)
+            if parameter == needed and value is None:
+                raise InvalidOptimizationInput(f"Invalid objective. {self.name} requires {parameter}.")
+            if parameter != needed and value is not None:
+                raise InvalidOptimizationInput(f"Invalid objective. {self.name} does not take {parameter}.")
+        if self.target_volatility is not None:
+            require_number(
+                self.target_volatility,
+                "target_volatility",
+                minimum=0.0,
+                maximum=MAX_TARGET_VOLATILITY,
+                exclusive_minimum=True,
+            )
+        if self.target_return is not None:
+            require_number(self.target_return, "target_return", minimum=MIN_TARGET_RETURN, maximum=MAX_TARGET_RETURN)
+        if self.risk_aversion is not None:
+            require_number(
+                self.risk_aversion, "risk_aversion", minimum=0.0, maximum=MAX_RISK_AVERSION, exclusive_minimum=True
+            )
+        if needed is not None:
+            object.__setattr__(self, needed, float(getattr(self, needed)))
+
+    @property
+    def parameter(self) -> float | None:
+        """The objective's one parameter, or None for max_sharpe and min_volatility."""
+        name = OBJECTIVE_PARAMETERS.get(self.name)
+        return None if name is None else getattr(self, name)
+
+    def to_dict(self) -> dict:
+        """JSON-friendly representation: the name plus the parameter it uses."""
+        data: dict = {"name": str(self.name)}
+        if self.name in OBJECTIVE_PARAMETERS:
+            data[OBJECTIVE_PARAMETERS[self.name]] = self.parameter
+        return data
+
+
+def _objective_choices() -> str:
+    return ", ".join(name.value for name in ObjectiveName)
+
+
+def parse_objective(raw: object) -> Objective:
+    """Validate an objective as sent to the API.
+
+    Accepts a bare name ("min_volatility") or an object with a name and the
+    objective's parameter ({"name": "efficient_risk", "target_volatility": 0.15}).
+    """
+    if isinstance(raw, str):
+        raw = {"name": raw}
+    if not isinstance(raw, dict):
+        raise InvalidOptimizationInput("Invalid objective. objective must be a name or an object with a name.")
+    unknown = set(raw) - {"name", *OBJECTIVE_PARAMETERS.values()}
+    if unknown:
+        raise InvalidOptimizationInput(f"Unknown objective field(s): {', '.join(sorted(map(str, unknown)))}.")
+    name = raw.get("name")
+    if not isinstance(name, str) or name.lower() not in ObjectiveName.__members__.values():
+        raise InvalidOptimizationInput(f"Invalid objective. objective must be one of: {_objective_choices()}.")
+    values = {}
+    for parameter in OBJECTIVE_PARAMETERS.values():
+        if parameter in raw:
+            values[parameter] = require_number(raw[parameter], parameter)  # Type here; Objective checks ranges.
+    return Objective(ObjectiveName(name.lower()), **values)
+
+
 @dataclasses.dataclass(frozen=True)
 class Constraints:
-    """Portfolio constraints accepted by compute_max_sharpe_portfolio."""
+    """Portfolio constraints accepted by compute_portfolio, applied with every objective."""
 
     max_weight: float = 1.0  # No weights higher than this (1.0 disables).
     min_universal_weight: float = 0.0  # Every asset must have at least this weight.
@@ -79,7 +200,7 @@ class Constraints:
             require_integer(self.max_positions, "max_positions", minimum=1)
 
     def as_kwargs(self) -> dict:
-        """Keyword arguments for compute_max_sharpe_portfolio."""
+        """Keyword arguments for compute_portfolio."""
         return dataclasses.asdict(self)
 
 

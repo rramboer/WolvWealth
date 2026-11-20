@@ -17,14 +17,21 @@ from wolvwealth.backtest.preflight import check_runnable
 from wolvwealth.backtest.progress import Progress
 from wolvwealth.backtest.service import BacktestReport, run_report
 from wolvwealth.market_data import load_historical_prices, load_ticker_universe
-from wolvwealth.optimizer_params import Constraints, InvalidOptimizationInput, resolve_universe
+from wolvwealth.optimizer_params import (
+    OBJECTIVE_PARAMETERS,
+    Constraints,
+    InvalidOptimizationInput,
+    Objective,
+    ObjectiveName,
+    resolve_universe,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     """CLI options."""
     parser = argparse.ArgumentParser(
         prog="wolvwealth-backtest",
-        description="Backtest the WolvWealth max-Sharpe optimizer against equal-weight and buy-and-hold benchmarks.",
+        description="Backtest the WolvWealth optimizer against equal-weight and buy-and-hold benchmarks.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--start", type=datetime.date.fromisoformat, default="2019-01-01", help="YYYY-MM-DD")
@@ -43,6 +50,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-weight", type=float, default=1.0, help="maximum weight per asset")
     parser.add_argument("--min-weight", type=float, default=0.0, help="minimum weight for every asset")
     parser.add_argument(
+        "--objective",
+        choices=[name.value for name in ObjectiveName],
+        default=ObjectiveName.MAX_SHARPE.value,
+        help="what the optimizer maximizes or minimizes at each rebalance",
+    )
+    parser.add_argument(
+        "--target-volatility", type=float, default=None, help="annual volatility limit for efficient_risk, e.g. 0.15"
+    )
+    parser.add_argument(
+        "--target-return", type=float, default=None, help="annual return target for efficient_return, e.g. 0.10"
+    )
+    parser.add_argument("--risk-aversion", type=float, default=None, help="risk aversion for max_utility, e.g. 3")
+    parser.add_argument(
         "--risk-free-rate", type=float, default=0.02, help="annual rate cash earns; also used for Sharpe ratios"
     )
     parser.add_argument("--benchmark", nargs="*", default=["SPY"], help="buy-and-hold benchmark tickers")
@@ -58,6 +78,14 @@ def config_from_args(args: argparse.Namespace, prices: pd.DataFrame, ticker_univ
     constraints = Constraints(
         max_weight=args.max_weight, min_universal_weight=args.min_weight, max_positions=args.max_positions
     )
+    objective = Objective(
+        ObjectiveName(args.objective),
+        **{
+            parameter: getattr(args, parameter)
+            for parameter in OBJECTIVE_PARAMETERS.values()
+            if getattr(args, parameter) is not None
+        },
+    )
     return BacktestConfig(
         start=args.start,
         end=args.end or prices.index[-1].date(),
@@ -68,6 +96,7 @@ def config_from_args(args: argparse.Namespace, prices: pd.DataFrame, ticker_univ
         execution_lag=args.execution_lag,
         transaction_cost_bps=args.cost_bps,
         constraints=constraints,
+        objective=objective,
         risk_free_rate=args.risk_free_rate,
     )
 
@@ -76,7 +105,8 @@ def format_report(report: BacktestReport) -> str:
     """Human-readable summary."""
     lines = [
         f"Backtest {report.config.start} -> {report.config.end}, {report.config.frequency} rebalancing, "
-        f"{len(report.config.universe)} tickers, {report.config.lookback_days}-day lookback",
+        f"{len(report.config.universe)} tickers, {report.config.lookback_days}-day lookback, "
+        f"objective {_describe_objective(report.config.objective)}",
         "",
         "Rebalances:",
     ]
@@ -102,6 +132,13 @@ def format_report(report: BacktestReport) -> str:
     if warnings:
         lines += ["", "Warnings:", *(f"  - {warning}" for warning in warnings)]
     return "\n".join(lines)
+
+
+def _describe_objective(objective: Objective) -> str:
+    """E.g. "efficient_risk (target_volatility 0.15)"."""
+    if objective.parameter is None:
+        return str(objective.name)
+    return f"{objective.name} ({OBJECTIVE_PARAMETERS[objective.name]} {objective.parameter:g})"
 
 
 def _metrics_table(columns: dict[str, PerformanceMetrics]) -> str:

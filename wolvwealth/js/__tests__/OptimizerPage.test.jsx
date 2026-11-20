@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OptimizerPage from "../pages/optimizer";
 
@@ -84,8 +84,37 @@ describe("OptimizerPage", () => {
     expect(JSON.parse(init.body)).toEqual({
       initial_cash: 10000,
       universe: ["TOP50"],
+      objective: { name: "max_sharpe" },
       constraints: { max_positions: 10 },
     });
+  });
+
+  it("optimizes for a volatility limit entered in percent, and says what it optimized for", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        metrics: { expected_annual_return: 0.3, annual_volatility: 0.12, sharpe_ratio: 2.3, portfolio_value: 10000 },
+        optimized_portfolio: { AAPL: { percent_weight: 100, value: 10000, shares: 50 } },
+        objective: { name: "efficient_risk", target_volatility: 0.12 },
+      }),
+    );
+    render(<OptimizerPage config={config} />);
+    expect(screen.queryByLabelText("Volatility limit (% a year)")).toBeNull();
+    const form = within(screen.getByRole("button", { name: "Optimize" }).closest("form"));
+    fireEvent.change(form.getByLabelText("Optimize for"), { target: { value: "efficient_risk" } });
+    expect(screen.getByText(/highest expected return whose volatility stays within your limit/)).toBeTruthy();
+    const limit = screen.getByLabelText("Volatility limit (% a year)");
+    expect(limit.value).toBe("15");
+
+    fireEvent.change(limit, { target: { value: "0" } });
+    expect(screen.getByRole("note").textContent).toBe("Must be greater than 0.");
+    expect(screen.getByRole("button", { name: "Optimize" }).disabled).toBe(true);
+
+    fireEvent.change(limit, { target: { value: "12" } });
+    submitForm("Optimize");
+    await waitFor(() => expect(screen.getByRole("cell", { name: "AAPL" })).toBeTruthy());
+    const [, init] = globalThis.fetch.mock.calls[0];
+    expect(JSON.parse(init.body).objective).toEqual({ name: "efficient_risk", target_volatility: 0.12 });
+    expect(screen.getByText("Optimized for: Most return within a volatility limit (12%).")).toBeTruthy();
   });
 
   it("shows API errors from the optimizer", async () => {

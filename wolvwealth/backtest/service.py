@@ -14,7 +14,7 @@ from wolvwealth.backtest.engine import run_backtest
 from wolvwealth.backtest.metrics import PerformanceMetrics, compute_metrics
 from wolvwealth.backtest.progress import Progress, ProgressCallback
 from wolvwealth.backtest.results import BacktestResult
-from wolvwealth.backtest.strategies import BuyAndHoldStrategy, EqualWeightStrategy, MaxSharpeStrategy
+from wolvwealth.backtest.strategies import BuyAndHoldStrategy, EqualWeightStrategy, OptimizerStrategy
 
 EQUAL_WEIGHT_BENCHMARK = "equal_weight"
 DEFAULT_BENCHMARK_TICKERS = ("SPY",)
@@ -57,7 +57,7 @@ def run_report(
     benchmark_tickers: tuple[str, ...] = DEFAULT_BENCHMARK_TICKERS,
     on_progress: ProgressCallback | None = None,
 ) -> BacktestReport:
-    """Backtest the max-Sharpe optimizer plus equal-weight and buy-and-hold benchmarks.
+    """Backtest the optimizer (config.objective) plus equal-weight and buy-and-hold benchmarks.
 
     `on_progress` receives a Progress before each optimizer rebalance and
     after each benchmark run.
@@ -72,7 +72,7 @@ def run_report(
         message = f"Optimizing rebalance {min(completed + 1, total)} of {total}"
         report_progress(Progress("optimizer", completed, total + benchmark_runs, message))
 
-    strategy = MaxSharpeStrategy(config.constraints, risk_free_rate=config.risk_free_rate)
+    strategy = OptimizerStrategy(config.constraints, risk_free_rate=config.risk_free_rate, objective=config.objective)
     result = run_backtest(prices, config, strategy, on_step=on_optimizer_step)
 
     def benchmark_done(index: int, name: str) -> None:

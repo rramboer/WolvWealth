@@ -11,8 +11,8 @@ import cvxpy
 import pandas as pd
 from pypfopt import exceptions as pypfopt_exceptions
 
-from wolvwealth.optimizer_core import NoAssetBeatsRiskFreeRate, compute_max_sharpe_portfolio
-from wolvwealth.optimizer_params import Constraints
+from wolvwealth.optimizer_core import HoldCashAnswer, TargetUnreachable, compute_portfolio
+from wolvwealth.optimizer_params import Constraints, Objective
 
 Weights = dict[str, float]
 
@@ -34,14 +34,19 @@ class Strategy(Protocol):
         """
 
 
-class MaxSharpeStrategy:
-    """The WolvWealth optimizer: max-Sharpe over the lookback window."""
+class OptimizerStrategy:
+    """The WolvWealth optimizer: the configured objective (default max-Sharpe) over the lookback window."""
 
-    name = "max_sharpe"
-
-    def __init__(self, constraints: Constraints | None = None, risk_free_rate: float = 0.02) -> None:
-        """Store the constraints applied at every rebalance."""
+    def __init__(
+        self,
+        constraints: Constraints | None = None,
+        risk_free_rate: float = 0.02,
+        *,
+        objective: Objective | None = None,
+    ) -> None:
+        """Store the objective and constraints applied at every rebalance."""
         self.constraints = constraints or Constraints()
+        self.objective = objective or Objective()
         self.risk_free_rate = risk_free_rate
         self.last_performance: tuple[float, float, float] | None = None
         self.last_note: str | None = None  # Why the last decision was what it was, if notable.
@@ -55,16 +60,27 @@ class MaxSharpeStrategy:
             )
         self.last_note = None
         try:
-            weights, self.last_performance = compute_max_sharpe_portfolio(
-                window, risk_free_rate=self.risk_free_rate, **constraints.as_kwargs()
+            weights, self.last_performance = compute_portfolio(
+                window, self.objective, risk_free_rate=self.risk_free_rate, **constraints.as_kwargs()
             )
-        except NoAssetBeatsRiskFreeRate as answer:
+        except HoldCashAnswer as answer:
             # The model's answer, not a failure: sell into cash rather than keep stale positions.
             self.last_performance, self.last_note = answer.performance, str(answer)
             return {}
+        except TargetUnreachable as err:
+            # This window cannot meet the target (e.g. a volatility limit in a turbulent market): hold, and say why.
+            raise StrategyError(str(err)) from err
         except (pypfopt_exceptions.OptimizationError, cvxpy.error.SolverError, ValueError) as err:
             raise StrategyError(f"optimization failed: {err}") from err
         return weights
+
+    @property
+    def name(self) -> str:
+        """The objective's name, e.g. "max_sharpe", so results say what was optimized."""
+        return str(self.objective.name)
+
+
+MaxSharpeStrategy = OptimizerStrategy  # Former name, from when max-Sharpe was the only objective.
 
 
 class EqualWeightStrategy:

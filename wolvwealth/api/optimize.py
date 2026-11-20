@@ -8,14 +8,16 @@ import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import authenticate
 from wolvwealth.api.state import ApplicationState
-from wolvwealth.optimizer_core import NoAssetBeatsRiskFreeRate, build_portfolio_output, compute_max_sharpe_portfolio
+from wolvwealth.optimizer_core import HoldCashAnswer, TargetUnreachable, build_portfolio_output, compute_portfolio
 from wolvwealth.optimizer_params import (
     MAX_CASH,
     MAX_SHARES,
     Constraints,
     InvalidOptimizationInput,
+    Objective,
     feasibility_problem,
     parse_constraints,
+    parse_objective,
     require_number,
     resolve_universe,
 )
@@ -48,6 +50,7 @@ class Optimization:
         self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set.
         self.min_universal_weight = 0.00  # Every stock must have at least this weight.
         self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%.
+        self.objective = Objective()  # max_sharpe.
 
     def parse_input(self) -> None:
         """Parse request as JSON."""
@@ -62,6 +65,16 @@ class Optimization:
         self.parse_initial_holdings()
         self.parse_exclude_metrics()
         self.parse_constraints()
+        self.parse_objective()
+
+    def parse_objective(self) -> None:
+        """Validate the optional objective (a name, or an object with a name and its parameter)."""
+        if "objective" not in self.input_json:
+            return
+        try:
+            self.objective = parse_objective(self.input_json["objective"])
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
 
     def parse_constraints(self) -> None:
         """Validate and apply the optional constraints object."""
@@ -148,15 +161,18 @@ class Optimization:
         filtered_data = self.state.HISTORICAL_PRICES[self.universe]
         notes: list[str] = []
         try:
-            weights, performance = compute_max_sharpe_portfolio(
+            weights, performance = compute_portfolio(
                 filtered_data,
+                self.objective,
                 max_weight=self.max_weight,
                 min_universal_weight=self.min_universal_weight,
                 max_positions=self.max_positions,
                 weight_threshold=self.weight_threshold,
             )
-        except NoAssetBeatsRiskFreeRate as answer:  # A valid result: hold cash.
+        except HoldCashAnswer as answer:  # A valid result: hold cash.
             weights, performance, notes = {}, answer.performance, [str(answer)]
+        except TargetUnreachable as err:  # The objective's target cannot be met; free, like infeasible constraints.
+            raise InvalidUsage(str(err)) from err
         except (pypfopt_exceptions.OptimizationError, cvxpy.error.SolverError, ValueError) as err:
             # Constraints are checked for feasibility before this point, so this is a solver failure.
             wolvwealth.app.logger.exception("Portfolio optimization failed")
@@ -169,6 +185,7 @@ class Optimization:
             self.state.fetch_ticker_price,
             performance=None if self.exclude_metrics else performance,
             notes=notes,
+            objective=self.objective,
         )
         self.output = flask.jsonify(output)
 

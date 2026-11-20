@@ -49,7 +49,7 @@ class TestOnlyAnswersAreCharged:
         def hold_cash(*args, **kwargs):
             raise NoAssetBeatsRiskFreeRate(0.02, "AAPL", -0.1)
 
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", hold_cash)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", hold_cash)
         before = uses(app)
         assert client.post("/api/optimize/", json=BODY, headers=HEADERS).status_code == 200
         assert uses(app) == before - 1
@@ -58,7 +58,7 @@ class TestOnlyAnswersAreCharged:
         def solver_failure(*args, **kwargs):
             raise cvxpy.error.SolverError("did not converge")
 
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", solver_failure)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", solver_failure)
         before = uses(app)
         response = client.post("/api/optimize/", json=BODY, headers=HEADERS)
         assert response.status_code == 400
@@ -68,7 +68,7 @@ class TestOnlyAnswersAreCharged:
         def crash(*args, **kwargs):
             raise RuntimeError("bug")
 
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", crash)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", crash)
         before = uses(app)
         with pytest.raises(RuntimeError):  # TESTING propagates exceptions; in production this is a 500
             client.post("/api/optimize/", json=BODY, headers=HEADERS)
@@ -83,7 +83,7 @@ class TestOnlyAnswersAreCharged:
         before = uses(app)
         assert client.post("/api/optimize/", json=BODY, headers={"X-CSRF-Token": token}).status_code == 200
         assert uses(app) == before - 1
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", solver_failure)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", solver_failure)
         assert client.post("/api/optimize/", json=BODY, headers={"X-CSRF-Token": token}).status_code == 400
         assert uses(app) == before - 1
 
@@ -94,14 +94,14 @@ class TestDeadTokensAreRefusedBeforeAnyWork:
         [({"uses": 0}, "run out of uses"), ({"expires": "2000-01-01 00:00:00"}, "expired")],
     )
     def test_optimize(self, app, client, monkeypatch, columns, message):
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", must_not_run)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", must_not_run)
         set_token(app, **columns)
         response = client.post("/api/optimize/", json=BODY, headers=HEADERS)
         assert response.status_code == 403
         assert message in response.get_json()["error"]["message"]
 
     def test_optimize_from_a_session(self, app, client, monkeypatch):
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", must_not_run)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", must_not_run)
         login(client)
         token = install_csrf_token(client)
         set_token(app, uses=0)
@@ -120,13 +120,13 @@ class TestLastUseRace:
     def test_if_another_request_spends_the_last_use_meanwhile_no_answer_is_given(self, app, client, monkeypatch):
         """Two requests both pass the up-front check with one use left; only the first to finish is answered."""
         set_token(app, uses=1)
-        real = optimize_api.compute_max_sharpe_portfolio
+        real = optimize_api.compute_portfolio
 
         def concurrent_request_spends_it(*args, **kwargs):
             set_token(app, uses=0)  # the other request finished first
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(optimize_api, "compute_max_sharpe_portfolio", concurrent_request_spends_it)
+        monkeypatch.setattr(optimize_api, "compute_portfolio", concurrent_request_spends_it)
         response = client.post("/api/optimize/", json=BODY, headers=HEADERS)
         assert response.status_code == 403
         assert "optimized_portfolio" not in response.get_json()

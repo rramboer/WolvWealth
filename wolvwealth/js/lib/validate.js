@@ -1,5 +1,6 @@
 // Client-side validation mirroring the server's rules, so bad input is caught
 // before a request (and a use) is spent. The server remains the authority.
+import { findObjective } from "./objectives";
 import { parseUniverse } from "./series";
 
 export const LIMITS = {
@@ -82,6 +83,14 @@ function constraintErrors(form, stocks) {
   return errors;
 }
 
+/** The selected objective's parameter, if it takes one, must be present and in the server's range. */
+function objectiveErrors(form) {
+  const { param } = findObjective(form.objective);
+  if (!param) return {};
+  const error = numberError(form[param.key], { min: param.min, max: param.max, exclusiveMin: param.exclusiveMin });
+  return error ? { [param.key]: error } : {};
+}
+
 function dateError(value) {
   if (!value) return "Required.";
   return Number.isNaN(new Date(value).getTime()) ? "Invalid date." : null;
@@ -89,7 +98,10 @@ function dateError(value) {
 
 /** Errors keyed by form field; empty object means the form may be submitted. */
 export function validateBacktestForm(form, config = {}) {
-  const errors = { ...constraintErrors(form, universeCount(form.universe, config.universeSize)) };
+  const errors = {
+    ...constraintErrors(form, universeCount(form.universe, config.universeSize)),
+    ...objectiveErrors(form),
+  };
   const start = dateError(form.start);
   const end = dateError(form.end);
   if (start) errors.start = start;
@@ -117,7 +129,10 @@ export function validateBacktestForm(form, config = {}) {
 }
 
 export function validateOptimizeForm(form, config = {}) {
-  const errors = { ...constraintErrors(form, universeCount(form.universe, config.universeSize)) };
+  const errors = {
+    ...constraintErrors(form, universeCount(form.universe, config.universeSize)),
+    ...objectiveErrors(form),
+  };
   const cash = numberError(form.initialCash, { min: 0, max: LIMITS.maxCash, exclusiveMin: true });
   if (cash) errors.initialCash = cash;
   const universe = universeError(form.universe, undefined, config.universeSize);

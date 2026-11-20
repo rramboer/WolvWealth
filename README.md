@@ -14,12 +14,13 @@
 
 We're disrupting finance by empowering your investment decisions with our modern portfolio optimizer, building diversified portfolios tailored to your risk preferences and financial goals.
 
-WolvWealth is a web application that democratizes high quality investment portfolio management by making it easy for anyone to create an optimized stock portfolio. Under the hood it applies Modern Portfolio Theory — max-Sharpe optimization over mean historical returns and an exponentially-weighted covariance matrix, powered by [PyPortfolioOpt](https://pyportfolioopt.readthedocs.io/) and cvxpy.
+WolvWealth is a web application that democratizes high quality investment portfolio management by making it easy for anyone to create an optimized stock portfolio. Under the hood it applies Modern Portfolio Theory — mean-variance optimization over mean historical returns and an exponentially-weighted covariance matrix, powered by [PyPortfolioOpt](https://pyportfolioopt.readthedocs.io/) and cvxpy — with a choice of objectives: best risk-adjusted return (max Sharpe), lowest volatility, most return within a volatility limit, the steadiest path to a return target, or an explicit return-versus-risk trade-off.
 
 ### Features
 
 - **Web dashboard** — register, log in, manage your account and API key, and use the optimizer and backtester from the browser with live progress
 - **JSON API** — portfolio optimization and backtesting, authenticated by API token (or the browser session), with tiered usage limits, strict input validation and rate limiting
+- **Optimization objectives** — max Sharpe, min volatility, max return for a volatility limit, min volatility for a return target, and max utility with your own risk aversion; every constraint applies to every objective
 - **Constraint options** — maximum positions, maximum weight per asset, minimum universal weight, custom ticker universes (`"top50"`, `"AAPL"`, ...)
 - **Backtester** — replay the optimizer over historical data with lookback windows, execution lag, transaction costs, realized metrics and benchmarks
 
@@ -150,6 +151,7 @@ Request fields (all optional except that total investment must be > 0). Numbers 
 - `constraints.max_weight` (greater than 0, at most 1) — maximum weight per asset
 - `constraints.max_positions` (integer ≥ 0; 0 means no limit) — keep only the N largest positions
 - `constraints.min_universal_weight` (0 to 1) — minimum weight for every universe asset
+- `objective` — what to optimize; a name (`"min_volatility"`) or an object with a name and that objective's one parameter (`{"name": "efficient_risk", "target_volatility": 0.15}`). Default `max_sharpe`. See [Objectives](#objectives).
 - `exclude_metrics` (bool) — omit the `metrics` block from the response
 
 Unknown constraint keys are rejected. Constraints must be able to invest 100%: the portfolio holds at most the universe size (or `max_positions`, if smaller) assets, each at most `max_weight`, so that product must reach 1. Otherwise the request fails with a hint that works at the API's 2-decimal precision, e.g. for `top3` with `max_weight` 0.1: *Raise max_weight to at least 0.34, or hold at least 10 stocks.*
@@ -164,6 +166,8 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
         "constraints": {"max_positions": 5, "max_weight": 0.5}
       }'
 ```
+
+The response echoes the `objective` it optimized (`{"name": "max_sharpe"}` here):
 
 ```json
 {
@@ -182,11 +186,34 @@ curl -s -X POST http://localhost:8000/api/optimize/ \
     "NFLX": { "percent_weight": 7.48, "shares": 1.3286, "value": 747.78 }
   },
   "cash": { "percent_weight": 0.0, "value": 0.0 },
-  "notes": []
+  "notes": [],
+  "objective": { "name": "max_sharpe" }
 }
 ```
 
-If no asset in the universe has an expected return above the 2% risk-free rate, that is an answer, not an error: the max-Sharpe recommendation is to hold cash. The response is `200` with an empty `optimized_portfolio`, `cash` holding the full amount, `metrics` of the cash position (the risk-free return, zero volatility, `num_assets` 0), and the reason in `notes`, e.g. *No asset's expected annual return beats the 2.0% risk-free rate (best: AAPL at -5.0%), so the max-Sharpe recommendation is to hold cash.* It costs a use like any other answer.
+If no asset in the universe has an expected return above the 2% risk-free rate, that is an answer, not an error: the max-Sharpe recommendation is to hold cash. The response is `200` with an empty `optimized_portfolio`, `cash` holding the full amount, `metrics` of the cash position (the risk-free return, zero volatility, `num_assets` 0), and the reason in `notes`, e.g. *No asset's expected annual return beats the 2.0% risk-free rate (best: AAPL at -5.0%), so the max-Sharpe recommendation is to hold cash.* It costs a use like any other answer. Other objectives have their own hold-cash cases; see [Objectives](#objectives).
+
+#### Objectives
+
+| `name` | Parameter (annual decimal) | Optimizes for |
+| --- | --- | --- |
+| `max_sharpe` (default) | — | Most expected return per unit of volatility |
+| `min_volatility` | — | The calmest fully-invested portfolio, whatever its return |
+| `efficient_risk` | `target_volatility` (greater than 0, at most 5) | Highest expected return with volatility at most the target |
+| `efficient_return` | `target_return` (-1 to 5) | Lowest volatility with expected return at least the target |
+| `max_utility` | `risk_aversion` (greater than 0, at most 1000) | Highest `return − risk_aversion / 2 × variance` |
+
+All five are one mean-variance trade-off framed differently: `max_utility` states it directly, and the others fix it by a ratio, a risk budget, a return target, or by ignoring return. The objective must get exactly the parameter it takes; a missing, extra or out-of-range parameter, an unknown name or an unknown field is a 400. Every constraint applies under every objective. With a low risk aversion `max_utility` concentrates in the highest-return stocks; on the bundled data it takes values around 10–30 before the portfolio spreads out.
+
+Portfolios are fully invested; the only alternative is holding everything in cash at the 2% risk-free rate. The optimizer recommends cash only when cash beats every stock portfolio on the objective's own terms, and answers `200` with the reason in `notes`, charged like any answer:
+
+- `max_sharpe`, `efficient_risk`, `max_utility`: no asset's expected return beats the risk-free rate;
+- `efficient_risk`: no portfolio within the volatility limit is expected to beat the risk-free rate, which cash earns with no volatility;
+- `efficient_return`: the target is at or below the risk-free rate, so cash meets it with no volatility;
+- `max_utility`: no portfolio's return after the risk penalty beats the risk-free rate (e.g. *At risk aversion 100, the best portfolio's risk-adjusted return (28.6% expected, minus a 42.6% risk penalty, is -14.1%) does not beat the 2.0% risk-free rate, ...*);
+- `min_volatility` never holds cash: cash would trivially be the calmest holding, and this objective asks for the calmest invested portfolio.
+
+A target no portfolio can reach is a free 400 whose message gives a target that works, rounded so that it does: a `target_volatility` below the calmest portfolio's volatility under your constraints (*Raise target_volatility to at least 0.087, or use min_volatility.*), or a `target_return` above the highest reachable return (*Lower target_return to at most 0.693, ...*). With `max_positions`, the optimizer keeps the largest positions of the unrestricted portfolio and re-optimizes over them; if those assets cannot reach the target, the message names them and suggests raising `max_positions`.
 
 Errors return `{"error": {"message": "...", "status_code": ...}}`:
 
@@ -216,6 +243,7 @@ Request fields (`start` required, everything else optional):
 - `universe` (list) — tickers and/or `"topN"` aliases, default `["top50"]`
 - `lookback_days` (integer 30–5475, default 1095), `execution_lag` (trading days, 0–30, default 1), `transaction_cost_bps` (0–1000, default 0)
 - `constraints` — same object as `/api/optimize/`
+- `objective` — same as `/api/optimize/`, applied at every rebalance (default `max_sharpe`); the report's `config.objective` and `result.strategy` name it
 - `benchmarks` (list of tickers, default `["SPY"]`) — buy-and-hold comparisons; an equal-weight portfolio of the universe is always included
 - `include_equity` (bool, default true) — set false to omit the daily equity curves
 
@@ -290,8 +318,8 @@ Jobs are held in the memory of the process that accepted them, so polls must rea
 
 `/optimizer/` (login required) is a React app with two tabs that call the JSON API with the browser session:
 
-- **Optimize** — amount, universe and constraints in; allocation table (with a cash row when anything is held in cash) and the optimizer's expected return / volatility / Sharpe out. A hold-cash answer is shown with its explanation.
-- **Backtest** — date range, frequency, universe, lookback, execution lag, costs and constraints in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
+- **Optimize** — amount, universe, objective ("Optimize for", with the selected objective's parameter; volatility and return targets are entered in percent) and constraints in; allocation table (with a cash row when anything is held in cash) and the optimizer's expected return / volatility / Sharpe out. A hold-cash answer is shown with its explanation.
+- **Backtest** — date range, frequency, universe, lookback, execution lag, costs, objective and constraints in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
 
 Both forms validate the same rules as the server (finite numbers, ranges, dates within the data, universe size, constraint feasibility) and disable the button with the reason under the field until the input is valid. Each run costs one use, shown in the page header.
 
@@ -332,6 +360,8 @@ The `wolvwealth.backtest` package replays the optimizer over historical data and
 ```bash
 wolvwealth-backtest --start 2019-01-01 --frequency monthly --universe top50 --cost-bps 5
 wolvwealth-backtest --start 2015-01-01 --universe AAPL MSFT GOOGL --max-positions -1 --json > report.json
+wolvwealth-backtest --start 2019-01-01 --objective efficient_risk --target-volatility 0.15
+wolvwealth-backtest --start 2019-01-01 --objective max_utility --risk-aversion 10
 wolvwealth-backtest --help
 ```
 
@@ -344,7 +374,8 @@ How the simulation works:
 - **Execution lag** (`--execution-lag`, default 1 trading day): the optimizer decides on day *t*'s close and trades at day *t+1*'s close.
 - **Transaction costs** (`--cost-bps`) are charged on traded value and paid out of the portfolio.
 - **Accounting** carries exact share counts and cash; the equity curve is marked to market every trading day through the end date.
-- **Holding cash**: when no eligible asset's expected return over the lookback window beats the risk-free rate (`--risk-free-rate`, default 2%; the API uses the default), the optimizer's answer is cash, so that rebalance sells into cash rather than keeping the previous positions. Each such rebalance carries a `note`, and the report adds one summary warning (e.g. *3 of 7 rebalance(s) moved to cash, first on 2022-06-01: ...*).
+- **Objective** (`--objective`, default `max_sharpe`, with `--target-volatility`, `--target-return` or `--risk-aversion` as the objective requires) is applied at every rebalance; see [Objectives](#objectives). A window in which the target is unreachable (say a 10% volatility limit in a turbulent market) keeps the previous positions and adds a warning saying why.
+- **Holding cash**: when cash beats every portfolio under the objective (for max-Sharpe: no eligible asset's expected return over the lookback window beats the risk-free rate, `--risk-free-rate`, default 2%; the API uses the default), the optimizer's answer is cash, so that rebalance sells into cash rather than keeping the previous positions. Each such rebalance carries a `note`, and the report adds one summary warning (e.g. *3 of 7 rebalance(s) moved to cash, first on 2022-06-01: ...*).
 - **Cash earns the risk-free rate**, compounded over calendar days, so sitting in cash is valued the way the model assumed when it chose to. The same rate drives the hold-cash decision and the Sharpe ratio. The result reports the total as `cash_interest`; fully invested portfolios earn none.
 - **Metrics** (total return, CAGR, volatility, Sharpe, max drawdown, Calmar, turnover, costs) are computed from the realized equity curve, not from the optimizer's forecasts. Volatility and Sharpe use daily returns in excess of what the risk-free asset earned over the same calendar days, annualized with the curve's own number of trading days per year, so a portfolio that only holds cash shows its 2% CAGR with 0 volatility and a Sharpe ratio of 0.
 
@@ -361,8 +392,8 @@ The ticker universe is a snapshot of today's listings ranked by today's market c
 │   ├── static/            CSS/images + generated js/bundle.js, css/output.css
 │   ├── backtest/          Backtesting package: config, schedule, strategies, engine, preflight (pre-run checks),
 │   │                      progress, metrics, service, request, cache, jobs, cli
-│   ├── optimizer_core.py  Shared max-Sharpe optimization core
-│   ├── optimizer_params.py Shared universe/constraint validation and feasibility (API + backtester)
+│   ├── optimizer_core.py  Shared optimization core: input estimation, objectives, hold-cash and reachability rules
+│   ├── optimizer_params.py Shared universe/objective/constraint validation and feasibility (API + backtester)
 │   ├── ratelimit.py       Rate limits, client-IP handling behind trusted proxies, 429 responses
 │   ├── device_cookies.py  Signed "known device" cookies for login throttling
 │   ├── market_data.py     Loads the two market-data CSVs
