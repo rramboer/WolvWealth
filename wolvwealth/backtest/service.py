@@ -72,7 +72,12 @@ def run_report(
         message = f"Optimizing rebalance {min(completed + 1, total)} of {total}"
         report_progress(Progress("optimizer", completed, total + benchmark_runs, message))
 
-    strategy = OptimizerStrategy(config.constraints, risk_free_rate=config.risk_free_rate, objective=config.objective)
+    strategy = OptimizerStrategy(
+        config.constraints,
+        risk_free_rate=config.risk_free_rate,
+        objective=config.objective,
+        transaction_cost_bps=config.transaction_cost_bps,
+    )
     result = run_backtest(prices, config, strategy, on_step=on_optimizer_step)
 
     def benchmark_done(index: int, name: str) -> None:

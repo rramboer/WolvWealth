@@ -147,3 +147,31 @@ describe("objective parameters", () => {
     expect(validateOptimizeForm({ ...good, objective: "efficient_return", targetReturn: -5 }, config)).toEqual({});
   });
 });
+
+describe("rebalancing fields", () => {
+  const optimize = { initialCash: 1000, universe: "top50", maxPositions: 10, maxWeight: 1, minWeight: 0 };
+
+  it("allows no new cash only when something is held", () => {
+    expect(validateOptimizeForm({ ...optimize, initialCash: 0 }, config).initialCash).toMatch(/greater than 0/);
+    expect(validateOptimizeForm({ ...optimize, initialCash: 0, holdings: "AAPL 5" }, config)).toEqual({});
+    expect(validateOptimizeForm({ ...optimize, initialCash: 0, holdings: "AAPL 0" }, config).initialCash).toBeTruthy();
+  });
+
+  it("reports unreadable holdings", () => {
+    expect(validateOptimizeForm({ ...optimize, holdings: "AAPL lots" }, config).holdings).toMatch(/AAPL/);
+  });
+
+  it.each([-1, 101, Infinity])("rejects max turnover %p", (value) => {
+    expect(validateOptimizeForm({ ...optimize, maxTurnover: value }, config).maxTurnover).toBeTruthy();
+    expect(validateBacktestForm({ ...good, maxTurnover: value }, config).maxTurnover).toBeTruthy();
+  });
+
+  it("treats an empty max turnover as no limit, and 0 as a limit", () => {
+    expect(validateOptimizeForm({ ...optimize, maxTurnover: "" }, config)).toEqual({});
+    expect(validateOptimizeForm({ ...optimize, maxTurnover: 0 }, config)).toEqual({});
+  });
+
+  it("checks the optimize trading cost like the backtest's", () => {
+    expect(validateOptimizeForm({ ...optimize, costBps: 1001 }, config).costBps).toMatch(/at most/);
+  });
+});

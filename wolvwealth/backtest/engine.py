@@ -130,6 +130,12 @@ def run_backtest(
         if not decision.has_history:
             warnings.append(f"{decision.date.date()}: insufficient price history; holding previous positions.")
             continue
+        observe_holdings = getattr(strategy, "observe_holdings", None)
+        if observe_holdings is not None:  # Rebalancing strategies start from what is held now.
+            decision_position = trading_days.get_loc(decision.date)
+            observe_holdings(
+                ledger.weights(valuation.iloc[decision_position], growth[decision_position] / growth[cursor])
+            )
         try:
             weights = strategy.target_weights(decision.window[decision.eligible].ffill())
         except StrategyError as err:
@@ -233,6 +239,14 @@ class _Ledger:
     def value(self, prices_now: pd.Series) -> float:
         """Mark holdings to market."""
         return self.cash + float(self.shares @ prices_now)
+
+    def weights(self, prices_now: pd.Series, cash_growth: float = 1.0) -> Weights:
+        """Each holding's share of the portfolio's value, with cash grown by `cash_growth` since it accrued."""
+        holdings = self.shares * prices_now
+        total = self.cash * cash_growth + float(holdings.sum())
+        if total <= 0:
+            return {}
+        return {asset: float(value / total) for asset, value in holdings.items() if value > 0}
 
     def rebalance(
         self,

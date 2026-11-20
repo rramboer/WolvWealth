@@ -146,12 +146,14 @@ Uses are charged for answers only. Optimize and backtest requests are authentica
 Request fields (all optional except that total investment must be > 0). Numbers must be finite; booleans are not numbers.
 
 - `initial_cash` (number, 0 to 1e12) — cash to allocate
-- `initial_holdings` (object) — current holdings as `{"TICKER": shares}`, shares 0 to 1e12
+- `initial_holdings` (object) — current holdings as `{"TICKER": shares}`, shares 0 to 1e12. Their value counts toward the total, and the response lists the `trades` that get from them to the answer; with `max_turnover` or a trading cost the optimizer also rebalances from them (see [Rebalancing](#rebalancing))
 - `universe` (list of strings) — tickers to consider; `"topN"` (e.g. `"top50"`) expands to the N largest by market cap, clamped to the universe size (`top0` is rejected). Default: top 500
 - `constraints.max_weight` (greater than 0, at most 1) — maximum weight per asset
 - `constraints.max_positions` (integer ≥ 0; 0 means no limit) — keep only the N largest positions
 - `constraints.min_universal_weight` (0 to 1) — minimum weight for every universe asset
 - `objective` — what to optimize; a name (`"min_volatility"`) or an object with a name and that objective's one parameter (`{"name": "efficient_risk", "target_volatility": 0.15}`). Default `max_sharpe`. See [Objectives](#objectives).
+- `constraints.max_turnover` (0 to 1) — most of the portfolio's value to sell; investing cash is not turnover. See [Rebalancing](#rebalancing)
+- `transaction_cost_bps` (0 to 1000, default 0) — trading cost in basis points of the value bought and sold, weighed against expected return and paid out of the purchases
 - `exclude_metrics` (bool) — omit the `metrics` block from the response
 
 Unknown constraint keys are rejected. Constraints must be able to invest 100%: the portfolio holds at most the universe size (or `max_positions`, if smaller) assets, each at most `max_weight`, so that product must reach 1. Otherwise the request fails with a hint that works at the API's 2-decimal precision, e.g. for `top3` with `max_weight` 0.1: *Raise max_weight to at least 0.34, or hold at least 10 stocks.*
@@ -187,7 +189,15 @@ The response echoes the `objective` it optimized (`{"name": "max_sharpe"}` here)
   },
   "cash": { "percent_weight": 0.0, "value": 0.0 },
   "notes": [],
-  "objective": { "name": "max_sharpe" }
+  "objective": { "name": "max_sharpe" },
+  "trades": {
+    "AAPL": { "action": "buy", "shares": 4.9719, "value": 934.92 },
+    "ABBV": { "action": "buy", "shares": 18.5665, "value": 3061.98 },
+    "BND": { "action": "buy", "shares": 14.6842, "value": 1073.71 },
+    "MA": { "action": "buy", "shares": 9.3929, "value": 4181.61 },
+    "NFLX": { "action": "buy", "shares": 1.3286, "value": 747.78 }
+  },
+  "rebalance": { "bought": 10000.0, "sold": 0.0, "transaction_cost": 0.0, "turnover": 0.0 }
 }
 ```
 
@@ -214,6 +224,32 @@ Portfolios are fully invested; the only alternative is holding everything in cas
 - `min_volatility` never holds cash: cash would trivially be the calmest holding, and this objective asks for the calmest invested portfolio.
 
 A target no portfolio can reach is a free 400 whose message gives a target that works, rounded so that it does: a `target_volatility` below the calmest portfolio's volatility under your constraints (*Raise target_volatility to at least 0.087, or use min_volatility.*), or a `target_return` above the highest reachable return (*Lower target_return to at most 0.693, ...*). With `max_positions`, the optimizer keeps the largest positions of the unrestricted portfolio and re-optimizes over them; if those assets cannot reach the target, the message names them and suggests raising `max_positions`.
+
+#### Rebalancing
+
+Most people already own something. Given `initial_holdings`, the response's `trades` lists what to buy and sell (`{"TICKER": {"action": "sell", "shares": 70.92, "value": 3044.05}}`, sells listed with exactly the shares to sell when selling out), and `rebalance` totals it: `bought`, `sold`, `turnover` (the value sold as a fraction of the portfolio) and `transaction_cost`. A fresh request lists only buys. Changes smaller than 0.01% of the portfolio are not worth a trade and are skipped.
+
+Two settings make the optimizer rebalance from the holdings instead of starting over, the way institutional optimizers work:
+
+- `constraints.max_turnover` limits how much of the portfolio may be sold, as a fraction of its value. This is one-way turnover, as fund turnover is reported: investing new cash is not turnover, so `0` means "invest the new cash and sell nothing". It is the backtest's two-way `turnover` metric (bought plus sold) divided by two for a fully-invested portfolio.
+- `transaction_cost_bps` is charged against one year of expected return, so a trade must be expected to earn its cost back within a year. Objectives that weigh return weigh costs: `max_sharpe` maximizes the Sharpe ratio net of them, `efficient_risk` and `max_utility` subtract them, and `efficient_return`'s target is net of them. `min_volatility` ignores return and so ignores costs; `max_turnover` still limits it. Fees are paid out of the purchases, so sales are exactly what the optimizer chose.
+
+Holdings outside the universe are sold. Every objective and constraint works with both settings. Without holdings, or with neither setting, the answer is the same as starting from cash.
+
+Rebalancing has its own free 400s with a limit that works: constraints that force more selling than `max_turnover` allows (*Infeasible max_turnover. These constraints require selling at least 52.7% of the portfolio (selling holdings outside the universe: INTC, VZ), above max_turnover (0.25). Raise max_turnover to at least 0.53, or add INTC, VZ to the universe.*), and a hold-cash answer that would need selling more than the limit (moving to cash sells everything). Reaching cash is not charged its own trading costs in the hold-cash comparison; the portfolios it is compared with are charged theirs.
+
+```bash
+curl -s -X POST http://localhost:8000/api/optimize/ \
+  -H "Authorization: insecure-dev-user-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "initial_cash": 2000,
+        "initial_holdings": {"AAPL": 20, "INTC": 100, "VZ": 50},
+        "universe": ["top50"],
+        "constraints": {"max_positions": 10, "max_turnover": 0.25},
+        "transaction_cost_bps": 5
+      }'
+```
 
 Errors return `{"error": {"message": "...", "status_code": ...}}`:
 
@@ -318,8 +354,8 @@ Jobs are held in the memory of the process that accepted them, so polls must rea
 
 `/optimizer/` (login required) is a React app with two tabs that call the JSON API with the browser session:
 
-- **Optimize** — amount, universe, objective ("Optimize for", with the selected objective's parameter; volatility and return targets are entered in percent) and constraints in; allocation table (with a cash row when anything is held in cash) and the optimizer's expected return / volatility / Sharpe out. A hold-cash answer is shown with its explanation.
-- **Backtest** — date range, frequency, universe, lookback, execution lag, costs, objective and constraints in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
+- **Optimize** — amount, current holdings (optional, "AAPL 10" per line), universe, objective ("Optimize for", with the selected objective's parameter; volatility and return targets are entered in percent), constraints, max turnover (% sold) and trading cost in; a trades table (sells first) when holdings are given, with the share of the portfolio sold and the estimated cost; allocation table (with a cash row when anything is held in cash) and the optimizer's expected return / volatility / Sharpe out. A hold-cash answer is shown with its explanation.
+- **Backtest** — date range, frequency, universe, lookback, execution lag, costs, objective, constraints and max turnover per rebalance in. The form estimates the rebalance count and run time before you start; while the job runs it shows a progress bar with the current rebalance and time remaining (polling `GET /api/backtest/<job_id>/`). Results: growth-of-cash and drawdown charts against the equal-weight and SPY benchmarks, a realized-metrics table, and an expandable rebalance log.
 
 Both forms validate the same rules as the server (finite numbers, ranges, dates within the data, universe size, constraint feasibility) and disable the button with the reason under the field until the input is valid. Each run costs one use, shown in the page header.
 
@@ -362,6 +398,7 @@ wolvwealth-backtest --start 2019-01-01 --frequency monthly --universe top50 --co
 wolvwealth-backtest --start 2015-01-01 --universe AAPL MSFT GOOGL --max-positions -1 --json > report.json
 wolvwealth-backtest --start 2019-01-01 --objective efficient_risk --target-volatility 0.15
 wolvwealth-backtest --start 2019-01-01 --objective max_utility --risk-aversion 10
+wolvwealth-backtest --start 2019-01-01 --cost-bps 5 --max-turnover 0.2
 wolvwealth-backtest --help
 ```
 
@@ -372,7 +409,8 @@ How the simulation works:
 - **Rebalance schedule** uses calendar steps (`monthly` = same day next month), snapped forward to the next trading day.
 - **Lookback window** (`--lookback-days`, default 3 years) limits the history the optimizer sees. Only assets that already traded at the start of the window are eligible, so stocks that were not yet public are skipped instead of crashing the run.
 - **Execution lag** (`--execution-lag`, default 1 trading day): the optimizer decides on day *t*'s close and trades at day *t+1*'s close.
-- **Transaction costs** (`--cost-bps`) are charged on traded value and paid out of the portfolio.
+- **Transaction costs** (`--cost-bps`) are charged on traded value and paid out of the portfolio. From the second rebalance on, the optimizer also weighs them against expected return (see [Rebalancing](#rebalancing)), so higher costs mean less trading.
+- **Turnover limit** (`--max-turnover`, or `constraints.max_turnover` over the API) caps the value each rebalance sells, as a fraction of the portfolio; the first purchase from cash is not limited. A rebalance whose answer cannot fit the limit keeps the previous positions and warns.
 - **Accounting** carries exact share counts and cash; the equity curve is marked to market every trading day through the end date.
 - **Objective** (`--objective`, default `max_sharpe`, with `--target-volatility`, `--target-return` or `--risk-aversion` as the objective requires) is applied at every rebalance; see [Objectives](#objectives). A window in which the target is unreachable (say a 10% volatility limit in a turbulent market) keeps the previous positions and adds a warning saying why.
 - **Holding cash**: when cash beats every portfolio under the objective (for max-Sharpe: no eligible asset's expected return over the lookback window beats the risk-free rate, `--risk-free-rate`, default 2%; the API uses the default), the optimizer's answer is cash, so that rebalance sells into cash rather than keeping the previous positions. Each such rebalance carries a `note`, and the report adds one summary warning (e.g. *3 of 7 rebalance(s) moved to cash, first on 2022-06-01: ...*).

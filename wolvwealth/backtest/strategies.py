@@ -11,8 +11,8 @@ import cvxpy
 import pandas as pd
 from pypfopt import exceptions as pypfopt_exceptions
 
-from wolvwealth.optimizer_core import HoldCashAnswer, TargetUnreachable, compute_portfolio
-from wolvwealth.optimizer_params import Constraints, Objective
+from wolvwealth.optimizer_core import HoldCashAnswer, compute_portfolio
+from wolvwealth.optimizer_params import Constraints, InvalidOptimizationInput, Objective
 
 Weights = dict[str, float]
 
@@ -35,7 +35,12 @@ class Strategy(Protocol):
 
 
 class OptimizerStrategy:
-    """The WolvWealth optimizer: the configured objective (default max-Sharpe) over the lookback window."""
+    """The WolvWealth optimizer: the configured objective (default max-Sharpe) over the lookback window.
+
+    It rebalances from the current holdings (see observe_holdings), so
+    max_turnover limits what each rebalance sells and transaction_cost_bps
+    (the same fee the engine charges) is weighed against expected return.
+    """
 
     def __init__(
         self,
@@ -43,11 +48,14 @@ class OptimizerStrategy:
         risk_free_rate: float = 0.02,
         *,
         objective: Objective | None = None,
+        transaction_cost_bps: float = 0.0,
     ) -> None:
-        """Store the objective and constraints applied at every rebalance."""
+        """Store the objective, constraints and trading cost applied at every rebalance."""
         self.constraints = constraints or Constraints()
         self.objective = objective or Objective()
         self.risk_free_rate = risk_free_rate
+        self.transaction_cost_bps = transaction_cost_bps
+        self.current_weights: Weights = {}  # What the portfolio holds at the decision, as fractions of its value.
         self.last_performance: tuple[float, float, float] | None = None
         self.last_note: str | None = None  # Why the last decision was what it was, if notable.
 
@@ -61,18 +69,28 @@ class OptimizerStrategy:
         self.last_note = None
         try:
             weights, self.last_performance = compute_portfolio(
-                window, self.objective, risk_free_rate=self.risk_free_rate, **constraints.as_kwargs()
+                window,
+                self.objective,
+                risk_free_rate=self.risk_free_rate,
+                current_weights=self.current_weights,
+                transaction_cost_bps=self.transaction_cost_bps,
+                **constraints.as_kwargs(),
             )
         except HoldCashAnswer as answer:
             # The model's answer, not a failure: sell into cash rather than keep stale positions.
             self.last_performance, self.last_note = answer.performance, str(answer)
             return {}
-        except TargetUnreachable as err:
-            # This window cannot meet the target (e.g. a volatility limit in a turbulent market): hold, and say why.
+        except InvalidOptimizationInput as err:
+            # This window cannot meet the request (a volatility limit in a turbulent market, a turnover limit that
+            # cannot fit the answer): hold, and say why.
             raise StrategyError(str(err)) from err
         except (pypfopt_exceptions.OptimizationError, cvxpy.error.SolverError, ValueError) as err:
             raise StrategyError(f"optimization failed: {err}") from err
         return weights
+
+    def observe_holdings(self, current_weights: Weights) -> None:
+        """Called by the engine before each decision with the holdings' shares of the portfolio's value."""
+        self.current_weights = dict(current_weights)
 
     @property
     def name(self) -> str:

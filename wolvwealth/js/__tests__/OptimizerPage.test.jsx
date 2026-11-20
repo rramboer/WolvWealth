@@ -117,6 +117,55 @@ describe("OptimizerPage", () => {
     expect(screen.getByText("Optimized for: Most return within a volatility limit (12%).")).toBeTruthy();
   });
 
+  it("rebalances current holdings and lists the trades", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        metrics: { expected_annual_return: 0.2, annual_volatility: 0.1, sharpe_ratio: 1.8, portfolio_value: 2000 },
+        optimized_portfolio: {
+          AAPL: { percent_weight: 80, value: 1600, shares: 8 },
+          NVDA: { percent_weight: 20, value: 400, shares: 2 },
+        },
+        cash: { value: 0, percent_weight: 0 },
+        trades: {
+          AAPL: { action: "sell", shares: 2, value: 400 },
+          NVDA: { action: "buy", shares: 2, value: 399.8 },
+        },
+        rebalance: { bought: 399.8, sold: 400, turnover: 0.2, transaction_cost: 0.2 },
+      }),
+    );
+    render(<OptimizerPage config={config} />);
+    fireEvent.change(screen.getByLabelText("Amount to invest ($)"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Current holdings (optional)"), { target: { value: "AAPL 10" } });
+    fireEvent.change(screen.getByLabelText("Max turnover (% sold)"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("Trading cost (bps)"), { target: { value: "5" } });
+    expect(screen.getByRole("button", { name: "Optimize" }).disabled).toBe(false);
+    submitForm("Optimize");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Trades" })).toBeTruthy());
+    const [, init] = globalThis.fetch.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.initial_holdings).toEqual({ AAPL: 10 });
+    expect(body.constraints.max_turnover).toBe(0.2);
+    expect(body.transaction_cost_bps).toBe(5);
+    expect(screen.getByText("Sell")).toBeTruthy();
+    expect(screen.getByText("Buy")).toBeTruthy();
+    expect(
+      screen.getByText("Sells 20.00% of the portfolio ($400.00 sold, $399.80 bought); estimated trading cost $0.20."),
+    ).toBeTruthy();
+  });
+
+  it("shows no trades card for a fresh portfolio", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        optimized_portfolio: { AAPL: { percent_weight: 100, value: 10000, shares: 50 } },
+        trades: { AAPL: { action: "buy", shares: 50, value: 10000 } },
+      }),
+    );
+    render(<OptimizerPage config={config} />);
+    submitForm("Optimize");
+    await waitFor(() => expect(screen.getByRole("cell", { name: "AAPL" })).toBeTruthy());
+    expect(screen.queryByRole("heading", { name: "Trades" })).toBeNull();
+  });
+
   it("shows API errors from the optimizer", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse(400, { error: { message: "Invalid symbol in universe: ZZZ." } }));
     render(<OptimizerPage config={config} />);

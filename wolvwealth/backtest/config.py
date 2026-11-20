@@ -8,6 +8,7 @@ import pandas as pd
 
 from wolvwealth.optimizer_params import (
     MAX_CASH,
+    MAX_TRANSACTION_COST_BPS,
     Constraints,
     InvalidOptimizationInput,
     Objective,
@@ -19,7 +20,6 @@ from wolvwealth.optimizer_params import (
 MIN_LOOKBACK_DAYS = 30
 MAX_LOOKBACK_DAYS = 15 * 365
 MAX_EXECUTION_LAG = 30  # Trading days; anything longer is not a rebalance lag.
-MAX_TRANSACTION_COST_BPS = 1_000  # 10% per trade.
 
 
 class Frequency(enum.StrEnum):

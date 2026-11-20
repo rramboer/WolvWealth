@@ -71,6 +71,10 @@ export function TextInput(props) {
   return <input {...props} className={inputClass} />;
 }
 
+export function TextArea(props) {
+  return <textarea rows={3} {...props} className={`${inputClass} font-mono`} />;
+}
+
 export function NumberInput({ value, onChange, ...props }) {
   return (
     <input

@@ -19,6 +19,7 @@ class InvalidOptimizationInput(ValueError):
 # Sanity ceilings. Anything beyond these is a typo or an attack, not a portfolio.
 MAX_CASH = 1e12
 MAX_SHARES = 1e12
+MAX_TRANSACTION_COST_BPS = 1_000  # 10% per trade.
 
 
 def require_number(
@@ -190,6 +191,9 @@ class Constraints:
     min_universal_weight: float = 0.0  # Every asset must have at least this weight.
     max_positions: int = -1  # Keep only the N largest positions (-1 disables).
     weight_threshold: float = 0.0005  # Drop weights below this cutoff.
+    # Most of the current holdings to sell, as a fraction of the portfolio's value (None: no limit). One-way,
+    # as fund turnover is reported: investing cash is not turnover, so a portfolio can always be bought.
+    max_turnover: float | None = None
 
     def __post_init__(self) -> None:
         """Reject malformed values regardless of how the object was built (API, CLI, code)."""
@@ -198,6 +202,8 @@ class Constraints:
         require_number(self.weight_threshold, "weight_threshold", minimum=0.0, maximum=1.0)
         if self.max_positions != -1:
             require_integer(self.max_positions, "max_positions", minimum=1)
+        if self.max_turnover is not None:
+            require_number(self.max_turnover, "max_turnover", minimum=0.0, maximum=1.0)
 
     def as_kwargs(self) -> dict:
         """Keyword arguments for compute_portfolio."""
@@ -246,7 +252,7 @@ def parse_constraints(raw: dict, universe_size: int) -> Constraints:
     """Validate a constraints mapping (as sent to the API) and check feasibility."""
     if not isinstance(raw, dict):
         raise InvalidOptimizationInput("Invalid constraints. constraints must be a dictionary.")
-    unknown = set(raw) - {"max_weight", "max_positions", "min_universal_weight"}
+    unknown = set(raw) - {"max_weight", "max_positions", "min_universal_weight", "max_turnover"}
     if unknown:
         raise InvalidOptimizationInput(f"Unknown constraint(s): {', '.join(sorted(unknown))}.")
     values: dict = {}
@@ -263,6 +269,8 @@ def parse_constraints(raw: dict, universe_size: int) -> Constraints:
         values["min_universal_weight"] = round(
             require_number(raw["min_universal_weight"], "min_universal_weight", minimum=0.0, maximum=1.0), 2
         )
+    if "max_turnover" in raw:
+        values["max_turnover"] = round(require_number(raw["max_turnover"], "max_turnover", minimum=0.0, maximum=1.0), 2)
     constraints = Constraints(**values)
     check_feasibility(constraints, universe_size)
     return constraints

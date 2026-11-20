@@ -8,10 +8,11 @@ import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
 from wolvwealth.api.auth import authenticate
 from wolvwealth.api.state import ApplicationState
-from wolvwealth.optimizer_core import HoldCashAnswer, TargetUnreachable, build_portfolio_output, compute_portfolio
+from wolvwealth.optimizer_core import HoldCashAnswer, build_portfolio_output, compute_portfolio
 from wolvwealth.optimizer_params import (
     MAX_CASH,
     MAX_SHARES,
+    MAX_TRANSACTION_COST_BPS,
     Constraints,
     InvalidOptimizationInput,
     Objective,
@@ -51,6 +52,8 @@ class Optimization:
         self.min_universal_weight = 0.00  # Every stock must have at least this weight.
         self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%.
         self.objective = Objective()  # max_sharpe.
+        self.max_turnover = None  # Most of the current holdings' value to sell, as a fraction (None: no limit).
+        self.transaction_cost_bps = 0.0  # Trading cost weighed against expected return, and charged in the trades.
 
     def parse_input(self) -> None:
         """Parse request as JSON."""
@@ -66,6 +69,21 @@ class Optimization:
         self.parse_exclude_metrics()
         self.parse_constraints()
         self.parse_objective()
+        self.parse_transaction_cost()
+
+    def parse_transaction_cost(self) -> None:
+        """Validate the optional transaction_cost_bps (basis points of the value bought and sold)."""
+        if "transaction_cost_bps" not in self.input_json:
+            return
+        try:
+            self.transaction_cost_bps = require_number(
+                self.input_json["transaction_cost_bps"],
+                "transaction_cost_bps",
+                minimum=0.0,
+                maximum=MAX_TRANSACTION_COST_BPS,
+            )
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
 
     def parse_objective(self) -> None:
         """Validate the optional objective (a name, or an object with a name and its parameter)."""
@@ -87,6 +105,7 @@ class Optimization:
         self.max_weight = constraints.max_weight
         self.max_positions = constraints.max_positions
         self.min_universal_weight = constraints.min_universal_weight
+        self.max_turnover = constraints.max_turnover
 
     def parse_exclude_metrics(self) -> None:
         """Validate the optional exclude_metrics flag."""
@@ -143,6 +162,12 @@ class Optimization:
         if total_investment == 0:
             raise InvalidUsage("Invalid input. Total investment value cannot be 0.")
         self.total_investment = total_investment
+        # Holdings as fractions of the whole portfolio (cash included), where the optimizer rebalances from.
+        self.current_weights = {
+            asset: shares * self.state.fetch_ticker_price(asset) / total_investment
+            for asset, shares in self.initial_holdings.items()
+            if shares > 0
+        }
         missing = [t for t in self.universe if t not in self.state.HISTORICAL_PRICES.columns]
         if missing:
             raise InvalidUsage(f"No price data available for: {', '.join(sorted(missing))}.")
@@ -151,6 +176,7 @@ class Optimization:
             min_universal_weight=self.min_universal_weight,
             max_positions=self.max_positions,
             weight_threshold=self.weight_threshold,
+            max_turnover=self.max_turnover,
         )
         problem = feasibility_problem(constraints, len(self.universe))
         if problem:
@@ -168,10 +194,14 @@ class Optimization:
                 min_universal_weight=self.min_universal_weight,
                 max_positions=self.max_positions,
                 weight_threshold=self.weight_threshold,
+                max_turnover=self.max_turnover,
+                current_weights=self.current_weights,
+                transaction_cost_bps=self.transaction_cost_bps,
             )
         except HoldCashAnswer as answer:  # A valid result: hold cash.
             weights, performance, notes = {}, answer.performance, [str(answer)]
-        except TargetUnreachable as err:  # The objective's target cannot be met; free, like infeasible constraints.
+        except InvalidOptimizationInput as err:
+            # An unreachable target or turnover limit: free, like infeasible constraints, with a hint that works.
             raise InvalidUsage(str(err)) from err
         except (pypfopt_exceptions.OptimizationError, cvxpy.error.SolverError, ValueError) as err:
             # Constraints are checked for feasibility before this point, so this is a solver failure.
@@ -186,6 +216,8 @@ class Optimization:
             performance=None if self.exclude_metrics else performance,
             notes=notes,
             objective=self.objective,
+            current_shares=self.initial_holdings,
+            transaction_cost_bps=self.transaction_cost_bps,
         )
         self.output = flask.jsonify(output)
 

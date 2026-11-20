@@ -50,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-weight", type=float, default=1.0, help="maximum weight per asset")
     parser.add_argument("--min-weight", type=float, default=0.0, help="minimum weight for every asset")
     parser.add_argument(
+        "--max-turnover",
+        type=float,
+        default=None,
+        help="most of the portfolio's value each rebalance may sell, e.g. 0.2 (investing cash is not turnover)",
+    )
+    parser.add_argument(
         "--objective",
         choices=[name.value for name in ObjectiveName],
         default=ObjectiveName.MAX_SHARPE.value,
@@ -76,7 +82,10 @@ def config_from_args(args: argparse.Namespace, prices: pd.DataFrame, ticker_univ
     """Translate parsed arguments into a validated BacktestConfig."""
     universe = resolve_universe(args.universe, ticker_universe)
     constraints = Constraints(
-        max_weight=args.max_weight, min_universal_weight=args.min_weight, max_positions=args.max_positions
+        max_weight=args.max_weight,
+        min_universal_weight=args.min_weight,
+        max_positions=args.max_positions,
+        max_turnover=args.max_turnover,
     )
     objective = Objective(
         ObjectiveName(args.objective),

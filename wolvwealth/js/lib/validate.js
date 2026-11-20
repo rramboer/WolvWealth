@@ -1,5 +1,6 @@
 // Client-side validation mirroring the server's rules, so bad input is caught
 // before a request (and a use) is spent. The server remains the authority.
+import { hasHoldings, parseHoldings } from "./holdings";
 import { findObjective } from "./objectives";
 import { parseUniverse } from "./series";
 
@@ -83,6 +84,13 @@ function constraintErrors(form, stocks) {
   return errors;
 }
 
+/** Optional max turnover, in percent of the portfolio sold: empty means no limit. */
+function maxTurnoverErrors(form) {
+  if (form.maxTurnover === "" || form.maxTurnover === undefined || form.maxTurnover === null) return {};
+  const error = numberError(form.maxTurnover, { min: 0, max: 100 });
+  return error ? { maxTurnover: error } : {};
+}
+
 /** The selected objective's parameter, if it takes one, must be present and in the server's range. */
 function objectiveErrors(form) {
   const { param } = findObjective(form.objective);
@@ -101,6 +109,7 @@ export function validateBacktestForm(form, config = {}) {
   const errors = {
     ...constraintErrors(form, universeCount(form.universe, config.universeSize)),
     ...objectiveErrors(form),
+    ...maxTurnoverErrors(form),
   };
   const start = dateError(form.start);
   const end = dateError(form.end);
@@ -132,9 +141,18 @@ export function validateOptimizeForm(form, config = {}) {
   const errors = {
     ...constraintErrors(form, universeCount(form.universe, config.universeSize)),
     ...objectiveErrors(form),
+    ...maxTurnoverErrors(form),
   };
-  const cash = numberError(form.initialCash, { min: 0, max: LIMITS.maxCash, exclusiveMin: true });
+  const holdings = parseHoldings(form.holdings).error;
+  if (holdings) errors.holdings = holdings;
+  // With holdings, the cash to add may be 0: the portfolio is what is already held.
+  const cashRule = !holdings && hasHoldings(form.holdings) ? {} : { exclusiveMin: true };
+  const cash = numberError(form.initialCash, { min: 0, max: LIMITS.maxCash, ...cashRule });
   if (cash) errors.initialCash = cash;
+  if (form.costBps !== undefined) {
+    const cost = numberError(form.costBps, { min: 0, max: LIMITS.maxCostBps });
+    if (cost) errors.costBps = cost;
+  }
   const universe = universeError(form.universe, undefined, config.universeSize);
   if (universe) errors.universe = universe;
   return errors;

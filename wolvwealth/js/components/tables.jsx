@@ -1,4 +1,4 @@
-// Tabular views: realized metrics, the rebalance log, and a portfolio allocation.
+// Tabular views: realized metrics, the rebalance log, a portfolio allocation, and the trades to get there.
 import PropTypes from "prop-types";
 import { formatMoney, formatNumber, formatPercent, seriesLabel } from "../lib/format";
 import { seriesKeys } from "../lib/series";
@@ -126,6 +126,39 @@ export function RebalanceLog({ result }) {
   );
 }
 RebalanceLog.propTypes = { result: PropTypes.object.isRequired };
+
+/** What to buy and sell to get from the current holdings to the optimized portfolio: sells first, then buys. */
+export function TradesTable({ trades }) {
+  const rows = Object.entries(trades ?? {}).sort(
+    (a, b) => (a[1].action === b[1].action ? b[1].value - a[1].value : a[1].action === "sell" ? -1 : 1),
+  );
+  if (!rows.length) return <p className="text-sm text-white/60">No trades: the current holdings are already the answer.</p>;
+  return (
+    <table className="w-full border-collapse">
+      <thead>
+        <tr className="border-b border-white/10">
+          <th className={headCell}>Ticker</th>
+          <th className={headCell}>Action</th>
+          <th className={`${headCell} text-right`}>Shares</th>
+          <th className={`${headCell} text-right`}>Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(([ticker, trade]) => (
+          <tr key={ticker} className="border-b border-white/5">
+            <td className={`${cell} font-medium text-white`}>{ticker}</td>
+            <td className={`${cell} font-medium ${trade.action === "sell" ? "text-red" : "text-green"}`}>
+              {trade.action === "sell" ? "Sell" : "Buy"}
+            </td>
+            <td className={`${cell} text-right tabular-nums text-white/80`}>{formatNumber(trade.shares, { digits: 4 })}</td>
+            <td className={`${cell} text-right tabular-nums text-white`}>{formatMoney(trade.value)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+TradesTable.propTypes = { trades: PropTypes.object };
 
 export function AllocationTable({ portfolio, cash }) {
   const rows = Object.entries(portfolio).sort((a, b) => b[1].percent_weight - a[1].percent_weight);

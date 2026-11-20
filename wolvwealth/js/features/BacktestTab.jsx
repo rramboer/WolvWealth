@@ -36,6 +36,7 @@ function defaultForm(config) {
     maxPositions: 10,
     maxWeight: 1,
     minWeight: 0,
+    maxTurnover: "",
   };
 }
 
@@ -45,6 +46,9 @@ export function buildBacktestPayload(form) {
   if (form.maxPositions !== "" && form.maxPositions > 0) constraints.max_positions = form.maxPositions;
   if (form.maxWeight !== "" && form.maxWeight < 1) constraints.max_weight = form.maxWeight;
   if (form.minWeight !== "" && form.minWeight > 0) constraints.min_universal_weight = form.minWeight;
+  if (form.maxTurnover !== "" && form.maxTurnover !== undefined) {
+    constraints.max_turnover = Number((form.maxTurnover / 100).toPrecision(12));
+  }
   return {
     start: form.start,
     end: form.end,
@@ -138,6 +142,13 @@ export default function BacktestTab({ config, onUseConsumed }) {
               <NumberInput value={form.minWeight} min={0} max={1} step={0.01} onChange={update("minWeight")} />
             </Field>
           </div>
+          <Field
+            label="Max turnover (% sold per rebalance)"
+            error={errors.maxTurnover}
+            hint="Most of the holdings each rebalance may sell; the first purchase from cash is free. Empty: no limit. Trading costs above are weighed against expected return too."
+          >
+            <NumberInput value={form.maxTurnover} min={0} max={100} step={5} onChange={update("maxTurnover")} />
+          </Field>
           {tooMany && (
             <Alert kind="warning">
               About {rebalances} rebalances exceeds the limit of {config.maxRebalances}. Shorten the range or pick a lower
