@@ -1,22 +1,39 @@
-*.pyc
+# Python
 __pycache__/
-*.egg-info*
+*.pyc
+*.egg-info/
 dist/
+build/
+.venv/
 env/
 venv/
 venv3/
-.venv/
-.pytest_cache
-bundle.js
-*node_modules*
-*/var/*
-*~
-*.lock
-*.swp
-.vscode
-.vscode/
-*.DS_Store
-wolvwealth/static/img/logo.psd
-wolvwealth/static/img/hero.psd
-wolvwealth/static/img/feature1.psd
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+
+# Local environment / secrets
+.env
+
+# Generated artifacts: database (rebuild with `./bin/db create`)
+var/
+*.sqlite3
+
+# Generated artifacts: frontend build outputs (rebuild with `npm run build`)
+wolvwealth/static/js/bundle.js
+wolvwealth/static/js/bundle.js.map
 wolvwealth/static/css/output.css
+
+# Design sources
+wolvwealth/static/img/*.psd
+
+# Editors / OS
+*~
+*.swp
+.vscode/
+.idea/
+.DS_Store

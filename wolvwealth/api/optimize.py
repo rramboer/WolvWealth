@@ -1,85 +1,114 @@
 """API Portfolio Optimization."""
-import flask
-import wolvwealth
 
-from pypfopt import expected_returns, risk_models
-from pypfopt.efficient_frontier import EfficientFrontier
-from wolvwealth.api.state import ApplicationState
+import cvxpy
+import flask
+from pypfopt import exceptions as pypfopt_exceptions
+
+import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
-from wolvwealth.api.auth import check_api_key
+from wolvwealth.api.auth import authenticate
+from wolvwealth.api.state import ApplicationState
+from wolvwealth.optimizer_core import HoldCashAnswer, build_portfolio_output, compute_portfolio
+from wolvwealth.optimizer_params import (
+    MAX_CASH,
+    MAX_SHARES,
+    MAX_TRANSACTION_COST_BPS,
+    Constraints,
+    InvalidOptimizationInput,
+    Objective,
+    feasibility_problem,
+    parse_constraints,
+    parse_objective,
+    require_number,
+    resolve_universe,
+)
+from wolvwealth.ratelimit import api_per_ip, caller_key, configured, limiter
 
 
 class Optimization:
+    """Parse an /api/optimize/ request and run the optimization."""
+
     def __init__(self) -> None:
         """Initialize optimization."""
-        check_api_key()
+        caller = authenticate(require_csrf=True)  # 401/403 first, but nothing charged yet.
+        caller.verify()  # Expired or exhausted tokens are refused before any work.
         self.state = ApplicationState()
         self.set_defaults()
         self.parse_input()
+        self.validate_investment()
         self.execute_optimization()
+        # Charge only for an answer (including hold-cash): rejected input, solver failures and crashes
+        # never reach this line. If a concurrent request spent the last use meanwhile, this raises a 403
+        # and the computed answer is not returned.
+        caller.charge()
 
     def set_defaults(self) -> None:
+        """Set default values for all optimization parameters."""
         self.initial_cash = 0  # $0.00
         self.universe = self.state.TICKER_UNIVERSE[:500]  # Top 500 stocks by market cap.
         self.exclude_metrics = False  # Include metrics in output.
-        self.max_positions = -1  # Maximum number of stocks in portfolio. May overpwoer max_weight.
+        self.max_positions = -1  # Maximum number of stocks in portfolio. May overpower max_weight.
         self.max_weight = 1  # No weights higher than this. Can be ignored if max_positions is set.
         self.min_universal_weight = 0.00  # Every stock must have at least this weight.
         self.weight_threshold = 0.0005  # Ignore stocks with weights below this. May cause allocation < 100%.
+        self.objective = Objective()  # max_sharpe.
+        self.max_turnover = None  # Most of the current holdings' value to sell, as a fraction (None: no limit).
+        self.transaction_cost_bps = 0.0  # Trading cost weighed against expected return, and charged in the trades.
 
     def parse_input(self) -> None:
         """Parse request as JSON."""
         try:
             self.input_json = flask.request.json
-        except Exception:
+        except Exception as err:
+            raise InvalidUsage("Parse Error. Unable to parse request as JSON.") from err
+        if self.input_json is None:
             raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
         self.parse_initial_cash()
         self.parse_universe()
         self.parse_initial_holdings()
         self.parse_exclude_metrics()
         self.parse_constraints()
+        self.parse_objective()
+        self.parse_transaction_cost()
+
+    def parse_transaction_cost(self) -> None:
+        """Validate the optional transaction_cost_bps (basis points of the value bought and sold)."""
+        if "transaction_cost_bps" not in self.input_json:
+            return
+        try:
+            self.transaction_cost_bps = require_number(
+                self.input_json["transaction_cost_bps"],
+                "transaction_cost_bps",
+                minimum=0.0,
+                maximum=MAX_TRANSACTION_COST_BPS,
+            )
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
+
+    def parse_objective(self) -> None:
+        """Validate the optional objective (a name, or an object with a name and its parameter)."""
+        if "objective" not in self.input_json:
+            return
+        try:
+            self.objective = parse_objective(self.input_json["objective"])
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
 
     def parse_constraints(self) -> None:
+        """Validate and apply the optional constraints object."""
         if "constraints" not in self.input_json:
             return
-        if not isinstance(self.input_json["constraints"], dict):
-            raise InvalidUsage("Invalid constraints. constraints must be a dictionary.")
-        if "max_weight" in self.input_json["constraints"]:
-            if not isinstance(self.input_json["constraints"]["max_weight"], (int, float)):
-                raise InvalidUsage("Invalid max_weight. max_weight must be a number.")
-            if (
-                self.input_json["constraints"]["max_weight"] < 0.00
-                or self.input_json["constraints"]["max_weight"] > 1.00
-            ):
-                raise InvalidUsage("Invalid max_weight. max_weight must be greater than 0 and less than 1.")
-            self.max_weight = round(self.input_json["constraints"]["max_weight"], 2)
-        if "max_positions" in self.input_json["constraints"]:
-            if not isinstance(self.input_json["constraints"]["max_positions"], int):
-                raise InvalidUsage("Invalid max_positions. max_positions must be an integer.")
-            if self.input_json["constraints"]["max_positions"] < 0.00:
-                raise InvalidUsage("Invalid max_positions. max_positions must be greater than 0.")
-            self.max_positions = self.input_json["constraints"]["max_positions"]
-            if self.input_json["constraints"]["max_positions"] > len(self.universe):
-                self.max_positions = len(self.universe)
-            if self.max_positions * self.max_weight < 1:
-                raise InvalidUsage(
-                    f"Infeasible. max_positions * max_weight must be greater than or equal to 1 for full allocation."
-                )
-        if "min_universal_weight" in self.input_json["constraints"]:
-            if not isinstance(self.input_json["constraints"]["min_universal_weight"], (int, float)):
-                raise InvalidUsage("Invalid min_universal_weight. min_universal_weight must be a number.")
-            if (
-                self.input_json["constraints"]["min_universal_weight"] < 0.00
-                or self.input_json["constraints"]["min_universal_weight"] > 1.00
-            ):
-                raise InvalidUsage(
-                    "Invalid min_universal_weight. min_universal_weight must be greater than 0 and less than 1."
-                )
-            self.min_universal_weight = round(self.input_json["constraints"]["min_universal_weight"], 2)
-        if self.min_universal_weight > self.max_weight:
-            raise InvalidUsage("Invalid constraints. min_weight must be less than max_weight.")
+        try:
+            constraints = parse_constraints(self.input_json["constraints"], len(self.universe))
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
+        self.max_weight = constraints.max_weight
+        self.max_positions = constraints.max_positions
+        self.min_universal_weight = constraints.min_universal_weight
+        self.max_turnover = constraints.max_turnover
 
     def parse_exclude_metrics(self) -> None:
+        """Validate the optional exclude_metrics flag."""
         if "exclude_metrics" not in self.input_json:
             return
         if not isinstance(self.input_json["exclude_metrics"], bool):
@@ -87,125 +116,115 @@ class Optimization:
         self.exclude_metrics = self.input_json["exclude_metrics"]
 
     def parse_initial_cash(self) -> None:
+        """Validate the optional initial_cash amount."""
         if "initial_cash" not in self.input_json:
             return
-        if not isinstance(self.input_json["initial_cash"], (int, float)):
-            raise InvalidUsage("Invalid initial_cash. initial_cash must be a number.")
-        if self.input_json["initial_cash"] < 0.00:
-            raise InvalidUsage("Invalid initial_cash. initial_cash must be greater than 0.")
-        self.initial_cash = round(self.input_json["initial_cash"], 2)
+        try:
+            cash = require_number(self.input_json["initial_cash"], "initial_cash", minimum=0.0, maximum=MAX_CASH)
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
+        self.initial_cash = round(cash, 2)
 
     def parse_universe(self) -> None:
+        """Validate the optional universe list, expanding topN aliases."""
         if "universe" not in self.input_json:
             return
-        if not isinstance(self.input_json["universe"], list):
-            raise InvalidUsage("Invalid universe. universe must be a list.")
-        unclean_universe = self.input_json["universe"]
-        if len(unclean_universe) == 0:  # If empty universe, use default
+        requested = self.input_json["universe"]
+        if isinstance(requested, list) and len(requested) == 0:  # If empty universe, use default
             return
-        for ticker in unclean_universe:
-            if not isinstance(ticker, str):
-                raise InvalidUsage("Invalid universe. universe must be list of strings.")
-            if ticker.upper() not in self.state.TICKER_UNIVERSE:
-                if ticker == "top20":
-                    unclean_universe.remove(ticker)
-                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:20])
-                elif ticker == "top50":
-                    unclean_universe.remove(ticker)
-                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:50])
-                elif ticker == "top100":
-                    unclean_universe.remove(ticker)
-                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:100])
-                elif ticker == "top200":
-                    unclean_universe.remove(ticker)
-                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:200])
-                elif ticker == "top300":
-                    unclean_universe.remove(ticker)
-                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:300])
-                elif ticker == "top400":
-                    unclean_universe.remove(ticker)
-                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:400])
-                elif ticker == "top500":
-                    unclean_universe.remove(ticker)
-                    unclean_universe.extend(self.state.TICKER_UNIVERSE[:500])
-                else:
-                    raise InvalidUsage(f"Invalid symbol in universe: {ticker}.")
-        self.universe = [s.upper() for s in unclean_universe]
-        self.universe = list(dict.fromkeys(self.universe))
+        try:
+            self.universe = resolve_universe(requested, self.state.TICKER_UNIVERSE)
+        except InvalidOptimizationInput as err:
+            raise InvalidUsage(str(err)) from err
 
     def parse_initial_holdings(self) -> None:
+        """Validate the optional initial_holdings mapping."""
         self.initial_holdings = {}
         if "initial_holdings" not in self.input_json:
             return
         if not isinstance(self.input_json["initial_holdings"], dict):
             raise InvalidUsage("Invalid initial_holdings. initial_holdings must be a dictionary.")
-        unclean_initial_holdings = self.input_json["initial_holdings"]
-        for ticker, shares in unclean_initial_holdings.items():
-            if not isinstance(ticker, str):
-                raise InvalidUsage("Invalid initial_holdings. initial_holdings must be list of strings.")
-            if ticker.upper() not in self.state.TICKER_UNIVERSE:
+        holdings = {}
+        for ticker, shares in self.input_json["initial_holdings"].items():
+            if not isinstance(ticker, str) or ticker.upper() not in self.state.TICKER_UNIVERSE:
                 raise InvalidUsage(f"Invalid symbol in initial_holdings: {ticker}.")
-            if not isinstance(shares, (int, float)):
-                raise InvalidUsage(
-                    "Invalid initial_holdings. initial_holdings must be a dictionary of strings to numbers."
-                )
-            if shares < 0.00:
-                raise InvalidUsage("Invalid initial_holdings. Shares must be positive.")
-        self.initial_holdings = {s.upper(): unclean_initial_holdings[s] for s in unclean_initial_holdings}
+            try:
+                holdings[ticker.upper()] = require_number(shares, "shares", minimum=0.0, maximum=MAX_SHARES)
+            except InvalidOptimizationInput as err:
+                raise InvalidUsage(f"Invalid initial_holdings for {ticker}. {err}") from err
+        self.initial_holdings = holdings
 
-    def execute_optimization(self) -> None:
-        """Run optimization."""
+    def validate_investment(self) -> None:
+        """Check the request can be optimized at all: money to invest, price data, feasible constraints."""
         total_investment = self.initial_cash
         for asset, shares in self.initial_holdings.items():
             total_investment += shares * self.state.fetch_ticker_price(asset)
         if total_investment == 0:
             raise InvalidUsage("Invalid input. Total investment value cannot be 0.")
+        self.total_investment = total_investment
+        # Holdings as fractions of the whole portfolio (cash included), where the optimizer rebalances from.
+        self.current_weights = {
+            asset: shares * self.state.fetch_ticker_price(asset) / total_investment
+            for asset, shares in self.initial_holdings.items()
+            if shares > 0
+        }
+        missing = [t for t in self.universe if t not in self.state.HISTORICAL_PRICES.columns]
+        if missing:
+            raise InvalidUsage(f"No price data available for: {', '.join(sorted(missing))}.")
+        constraints = Constraints(
+            max_weight=self.max_weight,
+            min_universal_weight=self.min_universal_weight,
+            max_positions=self.max_positions,
+            weight_threshold=self.weight_threshold,
+            max_turnover=self.max_turnover,
+        )
+        problem = feasibility_problem(constraints, len(self.universe))
+        if problem:
+            raise InvalidUsage(problem)
+
+    def execute_optimization(self) -> None:
+        """Run optimization."""
         filtered_data = self.state.HISTORICAL_PRICES[self.universe]
+        notes: list[str] = []
         try:
-            mu = expected_returns.mean_historical_return(filtered_data)
-            cov_matrix = risk_models.exp_cov(filtered_data)
-            ef = EfficientFrontier(mu, cov_matrix, verbose=False, weight_bounds=(self.min_universal_weight, 1))
-            if self.max_weight != 1:
-                ef.add_constraint(lambda weights: weights <= self.max_weight)
-            ef.max_sharpe()
-            cleaned_weights = ef.clean_weights(cutoff=self.weight_threshold)
-            if self.max_positions != -1:
-                sorted_weights = sorted(cleaned_weights.items(), key=lambda x: x[1], reverse=True)
-                cleaned_weights = {}
-                for i in range(self.max_positions):
-                    cleaned_weights[sorted_weights[i][0]] = sorted_weights[i][1]
-                total_weight = sum(cleaned_weights.values())
-                for k, v in cleaned_weights.items():
-                    cleaned_weights[k] = v / total_weight
-            for k, v in cleaned_weights.copy().items():
-                if v == 0:
-                    del cleaned_weights[k]
-
-        except Exception as e:
-            raise InvalidUsage(f"Optimization Error. Check your inputs and constraints. Infeasible.")
-
-        # Construct output
-        output = {}
-        output["optimized_portfolio"] = {}
-        for asset, weight in cleaned_weights.items():
-            output["optimized_portfolio"][asset] = {
-                "shares": round(weight * total_investment / self.state.fetch_ticker_price(asset), 4),
-                "value": round(weight * total_investment, 2),
-                "percent_weight": round(weight * 100, 2),
-            }
-        if self.exclude_metrics == False:
-            metrics = ef.portfolio_performance()
-            output["metrics"] = {
-                "portfolio_value": round(total_investment, 2),
-                "expected_annual_return": round(metrics[0], 3),
-                "annual_volatility": round(metrics[1], 3),
-                "sharpe_ratio": round(metrics[2], 2),
-                "num_assets": len(cleaned_weights),
-            }
+            weights, performance = compute_portfolio(
+                filtered_data,
+                self.objective,
+                max_weight=self.max_weight,
+                min_universal_weight=self.min_universal_weight,
+                max_positions=self.max_positions,
+                weight_threshold=self.weight_threshold,
+                max_turnover=self.max_turnover,
+                current_weights=self.current_weights,
+                transaction_cost_bps=self.transaction_cost_bps,
+            )
+        except HoldCashAnswer as answer:  # A valid result: hold cash.
+            weights, performance, notes = {}, answer.performance, [str(answer)]
+        except InvalidOptimizationInput as err:
+            # An unreachable target or turnover limit: free, like infeasible constraints, with a hint that works.
+            raise InvalidUsage(str(err)) from err
+        except (pypfopt_exceptions.OptimizationError, cvxpy.error.SolverError, ValueError) as err:
+            # Constraints are checked for feasibility before this point, so this is a solver failure.
+            wolvwealth.app.logger.exception("Portfolio optimization failed")
+            raise InvalidUsage(
+                "Optimization Error. The solver could not find a portfolio for this universe and these constraints."
+            ) from err
+        output = build_portfolio_output(
+            weights,
+            self.total_investment,
+            self.state.fetch_ticker_price,
+            performance=None if self.exclude_metrics else performance,
+            notes=notes,
+            objective=self.objective,
+            current_shares=self.initial_holdings,
+            transaction_cost_bps=self.transaction_cost_bps,
+        )
         self.output = flask.jsonify(output)
 
 
 @wolvwealth.app.route("/api/optimize/", methods=["POST"])
+@api_per_ip
+@limiter.limit(configured("RATELIMIT_OPTIMIZE_PER_CALLER"), key_func=caller_key)
 def optimize():
-    """Execute Optimization"""
+    """Execute Optimization."""
     return Optimization().output

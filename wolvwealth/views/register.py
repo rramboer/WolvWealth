@@ -3,11 +3,12 @@
 GET /login/
 """
 
-import wolvwealth
 from flask import render_template
 
+import wolvwealth
 
-@wolvwealth.app.route('/register/', methods=['GET'])
+
+@wolvwealth.app.route("/register/", methods=["GET"])
 def show_register():
     """Display /register route."""
     context = {}

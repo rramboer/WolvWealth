@@ -1,13 +1,47 @@
 #!/bin/bash
-# wolvwealthdb
+# wolvwealth db - manage the development SQLite database.
+#
+# Uses the Python stdlib sqlite3 module, so no sqlite3 CLI is required.
 
-# Stop script on errors
 set -Eeuo pipefail
-# set -x
 
-# Sanity check command line options
+DB_FILE="var/wolvwealth.sqlite3"
+PYTHON="${PYTHON:-python3}"
+if [ -x ".venv/bin/python" ]; then
+  PYTHON=".venv/bin/python"
+fi
+
 usage() {
   echo "Usage: $0 (create|destroy|reset|dump)"
+}
+
+run_sql_scripts() {
+  "$PYTHON" - "$DB_FILE" "$@" <<'EOF'
+import sqlite3
+import sys
+
+db, *scripts = sys.argv[1:]
+connection = sqlite3.connect(db)
+for script in scripts:
+    with open(script, encoding="utf-8") as f:
+        connection.executescript(f.read())
+connection.commit()
+connection.close()
+EOF
+}
+
+dump_table() {
+  "$PYTHON" - "$DB_FILE" "$1" <<'EOF'
+import sqlite3
+import sys
+
+db, table = sys.argv[1:]
+connection = sqlite3.connect(db)
+connection.row_factory = sqlite3.Row
+for row in connection.execute(f"SELECT * FROM {table}"):
+    print(dict(row))
+connection.close()
+EOF
 }
 
 if [ $# -ne 1 ]; then
@@ -15,37 +49,37 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
-# Parse argument.  $1 is the first argument
 case $1 in
   "create")
-    if [ -e var/wolvwealth.sqlite3 ]; then
+    if [ -e "$DB_FILE" ]; then
       echo "Database already exists."
     else
-      sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
-      sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
+      mkdir -p var
+      run_sql_scripts sql/schema.sql sql/data.sql
       echo "Database created."
     fi
     ;;
 
   "destroy")
-    rm -rf var/wolvwealth.sqlite3 var/uploads
-    echo "Database Destroyed."
+    rm -rf "$DB_FILE" var/uploads
+    echo "Database destroyed."
     ;;
 
   "reset")
-    rm -rf var/wolvwealth.sqlite3 var/uploads
-    sqlite3 var/wolvwealth.sqlite3 < sql/schema.sql
-    sqlite3 var/wolvwealth.sqlite3 < sql/data.sql
+    rm -rf "$DB_FILE" var/uploads
+    mkdir -p var
+    run_sql_scripts sql/schema.sql sql/data.sql
     echo "Database destroyed and recreated. All data erased."
     ;;
 
   "dump")
     echo "Printing Users:"
-    sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM users'
+    dump_table users
     echo ""
     echo "Printing Tokens:"
-    sqlite3 -batch -line var/wolvwealth.sqlite3 'SELECT * FROM tokens'
+    dump_table tokens
     ;;
+
   *)
     usage
     exit 1

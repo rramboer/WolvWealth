@@ -1,15 +1,19 @@
 """WolvWealth API Init."""
 
 import flask
+
 import wolvwealth
 import wolvwealth.api.admin
 import wolvwealth.api.api_exceptions
 import wolvwealth.api.auth
+import wolvwealth.api.backtest
 import wolvwealth.api.optimize
-from wolvwealth.api.state import ApplicationState
+from wolvwealth.api.state import ApplicationState  # noqa: F401  (re-exported for wolvwealth.__init__)
+from wolvwealth.ratelimit import api_per_ip
 
 
 @wolvwealth.app.route("/api/", methods=["GET", "POST"])
+@api_per_ip
 def api_default():
     """WolvWealth API Usage Endpoint."""
     api_key = flask.request.headers.get("Authorization")
@@ -18,6 +22,7 @@ def api_default():
             {
                 "/api/": "API Usage Info",
                 "/api/optimize/": "Optimize Portfolio",
+                "/api/backtest/": "Start a Backtest Job",
                 "/api/account/": "View Account Details",
                 "/api/db/status/": "Test Database Connection",
                 "/api/db/dump/": "Dump Database",
@@ -32,6 +37,7 @@ def api_default():
         {
             "/api/": "API Usage Info",
             "/api/optimize/": "Optimize Portfolio",
+            "/api/backtest/": "Start a Backtest Job",
             "/api/account/": "View Account Details",
         }
     )

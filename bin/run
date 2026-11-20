@@ -1,10 +1,8 @@
 #!/bin/bash
-# This script runs the web server and creates the database if it doesn't exist.
+# Run the WolvWealth web server (dev or prod). Run from the repository root.
 
 set -Eeuo pipefail
-# set -x
 
-# Sanity check command line options
 usage() {
   echo "Usage: $0 (dev|prod)"
 }
@@ -14,25 +12,34 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
-# Parse argument.  $1 is the first argument
 case $1 in
   "dev")
     ./bin/db create
+    # Kill the background asset watchers when flask exits or on Ctrl-C.
+    trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
     npx tailwindcss -o wolvwealth/static/css/output.css --watch &
-    npx webpack --config webpack.config.js --watch &
-    flask --app wolvwealth --debug run --host 0.0.0.0 --port 8000
+    npx vite build --watch --mode development &
+    uv run flask --app wolvwealth --debug run --host 0.0.0.0 --port 8000
     ;;
 
   "prod")
-    ./bin/db create
-    npx tailwindcss -o wolvwealth/static/css/output.css
-    npx webpack --config webpack.config.js
-    sudo flask --app wolvwealth --debug run --host 0.0.0.0 --port 80
+    if [ -z "${WOLVWEALTH_SECRET_KEY:-}" ]; then
+      echo "Error: WOLVWEALTH_SECRET_KEY must be set in production." >&2
+      echo 'Generate one with: python3 -c "import secrets; print(secrets.token_hex(32))"' >&2
+      exit 1
+    fi
+    if [ ! -e "${WOLVWEALTH_DATABASE:-var/wolvwealth.sqlite3}" ]; then
+      echo "Error: database not found. Create it first (see README 'Database')." >&2
+      echo "Note: ./bin/db create loads DEVELOPMENT seed accounts; do not use its seed data in production." >&2
+      exit 1
+    fi
+    npm run build
+    # Binds 0.0.0.0:8000 by default (see gunicorn_config.py); run behind a reverse proxy.
+    uv run gunicorn -c gunicorn_config.py "wolvwealth:app"
     ;;
+
   *)
     usage
     exit 1
     ;;
 esac
-
-

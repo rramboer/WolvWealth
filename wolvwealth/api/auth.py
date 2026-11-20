@@ -1,61 +1,48 @@
 """Authentication functions for the API."""
-import flask
-import wolvwealth
+
+import dataclasses
+import hmac
 import secrets
+from collections.abc import Callable
+
 import bcrypt
-import datetime
+import flask
+
+import wolvwealth
 from wolvwealth.api.api_exceptions import InvalidUsage
+from wolvwealth.ratelimit import api_per_ip, configured, limiter
+from wolvwealth.timeutil import utc_to_eastern_display
+
+
+@dataclasses.dataclass(frozen=True)
+class TierSpec:
+    """Access tier: price in dollars, number of optimizations, sqlite expiration offset."""
+
+    price: int
+    uses: int
+    expiration: str  # sqlite datetime() modifier, e.g. "+7 days"
 
 
 class Tier:
-    """Tier class."""
+    """Available access tiers."""
 
-    class Free:
-        """Free trial."""
-
-        price = 0
-        uses = 15
-        expiration = "+7 days"
-
-    class Plus:
-        """Plus tier."""
-
-        price = 5
-        uses = 300
-        expiration = "+90 days"
-
-    class Premium:
-        """Premium tier."""
-
-        price = 15
-        uses = 1500
-        expiration = "+1 year"
-
-    class Lifetime:
-        """Lifetime tier."""
-
-        price = 100
-        uses = 1000000000
-        expiration = "+100 years"
-
-    class Developer:
-        """Developer tier."""
-
-        price = 0
-        uses = 1000000000
-        expiration = "+100 years"
+    Free = TierSpec(price=0, uses=15, expiration="+7 days")
+    Plus = TierSpec(price=5, uses=300, expiration="+90 days")
+    Premium = TierSpec(price=15, uses=1500, expiration="+1 year")
+    Lifetime = TierSpec(price=100, uses=1_000_000_000, expiration="+100 years")
+    Developer = TierSpec(price=0, uses=1_000_000_000, expiration="+100 years")
 
 
-@wolvwealth.app.route("/api/account", methods=["POST"])
+@wolvwealth.app.route("/api/account/", methods=["POST"])
+@api_per_ip
+@limiter.limit(configured("RATELIMIT_ACCOUNT_PER_IP"))
 def api_account_info():
     """Return credentials information."""
     api_key = flask.request.headers.get("Authorization")
-    input_json = {}
-    username = ""
     try:
         input_json = flask.request.json
-    except Exception:
-        raise InvalidUsage("Parse Error. Unable to parse request as JSON.")
+    except Exception as err:
+        raise InvalidUsage("Parse Error. Unable to parse request as JSON.") from err
     if "username" not in input_json:
         raise InvalidUsage("Parse Error. Username required.")
     if not isinstance(input_json["username"], str):
@@ -76,34 +63,24 @@ def api_account_info():
     if api_key is None:
         raise InvalidUsage("Authorization Error. Missing API key.", status_code=403)
 
-    # Check if API key belongs to username
-    if result_tokens["token"] != api_key:
+    # Check if API key belongs to username. Compare bytes: compare_digest()
+    # raises TypeError on non-ASCII str, which would turn a bad key into a 500.
+    if result_tokens is None or not hmac.compare_digest(result_tokens["token"].encode(), api_key.encode()):
         raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
-
-    # Fetch expiration time and number of uses
-    uses = result_tokens["uses"]
-
-    created_et = (
-        datetime.datetime.strptime(result_users["created"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
-    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
-
-    expiration_et = (
-        datetime.datetime.strptime(result_tokens["expires"], "%Y-%m-%d %H:%M:%S") - datetime.timedelta(hours=5)
-    ).strftime("%Y-%m-%d %I:%M %p") + " ET"
 
     output_json = {
         "username": result_users["username"],
         "email": result_users["email"],
-        "account_created": created_et,
-        "access_expires": expiration_et,
-        "optimizations_remaining": uses,
+        "account_created": utc_to_eastern_display(result_users["created"]),
+        "access_expires": utc_to_eastern_display(result_tokens["expires"]),
+        "optimizations_remaining": result_tokens["uses"],
         "api_key": api_key,
     }
 
     return flask.jsonify(output_json)
 
 
-def generate_api_key(owner: str, tier: Tier) -> str:
+def generate_api_key(owner: str, tier: TierSpec) -> str:
     """Generate a new API key and add it to the database."""
     api_key = secrets.token_urlsafe(16)
     connection = wolvwealth.model.get_db()
@@ -114,40 +91,90 @@ def generate_api_key(owner: str, tier: Tier) -> str:
     return api_key
 
 
-def check_api_key() -> bool:
-    """Check if API key is valid. Decrements API key and returns true if valid. Otherwise errors."""
+@dataclasses.dataclass(frozen=True)
+class Caller:
+    """An authenticated account, a way to check it can pay, and a way to bill it one use.
+
+    Endpoints call verify() before doing any work, so an expired or exhausted
+    token is refused cheaply, and charge() only once they have something to
+    return. charge() repeats the checks atomically, so if another request spent
+    the last use in between, it raises and no answer is given.
+    """
+
+    owner: str
+    verify: Callable[[], None]
+    charge: Callable[[], None]
+
+
+def authenticate(require_csrf: bool = True) -> Caller:
+    """Identify the caller by API key or logged-in session, without charging anything yet.
+
+    An Authorization header is tried first and must be a valid token. Without
+    one, the browser session is used; state-changing requests from a session
+    must also carry the session's CSRF token in an X-CSRF-Token header.
+    """
     api_key = flask.request.headers.get("Authorization")
-    if api_key is None:
+    if api_key is not None:
+        connection = wolvwealth.model.get_db()
+        token_row = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,)).fetchone()
+        if token_row is None:
+            raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
+        return Caller(
+            owner=token_row["owner"],
+            verify=lambda: check_token_live(token_row),
+            charge=lambda: consume_token_use(token_row),
+        )
+
+    username = flask.session.get("username")
+    if username is None or not check_user_exists(username):
         raise InvalidUsage("No API key provided.", status_code=401)
+    if require_csrf:
+        expected = flask.session.get("csrf_token", "")
+        submitted = flask.request.headers.get("X-CSRF-Token", "")
+        if not expected or not hmac.compare_digest(expected.encode(), submitted.encode()):
+            raise InvalidUsage("Authorization Error. Missing or invalid CSRF token.", status_code=403)
+    return Caller(
+        owner=username,
+        verify=lambda: check_token_live(_session_token_row(username)),
+        charge=lambda: consume_session_use(username),
+    )
+
+
+def _session_token_row(username: str) -> dict:
     connection = wolvwealth.model.get_db()
-
-    # Check if API key exists
-    cur = connection.execute("SELECT * FROM tokens WHERE token = ?", (api_key,))
-    result = cur.fetchone()
+    result = connection.execute("SELECT * FROM tokens WHERE owner = ?", (username,)).fetchone()
     if result is None:
-        raise InvalidUsage("Authorization Error. Invalid API key.", status_code=403)
+        raise InvalidUsage("Authorization Error. No API key found for this account.", status_code=403)
+    return result
 
-    # Check if API key has expired
-    expiration_time = result["expires"]
-    cur = connection.execute("SELECT datetime('now') AS now")
-    current_time = cur.fetchone()["now"]
-    if current_time > expiration_time:
+
+def consume_session_use(username: str) -> None:
+    """Charge one use to the API token owned by the logged-in user. Errors like consume_token_use()."""
+    consume_token_use(_session_token_row(username))
+
+
+def check_token_live(token_row: dict) -> None:
+    """Raise 403 unless the token is unexpired and has uses left. Charges nothing."""
+    connection = wolvwealth.model.get_db()
+    current_time = connection.execute("SELECT datetime('now') AS now").fetchone()["now"]
+    if current_time > token_row["expires"]:
         raise InvalidUsage("Authorization Error. API key has expired.", status_code=403)
-
-    # Check if API key has been used too many times
-    uses = result["uses"]
-    if uses == 0:
+    if token_row["uses"] <= 0:
         raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
 
-    # Decrement uses by 1
-    connection.execute(
-        "UPDATE tokens SET uses = ? WHERE token = ?",
-        (
-            uses - 1,
-            api_key,
-        ),
+
+def consume_token_use(token_row: dict) -> None:
+    """Verify a tokens row is live and atomically decrement its remaining uses."""
+    check_token_live(token_row)
+    # Consume one use atomically so concurrent requests cannot double-spend the last use. The row
+    # passed in may be stale (read before the work was done); the WHERE clause re-checks live state.
+    connection = wolvwealth.model.get_db()
+    cur = connection.execute(
+        "UPDATE tokens SET uses = uses - 1 WHERE token = ? AND uses > 0 AND expires > datetime('now')",
+        (token_row["token"],),
     )
-    return True
+    if cur.rowcount == 0:
+        raise InvalidUsage("Authorization Error. API key has run out of uses. ", status_code=403)
 
 
 def hash_password(_password: str) -> str:
@@ -171,18 +198,12 @@ def check_user_password(username: str, password: str) -> bool:
 def check_user_exists(username: str) -> bool:
     """Return true if username exists."""
     connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT * FROM users WHERE username = ?", (username,))
-    result = cur.fetchone()
-    if result is None:
-        return False
-    return True
+    cur = connection.execute("SELECT username FROM users WHERE username = ?", (username,))
+    return cur.fetchone() is not None
 
 
 def check_email_exists(email: str) -> bool:
     """Return true if email exists."""
     connection = wolvwealth.model.get_db()
-    cur = connection.execute("SELECT * FROM users WHERE email = ?", (email,))
-    result = cur.fetchone()
-    if result is None:
-        return False
-    return True
+    cur = connection.execute("SELECT username FROM users WHERE email = ?", (email,))
+    return cur.fetchone() is not None

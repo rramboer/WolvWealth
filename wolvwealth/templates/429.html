@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block title %}Slow down | WolvWealth{% endblock %}
+{% block description %}Too many requests.{% endblock %}
+
+{% block content %}
+<section class="w-full min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md rounded-lg border border-white/10 bg-gray p-8 text-center">
+        <h1 class="mb-3 text-xl font-semibold text-white">Too many requests</h1>
+        <p class="mb-6 text-sm text-white/70">{{ message }}</p>
+        <a href="{{ url_for('show_landing') }}" class="text-sm text-cyan hover:underline">Back to WolvWealth</a>
+    </div>
+</section>
+{% endblock %}

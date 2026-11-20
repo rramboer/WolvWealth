@@ -4,6 +4,7 @@ GET /
 """
 
 from flask import render_template
+
 import wolvwealth
 from wolvwealth.views.accounts import is_logged_in
 
