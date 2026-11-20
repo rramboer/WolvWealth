@@ -173,7 +173,39 @@ def estimate_inputs(prices: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     The one place the estimators are chosen: mean historical returns and an
     exponentially weighted covariance (recent co-movement counts more).
     """
-    return expected_returns.mean_historical_return(prices), risk_models.exp_cov(prices)
+    return expected_returns.mean_historical_return(prices), exp_cov(prices)
+
+
+EXP_COV_SPAN = 180  # pypfopt's default: about 9 months of trading days.
+TRADING_DAYS_PER_YEAR = 252
+
+
+def exp_cov(prices: pd.DataFrame, span: int = EXP_COV_SPAN, frequency: int = TRADING_DAYS_PER_YEAR) -> pd.DataFrame:
+    """Annualized exponentially weighted covariance; pypfopt's risk_models.exp_cov, vectorized.
+
+    pypfopt fills the matrix one pair at a time with a pandas ewm call, about
+    125,000 calls for 500 assets (~50 s on the full price history). Each
+    entry is the last value of `((X - X.mean()) * (Y - Y.mean())).ewm(span).mean()`,
+    which with pandas' defaults (adjust=True, ignore_na=False) is the
+    weighted average of the pair's co-movements over the days both assets
+    have returns, with weight (1 - alpha) ** (days before the last row).
+    That is two matrix products: the weighted co-movements, and per pair
+    the total weight of the days they share, so assets with different
+    histories (IPOs) are handled as pypfopt does. A pair that shares no day
+    is NaN, as there.
+    """
+    returns = expected_returns.returns_from_prices(prices)
+    values = returns.to_numpy(dtype=float)
+    present = ~np.isnan(values)
+    demeaned = np.where(present, values - np.nanmean(values, axis=0), 0.0)
+    alpha = 2.0 / (span + 1.0)
+    weights = (1.0 - alpha) ** np.arange(len(values) - 1, -1, -1, dtype=float)  # 1 on the last row
+    shared_weight = present.T.astype(float) @ (present * weights[:, None])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        covariance = (demeaned.T @ (demeaned * weights[:, None])) / shared_weight
+    covariance[shared_weight == 0] = np.nan
+    matrix = pd.DataFrame(covariance * frequency, index=prices.columns, columns=prices.columns)
+    return risk_models.fix_nonpositive_semidefinite(matrix, "spectral")
 
 
 def compute_portfolio(

@@ -228,7 +228,7 @@ Errors return `{"error": {"message": "...", "status_code": ...}}`:
 
 ### `POST /api/backtest/` and `GET /api/backtest/<job_id>/`
 
-Runs the simulation described under [Backtesting](#backtesting) as a background job and returns the optimizer's result next to its benchmarks. A 50-stock monthly backtest takes roughly 0.6–1 s per rebalance, so the POST returns immediately with a job id and the client polls for progress.
+Runs the simulation described under [Backtesting](#backtesting) as a background job and returns the optimizer's result next to its benchmarks. A 50-stock monthly backtest takes roughly 0.1–0.15 s per rebalance (about 0.25 s at the 100-ticker limit), so a long one runs for tens of seconds; the POST returns immediately with a job id and the client polls for progress.
 
 1. `POST /api/backtest/` authenticates, checks that your job queue has room, validates the request, charges one use, and returns `202 Accepted` with a job snapshot and a `Location` / `status_url` to poll. If an identical request is already cached, it returns `200` with the finished job (`"cached": true`) right away.
 2. `GET /api/backtest/<job_id>/` (about once a second) returns the job's `status` (`queued`, `running`, `succeeded`, `failed`), `progress` (`completed`, `total`, `fraction`, `message`), `elapsed_seconds` and `estimated_seconds_remaining`. When `status` is `succeeded` the snapshot includes the full `report`; when `failed`, an `error` message. Polling is free.

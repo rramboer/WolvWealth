@@ -73,8 +73,11 @@ export function estimateRebalances(start, end, frequency) {
   return Math.round(days / AVERAGE_DAYS[frequency]) + 1;
 }
 
-/** Rough wall-clock estimate: the optimizer costs about 0.7 s per rebalance for 50 stocks. */
+/**
+ * Rough wall-clock estimate, benchmarks included: measured at about 0.09–0.14 s per monthly rebalance for 50 stocks
+ * and 0.25 s for 100 (3-year lookback, max 10 positions), depending on the objective.
+ */
 export function estimateSeconds(rebalances, universeSize) {
-  const perRebalance = 0.7 * Math.max(0.3, universeSize / 50);
+  const perRebalance = 0.12 * Math.max(0.4, universeSize / 50);
   return Math.round(rebalances * perRebalance);
 }

@@ -25,6 +25,7 @@
 - Huge numbers no longer cause HTTP 500s. A JSON integer too large for a float (e.g. `1` followed by 400 zeros) in any decimal field now returns 400 "out of range" instead of an uncaught `OverflowError`, and a `topN` alias with more digits than Python's int-parsing limit is clamped to the whole universe instead of raising `ValueError`. `top0` is rejected. The dashboard says "Out of range." for such input.
 
 ### Changed
+- The optimizer's exponentially weighted covariance is computed with two matrix products instead of pypfopt's pair-by-pair loop of pandas `ewm` calls (`wolvwealth.optimizer_core.exp_cov`). Results match pypfopt's `risk_models.exp_cov` to floating-point rounding, including assets with different price histories and pairs that share no day (NaN in both); optimized weights on the real data are unchanged. A default `/api/optimize/` request over the top 500 stocks drops from about 65 s to about 3.5 s, and a 50-stock backtest rebalance from about 0.7 s to about 0.1 s; the dashboard's run-time estimate is recalibrated.
 - Backtesting moved into the `wolvwealth.backtest` package (config, schedule, strategies, engine, metrics, service, cli); `backtest.py` is now a thin wrapper and the CLI is also installed as `wolvwealth-backtest`.
 - Universe / constraint validation shared between the API and the backtester (`wolvwealth/optimizer_params.py`); CSV loading shared via `wolvwealth/market_data.py`.
 
